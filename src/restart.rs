@@ -444,6 +444,7 @@ pub struct Pane {
     pub cwd: Option<PathBuf>,
     pub workspace: Option<String>,
     pub agent: Agent,
+    pub title: String,
 }
 
 impl Pane {
@@ -461,6 +462,7 @@ impl Pane {
             cwd: agent["cwd"].as_str().map(PathBuf::from),
             workspace: agent["workspace_id"].as_str().map(str::to_string),
             agent: kind,
+            title: crate::agent::codex::terminal_title(agent).to_string(),
             pane,
         })
     }
@@ -742,14 +744,14 @@ pub fn mode_for(mode: Mode, lead: bool) -> Mode {
     }
 }
 
-// A Codex on one of its start-up questions waits on the user, so it is not ended under the question; otherwise its composer is read as any draft.
-pub fn with_screen(mode: Mode, verdict: Verdict, agent: Agent, screen: impl FnOnce() -> Option<String>) -> Verdict {
+// herdr calls a Codex idle on a view that waits on the user and on a start-up question, so it is not ended under either; otherwise its composer is read as any draft.
+pub fn with_screen(mode: Mode, verdict: Verdict, agent: Agent, title: &str, screen: impl FnOnce() -> Option<String>) -> Verdict {
     if verdict != Verdict::Restart {
         return verdict;
     }
     let screen = screen();
-    let plain = screen.as_deref().map(|screen| screen.lines().map(|line| crate::typing::styled(line).text).collect::<Vec<_>>().join("\n"));
-    if agent == Agent::Codex && plain.as_deref().and_then(crate::agent::codex::startup_question).is_some() {
+    let plain = || screen.as_deref().map(|screen| screen.lines().map(|line| crate::typing::styled(line).text).collect::<Vec<_>>().join("\n"));
+    if agent == Agent::Codex && crate::agent::codex::waits_on(title, || true, plain).is_some() {
         return Verdict::Busy;
     }
     with_draft(mode, verdict, || screen.map_or(Draft::Unreadable, |screen| agent.draft(&screen)))
@@ -904,7 +906,7 @@ pub fn run_counted(mode: Mode, memory: &mut Memory, only: Option<&str>, counted:
             Err(reason) if facts.stale || mode == (Mode::Manual { all: true }) => Verdict::Skip(reason.clone()),
             _ => match decide(mode, auto, &facts, || pane.agent == Agent::Claude && transcript.as_deref().is_some_and(|path| !memory.background(path, start, at).is_empty())) {
                 Verdict::Restart if transcript.is_none() => Verdict::Skip("its conversation file is not found".to_string()),
-                other => with_screen(mode, other, pane.agent, || crate::typing::screen(&pane.pane).ok()),
+                other => with_screen(mode, other, pane.agent, &pane.title, || crate::typing::screen(&pane.pane).ok()),
             },
         };
         let verdict = match verdict {
@@ -1479,11 +1481,14 @@ mod tests {
     #[test]
     fn a_codex_on_a_start_up_question_or_with_a_draft_is_never_ended_and_an_empty_composer_is() {
         let update = "  Update available · 0.163.0 → 0.164.0\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version";
-        assert_eq!(with_screen(Mode::Manual { all: false }, Verdict::Restart, Agent::Codex, || Some(update.to_string())), Verdict::Busy, "its question is the user's to answer, even on kebbie restart by hand");
-        assert_eq!(with_screen(ROUTINE, Verdict::Restart, Agent::Codex, || Some("› Ask Codex to do anything\n\n  100% context left".to_string())), Verdict::Restart);
-        assert_eq!(with_screen(ROUTINE, Verdict::Restart, Agent::Codex, || Some("› fix the flaky test\n\n  100% context left".to_string())), Verdict::Drafted);
-        assert_eq!(with_screen(ROUTINE, Verdict::Restart, Agent::Codex, || None), Verdict::Drafted, "a screen that cannot be read may hold a draft");
-        assert_eq!(with_screen(ROUTINE, Verdict::Busy, Agent::Codex, || panic!("a busy session's screen is not read")), Verdict::Busy);
+        assert_eq!(with_screen(Mode::Manual { all: false }, Verdict::Restart, Agent::Codex, "", || Some(update.to_string())), Verdict::Busy, "its question is the user's to answer, even on kebbie restart by hand");
+        assert_eq!(with_screen(ROUTINE, Verdict::Restart, Agent::Codex, "", || Some("› Ask Codex to do anything\n\n  100% context left".to_string())), Verdict::Restart);
+        assert_eq!(with_screen(ROUTINE, Verdict::Restart, Agent::Codex, "", || Some("› fix the flaky test\n\n  100% context left".to_string())), Verdict::Drafted);
+        assert_eq!(with_screen(ROUTINE, Verdict::Restart, Agent::Codex, "", || None), Verdict::Drafted, "a screen that cannot be read may hold a draft");
+        assert_eq!(with_screen(ROUTINE, Verdict::Busy, Agent::Codex, "", || panic!("a busy session's screen is not read")), Verdict::Busy);
+        let approval = "  Would you like to run the following command?\n\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)";
+        assert_eq!(with_screen(ROUTINE, Verdict::Restart, Agent::Codex, "[ ! ] Action Required | Fix the flaky checkout test | wt1.app", || Some(approval.to_string())), Verdict::Busy, "herdr calls a Codex on an approval idle, and a restart would end it under the question");
+        assert_eq!(with_screen(Mode::Manual { all: false }, Verdict::Restart, Agent::Codex, "[ . ] Action Required | wt1.app", || None), Verdict::Busy, "even on kebbie restart by hand");
         assert_eq!(restarted_said("flaky@app", Agent::Codex, &[KEBBIE_UPDATE.to_string()], &tasks::Started::Ready), "Restarted flaky@app with codex resume, as it ran older code (kebbie update).");
         assert!(restarted_said("flaky@app", Agent::Codex, &[KEBBIE_UPDATE.to_string()], &tasks::Started::AwaitsHooks).contains("; Codex there asks whether to trust the hooks"));
     }

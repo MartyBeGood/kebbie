@@ -165,9 +165,10 @@ const USAGE: &str = "kebbie: herding coding agents in herdr
   kebbie decide <task> <answer>   the lead's own answer to a task's question about how, not what, whether or not you
                                   are here; it closes the question on the board and is recorded for your return when away
   kebbie choose <task> <n> --prompt <id>
-                                  answer the prompt a task's Claude shows in its own pane (a permission or trust question)
-                                  with option <n>, as kebbie told the lead; refused when that prompt is no longer on its
-                                  screen; the user's, or the lead's on the user's explicit choice
+                                  answer the prompt a task's Claude or Codex shows in its own pane (a permission or trust
+                                  question, a Codex approval) with option <n> or the key it shows in brackets, as kebbie
+                                  told the lead; refused when that prompt is no longer on its screen; the user's, or the
+                                  lead's on the user's explicit choice
   kebbie defer <task>             the lead keeps a task's question for the user while they are away
   kebbie away [on|off]            away mode, the user's switch (also A on the board): the lead settles how-questions,
                                   keeps what-questions, and writes a summary when you are back

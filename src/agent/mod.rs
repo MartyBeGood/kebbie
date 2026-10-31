@@ -137,6 +137,13 @@ impl Agent {
         }
     }
 
+    pub(crate) fn screens(self) -> &'static claude::Screens {
+        match self {
+            Agent::Claude => &claude::CLAUDE,
+            Agent::Codex => &codex::SCREENS,
+        }
+    }
+
     pub fn draft(self, screen: &str) -> crate::typing::Draft {
         match self {
             Agent::Claude => crate::typing::draft(screen),

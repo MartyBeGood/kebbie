@@ -259,9 +259,12 @@ pub fn uninstall(home: &Path) -> Result<bool> {
 // Codex's update screen stands before its composer, so the sessions kebbie starts never check; config.toml stays the user's.
 const NO_UPDATE_CHECK: &str = "check_for_update_on_startup=false";
 
+// kebbie reads a waiting view and the thread title from Codex's default title items (tui/src/chatwidget/status_surfaces.rs), so the sessions it starts show those whatever the user's tui.terminal_title names.
+const TITLE_ITEMS: &str = "tui.terminal_title=[\"activity\",\"thread-name\",\"project-name\"]";
+
 // kebbie's plugin runs only in the sessions kebbie starts: enabled, and its three hooks trusted by hash, for that invocation alone.
-pub fn plugin_args() -> [String; 6] {
-    ["-c".to_string(), enable_override(), "-c".to_string(), trust_override(), "-c".to_string(), NO_UPDATE_CHECK.to_string()]
+pub fn plugin_args() -> [String; 8] {
+    ["-c".to_string(), enable_override(), "-c".to_string(), trust_override(), "-c".to_string(), NO_UPDATE_CHECK.to_string(), "-c".to_string(), TITLE_ITEMS.to_string()]
 }
 
 fn access(mode: Option<&str>, sandboxed: bool) -> Vec<String> {
@@ -368,7 +371,7 @@ pub fn with_role(args: &[String]) -> Vec<String> {
     let mut kept = Vec::new();
     let mut words = args.iter().peekable();
     while let Some(word) = words.next() {
-        let ours = |value: &String| value == &enable_override() || value == OLD_ENABLE || value == NO_UPDATE_CHECK || value.starts_with("hooks.state=");
+        let ours = |value: &String| value == &enable_override() || value == OLD_ENABLE || value == NO_UPDATE_CHECK || value.starts_with("hooks.state=") || value.starts_with("tui.terminal_title=");
         if (word == "-c" || word == "--config") && words.peek().is_some_and(|value| ours(value)) {
             words.next();
         } else {
@@ -633,9 +636,17 @@ const ACTION_REQUIRED: [&str; 2] = ["[ ! ] Action Required", "[ . ] Action Requi
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const MICROPHONE: char = '●';
 
+pub fn terminal_title(agent: &Value) -> &str {
+    agent["terminal_title"].as_str().or(agent["terminal_title_stripped"].as_str()).unwrap_or_default()
+}
+
 fn after_action_prefix(title: &str) -> Option<&str> {
     let title = title.trim_start().trim_start_matches(MICROPHONE).trim_start();
     ACTION_REQUIRED.iter().find_map(|prefix| title.strip_prefix(prefix)).map(|rest| rest.trim_start().trim_start_matches('|'))
+}
+
+pub fn requires_action(title: &str) -> bool {
+    after_action_prefix(title).is_some()
 }
 
 // Codex's default title items are activity, thread-name and project-name, joined by " | " and a spinner by a space (tui/src/bottom_pane/title_setup.rs), so the thread title is all but the last part, spinners trimmed.
@@ -654,14 +665,37 @@ pub fn kept_thread_title(kept: &str) -> Option<Option<String>> {
     Some(thread_title(&format!("{} |{rest}", ACTION_REQUIRED[0])))
 }
 
-// herdr calls a Codex on a start-up question idle, so a waiting Codex that has taken no prompt yet has its screen read and counts as blocked when it asks; past its first prompt the same words on screen, as in code or a diff, are no question.
+#[derive(Debug, PartialEq)]
+pub enum Waits {
+    OnView,
+    OnStartUp(Started),
+}
+
+// The one place that decides what a Codex waits on: a view titled Action Required at any point in its session, a start-up question on its screen only while unprompted, as past its first prompt the same words on screen, in code or a diff, are no question.
+pub fn waits_on(title: &str, unprompted: impl FnOnce() -> bool, screen: impl FnOnce() -> Option<String>) -> Option<Waits> {
+    if requires_action(title) {
+        return Some(Waits::OnView);
+    }
+    if !unprompted() {
+        return None;
+    }
+    screen().as_deref().and_then(startup_question).map(Waits::OnStartUp)
+}
+
+// herdr calls a Codex idle on a waiting view and on a start-up question alike, so kebbie marks it blocked, with what it asks on a start-up question.
 pub fn with_question(mut agent: Value, unprompted: impl FnOnce() -> bool, read: impl FnOnce(&str) -> Option<String>) -> Value {
+    if super::Agent::of(&agent) != Some(super::Agent::Codex) {
+        return agent;
+    }
     let waiting = !matches!(agent["agent_status"].as_str(), Some("working" | "blocked"));
-    if super::Agent::of(&agent) == Some(super::Agent::Codex) && waiting && unprompted()
-        && let Some(asks) = agent["pane_id"].as_str().and_then(read).as_deref().and_then(startup_question).and_then(|asked| asked.asks())
-    {
-        agent["agent_status"] = json!("blocked");
-        agent[ASKS_KEY] = json!(asks);
+    let pane = agent["pane_id"].as_str().map(str::to_string);
+    match waits_on(terminal_title(&agent), || waiting && unprompted(), || pane.as_deref().and_then(read)) {
+        Some(Waits::OnView) => agent["agent_status"] = json!("blocked"),
+        Some(Waits::OnStartUp(asked)) => if let Some(asks) = asked.asks() {
+            agent["agent_status"] = json!("blocked");
+            agent[ASKS_KEY] = json!(asks);
+        },
+        None => {}
     }
     agent
 }
@@ -674,7 +708,17 @@ pub(crate) fn trust_selected(screen: &str) -> bool {
     screen.lines().any(|line| line.trim_start().starts_with('›') && line.contains("Trust and continue"))
 }
 
-pub(crate) const SCREENS: Screens = Screens { kind: "codex", name: "Codex", asks_trust, trust_selected, toward_trust: "up", held: |screen| startup_question(screen).filter(|asked| *asked != Started::AwaitsTrust), running: |_| Started::Ready, input_shown: |screen| draft(screen) != Draft::Unreadable };
+// Codex 0.163 opens a view that waits on the user at one of these lines: the approval overlay's titles (tui/src/bottom_pane/approval_overlay.rs), a verification's (user_verification.rs), and the count over a question or a form's field (request_user_input, mcp_server_elicitation.rs).
+const VIEW_TITLES: [&str; 3] = ["Would you like to", "Do you want to approve", "needs your approval"];
+const VIEW_COUNTS: [&str; 2] = ["Question ", "Field "];
+
+fn opens_view(line: &str) -> bool {
+    VIEW_TITLES.iter().any(|title| line.contains(title))
+        || VIEW_COUNTS.iter().any(|count| line.strip_prefix(count).and_then(|rest| rest.split_once('/')).is_some_and(|(at, _)| !at.is_empty() && at.chars().all(|character| character.is_ascii_digit())))
+}
+
+// Codex focuses a list's option with › (tui/src/bottom_pane/list_selection_view.rs) and opens its transcript lines with •.
+pub(crate) const SCREENS: Screens = Screens { kind: "codex", name: "Codex", asks_trust, trust_selected, toward_trust: "up", held: |screen| startup_question(screen).filter(|asked| *asked != Started::AwaitsTrust), running: |_| Started::Ready, input_shown: |screen| draft(screen) != Draft::Unreadable, focus: '›', said: '•', opens: opens_view, keyed: true };
 
 pub fn start(name: &str, pane: &str, args: &[&str], trusted: bool) -> Result<Started> {
     super::claude::start_with(&SCREENS, name, pane, args, trusted)
@@ -1099,6 +1143,31 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_titled_action_required_waits_on_an_approval_at_any_point_in_its_session() {
+        for title in ["[ ! ] Action Required | Fix the flaky checkout test | wt1.app", "[ . ] Action Required | Fix the flaky checkout test | wt1.app", "● [ ! ] Action Required | wt1.app"] {
+            let agent = with_question(json!({ "agent": "codex", "pane_id": "w1:p1", "agent_status": "idle", "terminal_title": title }), || panic!("the title says it, whatever the prompt"), |_| panic!("the title says it, without a read of the screen"));
+            assert_eq!((agent["agent_status"].as_str(), agent.get(ASKS_KEY)), (Some("blocked"), None), "{title}: tui/src/chatwidget/status_surfaces.rs blinks between both prefixes");
+        }
+        let working = with_question(json!({ "agent": "codex", "pane_id": "w1:p1", "agent_status": "idle", "terminal_title": "⠋ Fix the flaky checkout test | wt1.app" }), || false, |_| None);
+        assert_eq!(working["agent_status"].as_str(), Some("idle"));
+        let claude = with_question(json!({ "agent": "claude", "pane_id": "w1:p1", "agent_status": "idle", "terminal_title": "[ ! ] Action Required | x | y" }), || false, |_| None);
+        assert_eq!(claude["agent_status"].as_str(), Some("idle"), "only Codex titles itself so");
+        assert_eq!(waits_on("[ ! ] Action Required | x | y", || panic!("a view is read from the title alone"), || None), Some(Waits::OnView));
+        assert_eq!(waits_on("x | y", || true, || Some(UPDATE.to_string())), Some(Waits::OnStartUp(Started::AwaitsUpdate)));
+        assert_eq!(waits_on("x | y", || false, || panic!("a Codex past its first prompt has no screen read for start-up questions")), None);
+    }
+
+    #[test]
+    fn the_codex_sessions_kebbie_starts_title_their_terminal_with_codexs_default_items() {
+        let args = start_args(None, &profile(None, None), "billing@app", true, None, &Session::New("x".to_string()));
+        assert!(after(&args, "-c").contains(&"tui.terminal_title=[\"activity\",\"thread-name\",\"project-name\"]"), "config/src/types.rs: when unset the TUI shows activity, thread-name and project-name; a user's own list would hide Action Required or the thread title: {args:?}");
+        let parsed: toml::Table = TITLE_ITEMS.replacen("tui.terminal_title=", "items = ", 1).parse().unwrap();
+        assert_eq!(parsed["items"].as_array().map(Vec::len), Some(3), "the value parses as a TOML list");
+        let restarted = with_role(&with_role(&args));
+        assert_eq!(restarted.iter().filter(|word| *word == TITLE_ITEMS).count(), 1, "a restart keeps it once: {restarted:?}");
+    }
+
+    #[test]
     fn codexs_terminal_title_gives_the_task_its_thread_title_alone() {
         for (title, thread) in [
             ("[ ! ] Action Required | Fix the flaky checkout test | wt1.app", Some("Fix the flaky checkout test")),
@@ -1114,6 +1183,7 @@ mod tests {
         ] {
             assert_eq!(thread_title(title).as_deref(), thread, "{title}: the default items are activity, thread-name and project-name (tui/src/chatwidget/status_surfaces.rs)");
         }
+        assert!(requires_action("[ ! ] Action Required | x | y") && !requires_action("Action Required | x | y"));
         assert_eq!(kept_thread_title("Action Required | Fix the flaky checkout test | wt1.app"), Some(Some("Fix the flaky checkout test".to_string())), "a kept title loses its [ ! ] to readable()");
         assert_eq!(kept_thread_title("Action Required | wt1.app"), Some(None));
         assert_eq!(kept_thread_title("Fix the flaky checkout test"), None, "any other kept title stays as it is");

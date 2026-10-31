@@ -66,7 +66,7 @@ pub struct Agent {
     pub status: String,
     pub title: String,
     pub context: Option<String>,
-    pub answer: Option<String>,
+    pub answer: String,
 }
 
 #[derive(Clone)]
@@ -80,7 +80,12 @@ pub struct Git {
     pub head: Option<String>,
 }
 
-pub const ANSWER_IN_SPACE: &str = "answer Claude's prompt in its Space or through the lead";
+// How a prompt in the agent's own pane is answered, which the board shows while it waits there.
+pub fn answer_in_space(agent: crate::agent::Agent) -> String {
+    format!("answer {}'s prompt{IN_SPACE}", agent.name())
+}
+
+const IN_SPACE: &str = " in its Space or through the lead";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Queued {
@@ -389,7 +394,7 @@ impl Item {
             return queued.blocked.as_ref().map(|_| "start it anyway or drop the wait");
         }
         if self.blocked_on_a_prompt() {
-            return Some(self.agent.as_ref().and_then(|agent| agent.answer.as_deref()).unwrap_or(ANSWER_IN_SPACE));
+            return self.agent.as_ref().map(|agent| agent.answer.as_str());
         }
         if self.turn_under_way() || self.recovering().is_some() || matches!(self.phase(), Some(Phase::Pushing { .. } | Phase::CiRunning { .. } | Phase::CiRed { .. } | Phase::Closing)) {
             return None;
@@ -409,8 +414,7 @@ impl Item {
             return queued.blocked.as_ref().map(|blocked| format!("{blocked}: start it anyway or drop the wait"));
         }
         if self.blocked_on_a_prompt() {
-            let answer = self.agent.as_ref().and_then(|agent| agent.answer.as_deref()).unwrap_or("answer Claude's prompt");
-            return Some(format!("{answer} · {go} goes there"));
+            return self.agent.as_ref().map(|agent| format!("{} · {go} goes there", agent.answer.trim_end_matches(IN_SPACE)));
         }
         if let Some(landed) = self.landed_note() {
             return Some(landed);
@@ -735,11 +739,10 @@ fn plural(count: usize, noun: &str) -> String {
 
 fn agent_from(value: &Value) -> Agent {
     let shown = value["display_agent"].as_str().or(value["terminal_title_stripped"].as_str());
-    let codex = crate::agent::Agent::of(value) == Some(crate::agent::Agent::Codex);
     let kind = crate::agent::Agent::of(value).unwrap_or(crate::agent::Agent::Claude);
     let title = shown.and_then(|shown| crate::title::clean(Some(kind), shown, "")).unwrap_or_else(|| kind.name().to_string());
     let status = value["agent_status"].as_str().unwrap_or("unknown").to_string();
-    let answer = value[crate::agent::codex::ASKS_KEY].as_str().map(|asks| format!("answer Codex in its Space: it asks {asks}"));
+    let answer = value[crate::agent::codex::ASKS_KEY].as_str().map_or_else(|| answer_in_space(kind), |asks| format!("answer {} in its Space: it asks {asks}", kind.name()));
     Agent { pane: value["pane_id"].as_str().unwrap_or_default().to_string(), status, title, context: value["tokens"]["ctx"].as_str().map(str::to_string), answer }
 }
 
@@ -1010,7 +1013,7 @@ pub(crate) mod tests {
     pub(crate) fn task(status: Option<&str>, report: Option<&str>, ahead: usize) -> Item {
         let mut item = Item {
             review: None, verdict: None, rules: None, permit: None, follows: false, bypass: false, profile: Some(crate::profiles::TASK.to_string()), server: false, worker: false, url: None, name: "billing".to_string(), title: None, place: "web".to_string(), repo: None, path: None, workspace: None,
-            agent: status.map(|status| Agent { pane: "w1:p1".to_string(), status: status.to_string(), title: String::new(), context: None, answer: None }),
+            agent: status.map(|status| Agent { pane: "w1:p1".to_string(), status: status.to_string(), title: String::new(), context: None, answer: answer_in_space(crate::agent::Agent::Claude) }),
             git: Some(Git { upstream: "origin/main".to_string(), ahead, behind: 0, changed: 0, uncommitted: 0, approved: true, head: None }),
             report: report.map(|state| Message {
                 id: "1".to_string(), at: 0, from: "billing@web".to_string(), to: LEAD_LABEL.to_string(), text: "plan written".to_string(), held: false,
@@ -1255,7 +1258,7 @@ pub(crate) mod tests {
     }
 
     fn at(item: &mut Item, status: Option<&str>) -> Group {
-        item.agent = status.map(|status| Agent { pane: "w1:p1".to_string(), status: status.to_string(), title: String::new(), context: None, answer: None });
+        item.agent = status.map(|status| Agent { pane: "w1:p1".to_string(), status: status.to_string(), title: String::new(), context: None, answer: answer_in_space(crate::agent::Agent::Claude) });
         item.group()
     }
 
@@ -1526,8 +1529,7 @@ pub(crate) mod tests {
         item.agent.as_mut().unwrap().status = "working".to_string();
         assert_eq!(item.next_for_you(), None);
         item.agent.as_mut().unwrap().status = "blocked".to_string();
-        assert_eq!(item.next_for_you(), Some(ANSWER_IN_SPACE), "a prompt in its pane outranks the last report");
-        assert_eq!(ANSWER_IN_SPACE, "answer Claude's prompt in its Space or through the lead");
+        assert_eq!(item.next_for_you(), Some("answer Claude's prompt in its Space or through the lead"), "a prompt in its pane outranks the last report");
     }
 
     #[test]
@@ -1653,7 +1655,18 @@ pub(crate) mod tests {
         let titled = agent_from(&json!({ "terminal_title_stripped": "wt1.app" }));
         assert_eq!(titled.title, "Wt1.app", "the board shows every title as title::clean reads it");
         let codex = agent_from(&json!({ "agent": "codex", "terminal_title_stripped": "wt1.app" }));
-        assert_eq!((codex.title.as_str(), codex.answer), ("Codex", None), "a Codex titled with its project alone has named no thread yet");
+        assert_eq!(codex.title, "Codex", "a Codex titled with its project alone has named no thread yet");
+    }
+
+    #[test]
+    fn a_codex_task_on_an_approval_waits_under_needs_you_answered_in_its_space_or_through_the_lead() {
+        let mut item = task(Some("idle"), None, 0);
+        let herdr = json!({ "agent": "codex", "pane_id": "w1:p1", "agent_status": "idle", "terminal_title": "[ ! ] Action Required | Fix the flaky checkout test | wt1.app", "terminal_title_stripped": "[ ! ] Action Required | Fix the flaky checkout test | wt1.app" });
+        item.agent = Some(agent_from(&crate::agent::codex::with_question(herdr, || false, |_| None)));
+        assert_eq!(item.group(), Group::NeedsYou, "herdr calls a Codex on its approval idle");
+        assert_eq!(item.agent.as_ref().unwrap().title, "Fix the flaky checkout test");
+        assert_eq!(item.next_for_you(), Some("answer Codex's prompt in its Space or through the lead"));
+        assert_eq!(item.wanted("g").as_deref(), Some("answer Codex's prompt · g goes there"), "the row says it in a few words, as for Claude");
     }
 
     #[test]

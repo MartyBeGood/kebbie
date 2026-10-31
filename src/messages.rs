@@ -1349,7 +1349,7 @@ mod tests {
     use super::*;
 
     fn session(pane: Option<&str>, status: Option<&str>) -> Session {
-        Session { address: "billing@web".to_string(), task: Some("billing".to_string()), pane: pane.map(str::to_string), status: status.map(str::to_string), agent: pane.map(|_| crate::agent::Agent::Claude) }
+        Session { address: "billing@web".to_string(), task: Some("billing".to_string()), pane: pane.map(str::to_string), status: status.map(str::to_string), agent: pane.map(|_| crate::agent::Agent::Claude), asks: None }
     }
 
     #[test]
@@ -1404,7 +1404,7 @@ mod tests {
     #[test]
     fn a_hand_over_its_claude_did_not_take_is_typed_again_once_its_turn_ends_unless_it_took_it_after_all() {
         let dir = state("hand-again");
-        let task = |status: &str| Session { address: "billing@web".to_string(), task: Some("billing".to_string()), pane: Some("p_1".to_string()), status: Some(status.to_string()), agent: Some(crate::agent::Agent::Claude) };
+        let task = |status: &str| Session { address: "billing@web".to_string(), task: Some("billing".to_string()), pane: Some("p_1".to_string()), status: Some(status.to_string()), agent: Some(crate::agent::Agent::Claude), asks: None };
         let typed = std::cell::RefCell::new(Vec::new());
         let mut type_into = |_: &str, text: &str, _: &str| { typed.borrow_mut().push(text.to_string()); Ok(Via::Typed) };
         hand_to_in(&dir, "billing@web", "CI failed: fix it", &[task("idle")], &mut type_into).unwrap();
@@ -1627,7 +1627,7 @@ mod tests {
             crate::typing::Draft::Typed(_) => Err(crate::typing::Refused::Draft),
             crate::typing::Draft::Unreadable => Err(crate::typing::Refused::Unreadable),
         };
-        let session = |status: &str| Session { address: "billing@app".to_string(), task: Some("billing".to_string()), pane: Some("p_1".to_string()), status: Some(status.to_string()), agent: Some(crate::agent::Agent::Claude) };
+        let session = |status: &str| Session { address: "billing@app".to_string(), task: Some("billing".to_string()), pane: Some("p_1".to_string()), status: Some(status.to_string()), agent: Some(crate::agent::Agent::Claude), asks: None };
         assert_eq!(flush_held_in(&dir, &[session("blocked")], &mut type_into, &|_, _| false, &|_, _| true).unwrap(), 0, "a Claude herdr calls blocked is not typed into");
         assert_eq!(flush_held_in(&dir, &[session("idle")], &mut type_into, &|_, _| false, &|_, _| true).unwrap(), 0, "the trust prompt is no input box");
         assert_eq!(flush_held_in(&dir, &[session("idle")], &mut type_into, &|_, _| false, &|_, _| true).unwrap(), 0, "the user's draft is never typed over");
@@ -1656,7 +1656,7 @@ mod tests {
         hold_prompt_in(&dir, "billing@app", "Fix the flaky test").unwrap();
         let typed = std::cell::RefCell::new(Vec::new());
         let mut type_into = |_: &str, text: &str, _: &str| { typed.borrow_mut().push(text.to_string()); Ok(Via::Typed) };
-        let session = Session { address: "billing@app".to_string(), task: Some("billing".to_string()), pane: Some("p_1".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude) };
+        let session = Session { address: "billing@app".to_string(), task: Some("billing".to_string()), pane: Some("p_1".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude), asks: None };
         assert_eq!(flush_held_in(&dir, &[session], &mut type_into, &|address, _| address == "billing@app", &|_, _| true).unwrap(), 0);
         assert!(typed.into_inner().is_empty(), "a second copy of the prompt would start a second turn");
         assert!(!load_in(&dir)[0].held);
@@ -1683,7 +1683,7 @@ mod tests {
         let typed = std::cell::RefCell::new(Vec::new());
         let mut type_into = |_: &str, text: &str, _: &str| { typed.borrow_mut().push(text.to_string()); Ok(Via::Typed) };
         let heard = |_: &str, _: u64| typed.borrow().iter().any(|text: &String| text.starts_with("[from "));
-        let session = Session { address: "billing@app".to_string(), task: Some("billing".to_string()), pane: Some("p_1".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude) };
+        let session = Session { address: "billing@app".to_string(), task: Some("billing".to_string()), pane: Some("p_1".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude), asks: None };
         assert_eq!(flush_held_in(&dir, &[session], &mut type_into, &heard, &|_, _| true).unwrap(), 2, "the tell landing in the transcript first would have dropped the prompt");
         assert_eq!(typed.borrow()[0], "Fix the flaky test", "the task's prompt goes in ahead of what others told it");
         fs::remove_dir_all(&dir).unwrap();
@@ -1703,7 +1703,7 @@ mod tests {
         assert!(hold_again_in(&dir, LEAD_LABEL, &sent).unwrap());
         let typed = std::cell::RefCell::new(Vec::new());
         let mut type_into = |_: &str, text: &str, _: &str| { typed.borrow_mut().push(text.to_string()); Ok(Via::Typed) };
-        let lead = |status: &str| Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("p_lead".to_string()), status: Some(status.to_string()), agent: Some(crate::agent::Agent::Claude) };
+        let lead = |status: &str| Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("p_lead".to_string()), status: Some(status.to_string()), agent: Some(crate::agent::Agent::Claude), asks: None };
         assert_eq!(flush_held_in(&dir, &[lead("working")], &mut type_into, &|_, _| false, &|_, _| true).unwrap(), 0, "typed mid-turn it would sit in the box again");
         assert_eq!(load_in(&dir)[0].why.as_deref(), Some(LEAD_BUSY));
         assert_eq!(flush_held_in(&dir, &[lead("idle")], &mut type_into, &|_, _| false, &|_, _| true).unwrap(), 1);
@@ -1720,7 +1720,7 @@ mod tests {
         rules_check(&dir, "r3", "billing@app", "held");
         let typed = std::cell::RefCell::new(Vec::new());
         let mut type_into = |_: &str, text: &str, _: &str| { typed.borrow_mut().push(text.to_string()); Ok(Via::Typed) };
-        let lead = Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("p_lead".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude) };
+        let lead = Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("p_lead".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude), asks: None };
         let wanted = |message: &Message, _: &Session| !message.text.starts_with("search@app");
         assert_eq!(flush_held_in(&dir, &[lead], &mut type_into, &|_, _| false, &wanted).unwrap(), 1);
         assert_eq!(typed.into_inner().len(), 1, "billing's older request and search's approved one are dropped, billing's newest goes");
@@ -2105,7 +2105,7 @@ mod tests {
         let log = fs::read_to_string(log_in(&dir)).unwrap();
         assert!(log.contains("\"via\":\"inbox\"") && !load_in(&dir)[0].held, "{log}");
         assert!(!typed_file(&dir, "billing@web").exists(), "nothing sits in its input box");
-        let shop = Session { address: "shop@web".to_string(), task: Some("shop".to_string()), pane: Some("w1:p2".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude) };
+        let shop = Session { address: "shop@web".to_string(), task: Some("shop".to_string()), pane: Some("w1:p2".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude), asks: None };
         let mut typed = |_: &str, _: &str, _: &str| Ok(Via::Typed);
         send_locked_in(&dir, LEAD_LABEL, &[&shop], "hi", std::slice::from_ref(&shop), None, None, &mut typed).unwrap();
         assert!(fs::read_to_string(log_in(&dir)).unwrap().contains("\"via\":\"typed\""), "a typed delivery says so too");
@@ -2116,7 +2116,7 @@ mod tests {
     fn while_the_user_is_away_a_held_rules_check_goes_to_a_working_lead_whose_inbox_is_live_and_waits_its_turn_otherwise() {
         let dir = state("inbox-busy");
         crate::permit::set_away_in(&dir, true, 1).unwrap();
-        let lead = Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("w0:p1".to_string()), status: Some("working".to_string()), agent: Some(crate::agent::Agent::Claude) };
+        let lead = Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("w0:p1".to_string()), status: Some("working".to_string()), agent: Some(crate::agent::Agent::Claude), asks: None };
         write_log(&dir, &[json!({ "id": "r1", "at": 1, "from": "kebbie", "to": LEAD_LABEL, "text": "billing@web is ready at a1b2c3d: check it", "state": "held", "kind": RULES_KIND })]);
         let live = |session: &Session| crate::inbox::live_in(&dir, session.pane.as_deref().unwrap(), &session.address, &s1);
         crate::inbox::record_in(&dir, LEAD_LABEL, Some(&crate::inbox::tests::short_socket().to_string_lossy()), None, Some("s-1")).unwrap();
@@ -2134,7 +2134,7 @@ mod tests {
     #[test]
     fn a_rules_check_the_inbox_took_but_the_transcript_never_shows_is_held_again() {
         let dir = state("inbox-lost");
-        let lead = Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("w0:p1".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude) };
+        let lead = Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("w0:p1".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude), asks: None };
         let reader = listen(&dir, LEAD_LABEL);
         let check = "billing@web is ready at a1b2c3d: check it";
         let mut type_into = |pane: &str, text: &str, address: &str| crate::inbox::prompt_in(&dir, pane, text, address, &s1, &mut |_, _, _| panic!("the inbox takes it"));
@@ -2161,7 +2161,7 @@ mod tests {
         let dir = state("fyi");
         let mut live = |_: &str, _: Option<&str>| -> Result<()> { panic!("not live while the user is here") };
         fyi_or_live_in(&dir, "The user pushed billing@app: 1 commit to main (a1b2c3d Add refunds).", Some("push"), &mut live).unwrap();
-        let lead = Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("w0:p1".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude) };
+        let lead = Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("w0:p1".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude), asks: None };
         notice_locked_in(&dir, &lead, "kebbie was updated to 0.26.0", std::slice::from_ref(&lead), &mut |_, _, _| panic!("a notice is not typed into the lead")).unwrap();
         assert_eq!(flush_held_in(&dir, std::slice::from_ref(&lead), &mut |_, _, _| panic!("nothing held"), &|_, _| false, &|_, _| true).unwrap(), 0);
         let messages = load_in(&dir);
@@ -2212,7 +2212,7 @@ mod tests {
         let told = std::cell::RefCell::new(Vec::new());
         fyi_or_live_in(&dir, "The user pushed billing@app", Some("push"), &mut |text, kind| { told.borrow_mut().push((text.to_string(), kind.map(str::to_string))); Ok(()) }).unwrap();
         assert_eq!(told.borrow().as_slice(), [("The user pushed billing@app".to_string(), Some("push".to_string()))], "it tells the user through kebbie notify, so it must hear it now");
-        let lead = Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("w0:p1".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude) };
+        let lead = Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("w0:p1".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude), asks: None };
         let typed = std::cell::RefCell::new(Vec::new());
         notice_locked_in(&dir, &lead, "kebbie was updated", std::slice::from_ref(&lead), &mut |_, text, _| { typed.borrow_mut().push(text.to_string()); Ok(Via::Inbox) }).unwrap();
         assert_eq!(typed.borrow().as_slice(), [format!("[from kebbie] kebbie was updated\n  {LEAD_CUE}")]);
@@ -2223,7 +2223,7 @@ mod tests {
     #[test]
     fn the_lead_is_asked_to_check_a_task_at_a_sha_once_while_that_check_is_pending() {
         let dir = state("rules-once");
-        let lead = Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("w0:p1".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude) };
+        let lead = Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("w0:p1".to_string()), status: Some("idle".to_string()), agent: Some(crate::agent::Agent::Claude), asks: None };
         let typed = std::cell::RefCell::new(Vec::new());
         let mut type_into = |_: &str, text: &str, _: &str| { typed.borrow_mut().push(text.to_string()); Ok(Via::Typed) };
         let check = |sha: &str| format!("billing@web is ready at {sha}: check its commits against `rules` (git -C /w log -p origin/main..HEAD).");
@@ -2235,7 +2235,7 @@ mod tests {
         assert!(typed.borrow()[1].contains("ready at e4f5a6b"), "a new sha is a new check");
         ask_lead_in(&dir, &check("e4f5a6b"), std::slice::from_ref(&lead), &mut type_into, &|_, _| false).unwrap();
         assert_eq!(typed.borrow().len(), 3, "a check delivered but never taken was lost, so it is asked again");
-        let held = Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("w0:p1".to_string()), status: Some("blocked".to_string()), agent: Some(crate::agent::Agent::Claude) };
+        let held = Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("w0:p1".to_string()), status: Some("blocked".to_string()), agent: Some(crate::agent::Agent::Claude), asks: None };
         ask_lead_in(&dir, &check("0a0b0c0"), std::slice::from_ref(&held), &mut type_into, &|_, _| false).unwrap();
         ask_lead_in(&dir, &check("0a0b0c0"), std::slice::from_ref(&held), &mut type_into, &|_, _| false).unwrap();
         assert_eq!(load_in(&dir).iter().filter(|message| message.text.contains("0a0b0c0")).count(), 1, "a check still held is not queued twice");
@@ -2283,7 +2283,7 @@ mod tests {
     }
 
     fn lead_at(status: &str) -> Session {
-        Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("w0:p1".to_string()), status: Some(status.to_string()), agent: Some(crate::agent::Agent::Claude) }
+        Session { address: LEAD_LABEL.to_string(), task: None, pane: Some("w0:p1".to_string()), status: Some(status.to_string()), agent: Some(crate::agent::Agent::Claude), asks: None }
     }
 
     #[test]

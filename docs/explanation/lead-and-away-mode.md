@@ -81,6 +81,8 @@ Every 5 seconds the keeper, or an open board with `[keeper] enabled = false`, re
 
 A Codex task's start-up questions, its sign-in, a new model, the folder's trust and hooks to review, go to the lead as what Codex asks, once per question. The answer is yours, in the task's Space. See [Run a task with Codex](../how-to/run-a-task-with-codex.md#start-the-task).
 
+A Codex task that stops on an approval later, its terminal titled `[ ! ] Action Required`, goes to the lead as a Claude task's prompt does, with the key Codex shows for each option. See [Approvals and choices](../how-to/run-a-task-with-codex.md#approvals-and-choices).
+
 The lead hears of each prompt once. It hears again of a new prompt in the same task, of the same prompt once another showed in between or the task stopped waiting, and of the same prompt asked again after `kebbie choose` answered it.
 
 ## You choose, the lead only relays

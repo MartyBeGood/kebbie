@@ -59,7 +59,7 @@ impl Started {
     }
 }
 
-// What kebbie reads on an agent's screen as it starts, and how herdr knows it.
+// What kebbie reads on an agent's screen, and how herdr knows it: focus marks a menu's focused option, said opens the agent's own transcript lines, opens is a line a menu's question starts at, and keyed is whether an option's "(y)" is a key the menu takes.
 pub(crate) struct Screens {
     pub kind: &'static str,
     pub name: &'static str,
@@ -69,9 +69,13 @@ pub(crate) struct Screens {
     pub held: fn(&str) -> Option<Started>,
     pub running: fn(&str) -> Started,
     pub input_shown: fn(&str) -> bool,
+    pub focus: char,
+    pub said: char,
+    pub opens: fn(&str) -> bool,
+    pub keyed: bool,
 }
 
-const CLAUDE: Screens = Screens { kind: "claude", name: "Claude", asks_trust: |screen| screen.contains("trust this folder"), trust_selected: yes_selected, toward_trust: "down", held: |screen| asks_for_bypass(screen).then_some(Started::AwaitsBypass), running, input_shown: |_| true };
+pub(crate) const CLAUDE: Screens = Screens { kind: "claude", name: "Claude", asks_trust: |screen| screen.contains("trust this folder"), trust_selected: yes_selected, toward_trust: "down", held: |screen| asks_for_bypass(screen).then_some(Started::AwaitsBypass), running, input_shown: |_| true, focus: '❯', said: '⏺', opens: |_| false, keyed: false };
 
 // herdr types the agent's command into the pane's shell, so it is typed only once that shell is idle at its prompt.
 pub fn start_claude(name: &str, pane: &str, args: &[&str], trusted: bool) -> Result<Started> {

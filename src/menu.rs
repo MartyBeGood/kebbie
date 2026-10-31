@@ -35,10 +35,16 @@ struct Row {
     focused: bool,
 }
 
-fn row(line: &str) -> Row {
-    let plain: String = line.trim_end().chars().map(|character| if character == '│' || character == '❯' { ' ' } else { character }).collect();
-    let focused = line.trim_start().trim_start_matches('│').trim_start().starts_with('❯');
+fn row(line: &str, focus: char) -> Row {
+    let plain: String = line.trim_end().chars().map(|character| if character == '│' || character == focus { ' ' } else { character }).collect();
+    let focused = line.trim_start().trim_start_matches('│').trim_start().starts_with(focus);
     Row { indent: plain.chars().take_while(|character| *character == ' ').count(), text: plain.trim().to_string(), focused }
+}
+
+// tab opens the notes of a Codex question's option, so it is no key that chooses one.
+fn key_of(label: &str, agent: Agent) -> Option<&str> {
+    let inner = label.strip_suffix(')')?.rsplit_once(" (")?.1;
+    (agent.screens().keyed && !inner.is_empty() && inner != "tab" && inner.len() <= 5 && inner.chars().all(|character| character.is_ascii_alphanumeric() || character == '-')).then_some(inner)
 }
 
 fn number(text: &str) -> Option<(usize, &str)> {
@@ -46,12 +52,13 @@ fn number(text: &str) -> Option<(usize, &str)> {
     (!digits.is_empty() && digits.len() <= 2 && digits.chars().all(|character| character.is_ascii_digit())).then(|| (digits.parse().unwrap_or(0), rest.trim()))
 }
 
-// Claude's own menus mark the focused option with ❯ at the bottom of the screen; the input box's ❯ sits right under its top rule, and the user's past prompts in the transcript sit above Claude's ⏺ lines.
-pub fn parse(screen: &str) -> Option<Menu> {
+// An agent's own menu marks its focused option at the bottom of the screen; Claude's input box shows the same mark right under its top rule, and the user's past prompts sit above the agent's own transcript lines.
+pub fn parse_for(screen: &str, agent: Agent) -> Option<Menu> {
+    let marks = agent.screens();
     let lines: Vec<&str> = screen.lines().collect();
-    let rows: Vec<Row> = lines.iter().map(|line| row(line)).collect();
+    let rows: Vec<Row> = lines.iter().map(|line| row(line, marks.focus)).collect();
     let floor = (0..rows.len()).rev().filter(|&at| !rows[at].text.is_empty()).nth(BOTTOM_LINES - 1).unwrap_or(0);
-    let floor = rows.iter().rposition(|row| row.text.starts_with('⏺')).map_or(floor, |said| floor.max(said + 1));
+    let floor = rows.iter().rposition(|row| row.text.starts_with(marks.said)).map_or(floor, |said| floor.max(said + 1));
     let at = (floor..rows.len()).rev().find(|&at| rows[at].focused && !rows[at].text.is_empty() && !(at > 0 && is_border(lines[at - 1])))?;
     let indent = rows[at].indent;
     let numbered = number(&rows[at].text).is_some();
@@ -93,7 +100,7 @@ pub fn parse(screen: &str) -> Option<Menu> {
     let mut question = Vec::new();
     let mut cut = false;
     for at in (0..start).rev() {
-        if is_border(lines[at]) || rows[at].text.starts_with('⏺') {
+        if is_border(lines[at]) || rows[at].text.starts_with(marks.said) {
             break;
         }
         if rows[at].text.is_empty() {
@@ -104,13 +111,16 @@ pub fn parse(screen: &str) -> Option<Menu> {
             break;
         }
         question.push(rows[at].text.clone());
+        if (marks.opens)(&rows[at].text) {
+            break;
+        }
     }
     question.reverse();
     Some(Menu { question: question.join("\n"), options, focused, numbered, cut })
 }
 
-pub fn tail(screen: &str) -> String {
-    let lines: Vec<String> = screen.lines().map(|line| row(line).text).filter(|text| !text.is_empty()).collect();
+pub fn tail(screen: &str, agent: Agent) -> String {
+    let lines: Vec<String> = screen.lines().map(|line| row(line, agent.screens().focus).text).filter(|text| !text.is_empty()).collect();
     lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n")
 }
 
@@ -126,14 +136,16 @@ fn indented(text: &str) -> String {
     text.lines().map(|line| format!("  {line}")).collect::<Vec<_>>().join("\n")
 }
 
-pub fn relay_text(address: &str, screen: &str, agent: Agent) -> (String, String) {
-    if agent == Agent::Codex && let Some(asks) = crate::agent::codex::startup_question(screen).and_then(|asked| asked.asks()) {
-        let text = format!("{address} waits on Codex, which asks {asks} before it takes the task's prompt. The answer is the user's, in its Space (g on the board); tell the user.");
+// asks is what a Codex asks on its start-up screen, as with_question read it; any other screen, Codex's start-up words in a command or a diff among them, is relayed as the menu or the lines it shows.
+pub fn relay_text(address: &str, screen: &str, agent: Agent, asks: Option<&str>) -> (String, String) {
+    let name = agent.name();
+    if let Some(asks) = asks {
+        let text = format!("{address} waits on {name}, which asks {asks} before it takes the task's prompt. The answer is the user's, in its Space (g on the board); tell the user.");
         return (hash(&[address, asks]), text);
     }
-    let Some(menu) = parse(screen) else {
-        let tail = tail(screen);
-        let text = format!("{address} waits on its Claude's own prompt, which kebbie could not read as a menu. {READ_FROM_SCREEN} Its screen ends:\n{}\nThe answer is in its Space (g on the board); tell the user.", indented(&tail));
+    let Some(menu) = parse_for(screen, agent) else {
+        let tail = tail(screen, agent);
+        let text = format!("{address} waits on its {name}'s own prompt, which kebbie could not read as a menu. {READ_FROM_SCREEN} Its screen ends:\n{}\nThe answer is in its Space (g on the board); tell the user.", indented(&tail));
         return (hash(&[address, &tail]), text);
     };
     let id = fingerprint(address, &menu);
@@ -144,8 +156,9 @@ pub fn relay_text(address: &str, screen: &str, agent: Agent) -> (String, String)
     }).collect();
     let numbers = if menu.numbered { "" } else { " (the menu shows no numbers; kebbie numbered them)" };
     let more = if menu.cut { "\n  (more above; see its Space)" } else { "" };
+    let keyed = menu.options.iter().find_map(|label| key_of(label, agent)).map_or(String::new(), |key| format!(", or with the key an option shows in brackets in place of its number, as kebbie choose {address} {key} --prompt {id}"));
     let text = format!(
-        "{address} waits on its Claude's own prompt (prompt {id}). {READ_FROM_SCREEN}\nQuestion:{more}\n{}\nOptions{numbers}:\n{}\nPut the question and the options to the user with your recommendation, and answer only on a choice the user types in your chat: kebbie choose {address} <number> --prompt {id}",
+        "{address} waits on its {name}'s own prompt (prompt {id}). {READ_FROM_SCREEN}\nQuestion:{more}\n{}\nOptions{numbers}:\n{}\nPut the question and the options to the user with your recommendation, and answer only on a choice the user types in your chat: kebbie choose {address} <number> --prompt {id}{keyed}",
         indented(&menu.question), options.join("\n")
     );
     (id, text)
@@ -157,12 +170,19 @@ fn told_dir(state: &Path) -> PathBuf {
     state.join("prompts")
 }
 
-pub fn pass(state: &Path, blocked: &[(String, String, Agent)], mut read: impl FnMut(&str) -> Result<String>, mut tell: impl FnMut(&str) -> Result<()>) -> Vec<String> {
+pub struct Blocked {
+    pub address: String,
+    pub pane: String,
+    pub agent: Agent,
+    pub asks: Option<String>,
+}
+
+pub fn pass(state: &Path, blocked: &[Blocked], mut read: impl FnMut(&str) -> Result<String>, mut tell: impl FnMut(&str) -> Result<()>) -> Vec<String> {
     let dir = told_dir(state);
     let mut told = Vec::new();
-    for (address, pane, agent) in blocked {
+    for Blocked { address, pane, agent, asks } in blocked {
         let Ok(screen) = read(pane) else { continue };
-        let (id, text) = relay_text(address, &screen, *agent);
+        let (id, text) = relay_text(address, &screen, *agent, asks.as_deref());
         let file = dir.join(address);
         if fs::read_to_string(&file).is_ok_and(|seen| seen == id) {
             continue;
@@ -174,17 +194,17 @@ pub fn pass(state: &Path, blocked: &[(String, String, Agent)], mut read: impl Fn
     }
     for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with('.') && !blocked.iter().any(|(address, _, _)| *address == name) {
+        if !name.starts_with('.') && !blocked.iter().any(|blocked| blocked.address == name) {
             let _ = fs::remove_file(entry.path());
         }
     }
     told
 }
 
-fn blocked_tasks() -> Result<Vec<(String, String, Agent)>> {
+fn blocked_tasks() -> Result<Vec<Blocked>> {
     Ok(crate::peers::sessions()?.into_iter()
         .filter(|session| session.task.is_some() && session.status.as_deref() == Some("blocked"))
-        .filter_map(|session| Some((session.address, session.pane?, session.agent?)))
+        .filter_map(|session| Some(Blocked { address: session.address, pane: session.pane?, agent: session.agent?, asks: session.asks }))
         .collect())
 }
 
@@ -215,6 +235,7 @@ pub fn keys(menu: &Menu, choice: usize) -> Keys {
 pub struct Pane<'a> {
     pub address: &'a str,
     pub pane: &'a str,
+    pub agent: Agent,
 }
 
 pub struct Sent<'a> {
@@ -224,12 +245,12 @@ pub struct Sent<'a> {
 }
 
 fn current(pane: &Pane, sent: &mut Sent) -> Result<Option<Menu>> {
-    Ok(parse(&(sent.read)(pane.pane)?))
+    Ok(parse_for(&(sent.read)(pane.pane)?, pane.agent))
 }
 
 pub fn choose_with(caller: &Caller, state: &Path, panes: &[Pane], choice: &str, id: &str, sent: &mut Sent) -> Result<String> {
     if !matches!(caller, Caller::User | Caller::Lead) {
-        return Err(format!("answering Claude's prompt in a task is the user's or the lead's on the user's word; {} cannot", crate::permit::describe(caller)));
+        return Err(format!("answering an agent's prompt in a task is the user's or the lead's on the user's word; {} cannot", crate::permit::describe(caller)));
     }
     let mut unread = Vec::new();
     let mut found = None;
@@ -249,8 +270,9 @@ pub fn choose_with(caller: &Caller, state: &Path, panes: &[Pane], choice: &str, 
         }
         return Err(format!("The prompt {id} is not on the task's screen any more: the prompt changed or is gone; read it again (kebbie tells the lead about a new one)"));
     };
-    let choice: usize = choice.parse().ok().filter(|choice| (1..=menu.options.len()).contains(choice))
-        .ok_or_else(|| format!("kebbie choose takes the option's number, 1 to {}", menu.options.len()))?;
+    let keyed = menu.options.iter().position(|label| key_of(label, pane.agent) == Some(choice)).map(|at| at + 1);
+    let choice: usize = choice.parse().ok().or(keyed).filter(|choice| (1..=menu.options.len()).contains(choice))
+        .ok_or_else(|| format!("kebbie choose takes the option's number, 1 to {}, or the key it shows in brackets", menu.options.len()))?;
     let label = &menu.options[choice - 1];
     if takes_text(label) {
         return Err(format!("\"{choice}. {label}\" takes the user's own words, which kebbie never types; it is answered in {}'s Space", pane.address));
@@ -286,11 +308,11 @@ pub fn choose_with(caller: &Caller, state: &Path, panes: &[Pane], choice: &str, 
 }
 
 pub fn choose(task: Option<&str>, choice: Option<&str>, id: Option<&str>) -> Result<String> {
-    const USAGE: &str = "kebbie choose <task> <number> --prompt <id>: the option's number and the prompt's id as kebbie told the lead";
+    const USAGE: &str = "kebbie choose <task> <number> --prompt <id>: the option's number, or the key it shows in brackets, and the prompt's id as kebbie told the lead";
     let (Some(task), Some(choice), Some(id)) = (task, choice, id) else { return Err(USAGE.to_string()) };
     let sessions = crate::peers::sessions()?;
     let found = crate::peers::resolve(task, "", &sessions)?;
-    let panes: Vec<Pane> = found.iter().filter(|session| session.task.is_some()).filter_map(|session| Some(Pane { address: &session.address, pane: session.pane.as_deref()? })).collect();
+    let panes: Vec<Pane> = found.iter().filter(|session| session.task.is_some()).filter_map(|session| Some(Pane { address: &session.address, pane: session.pane.as_deref()?, agent: session.agent.unwrap_or(Agent::Claude) })).collect();
     let mut sent = Sent { read: &mut crate::herdr::read_agent, send: &mut crate::herdr::send_keys, pause: &mut || std::thread::sleep(Duration::from_millis(500)) };
     choose_with(&crate::permit::caller(), &crate::lead::state_dir()?, &panes, choice, id, &mut sent)
 }
@@ -306,91 +328,170 @@ mod tests {
 
     #[test]
     fn a_numbered_permission_prompt_reads_as_its_question_and_options_in_order() {
-        let menu = parse(PERMISSION).unwrap();
+        let menu = parse_for(PERMISSION, Agent::Claude).unwrap();
         assert_eq!(menu.question, "Bash command\ncp ../web/public/images/logo.png Assets/\nCopy the web app's logo into the iOS assets\nDo you want to proceed?");
         assert_eq!(menu.options, ["Yes", "Yes, and don’t ask again for: cp ../web/public/images/*", "No, and tell Claude what to do differently (esc)"]);
         assert_eq!((menu.focused, menu.numbered, menu.cut), (0, true, false));
         let wrapped = PERMISSION.replace("   2. Yes, and don’t ask again for: cp ../web/public/images/*\n", "   2. Yes, and don’t ask again for:\n      cp ../web/public/images/*\n");
-        assert_eq!(parse(&wrapped).unwrap().options[1], "Yes, and don’t ask again for: cp ../web/public/images/*", "a wrapped label is one option");
+        assert_eq!(parse_for(&wrapped, Agent::Claude).unwrap().options[1], "Yes, and don’t ask again for: cp ../web/public/images/*", "a wrapped label is one option");
     }
 
     #[test]
     fn the_boxed_trust_menu_reads_without_numbers_with_its_focus_on_no() {
-        let menu = parse(TRUST).unwrap();
+        let menu = parse_for(TRUST, Agent::Claude).unwrap();
         assert_eq!(menu, Menu { question: "Do you trust this folder?".to_string(), options: vec!["No, exit".to_string(), "Yes, I trust this folder".to_string()], focused: 0, numbered: false, cut: false });
         let moved = TRUST.replace("│ ❯ No, exit  ", "│   No, exit  ").replace("│   Yes, I trust this folder  ", "│ ❯ Yes, I trust this folder  ");
-        assert_eq!(parse(&moved).unwrap().focused, 1);
+        assert_eq!(parse_for(&moved, Agent::Claude).unwrap().focused, 1);
     }
+
+    fn blocked(address: &str, agent: Agent, asks: Option<&str>) -> Vec<Blocked> {
+        vec![Blocked { address: address.to_string(), pane: "w1:p1".to_string(), agent, asks: asks.map(str::to_string) }]
+    }
+
+    const WELCOME: &str = "  Welcome to Codex, OpenAI's command-line coding agent\n\n  Choose how you want to use Codex.\n\n› 1. Sign in with ChatGPT\n\n  Press enter to continue";
 
     #[test]
     fn the_lead_hears_what_codex_asks_on_its_start_up_screen_once() {
-        let screen = "  Welcome to Codex, OpenAI's command-line coding agent\n\n  Choose how you want to use Codex.\n\n› 1. Sign in with ChatGPT\n\n  Press enter to continue";
-        let (id, text) = relay_text("hub@kebbie", screen, Agent::Codex);
+        let asks = Some("you to sign in");
+        let (id, text) = relay_text("hub@kebbie", WELCOME, Agent::Codex, asks);
         assert_eq!(text, "hub@kebbie waits on Codex, which asks you to sign in before it takes the task's prompt. The answer is the user's, in its Space (g on the board); tell the user.");
-        assert_eq!(relay_text("hub@kebbie", &format!("{screen}\n"), Agent::Codex).0, id, "a redraw of the same screen is told once");
+        assert_eq!(relay_text("hub@kebbie", &format!("{WELCOME}\n"), Agent::Codex, asks).0, id, "a redraw of the same screen is told once");
         let state = crate::sh::test_dir("menu-codex");
         let told = RefCell::new(Vec::new());
-        let blocked = vec![("hub@kebbie".to_string(), "w1:p1".to_string(), Agent::Codex)];
+        let blocked = blocked("hub@kebbie", Agent::Codex, asks);
         for _ in 0..2 {
-            pass(&state, &blocked, |_| Ok(screen.to_string()), |text| { told.borrow_mut().push(text.to_string()); Ok(()) });
+            pass(&state, &blocked, |_| Ok(WELCOME.to_string()), |text| { told.borrow_mut().push(text.to_string()); Ok(()) });
         }
         assert_eq!(told.into_inner().len(), 1);
         std::fs::remove_dir_all(state).unwrap();
     }
 
+    // Codex 0.163's approval overlay as herdr read it from a task's pane: title, header, then the options with the keys tui/src/keymap.rs binds by default.
+    const CODEX_APPROVAL: &str = "• Running /Users/u/.local/bin/kebbie report --state blocked --next nothing 'Read-only…\n    + Show details\n\n\n  Would you like to run the following command?\n\n  Environment: local\n\n  Reason: May I record that this task is waiting on the lead?\n\n  $ /Users/u/.local/bin/kebbie report --state blocked --next nothing 'Read-only\n  inspection complete.'\n\n\n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again for commands that start with `/Users/u/.local/bin/kebbie\n     report` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel\n";
+
+    #[test]
+    fn a_codex_approval_is_relayed_to_the_lead_with_its_command_and_its_options_keys() {
+        let menu = parse_for(CODEX_APPROVAL, Agent::Codex).unwrap();
+        assert_eq!(menu.question, "Would you like to run the following command?\nEnvironment: local\nReason: May I record that this task is waiting on the lead?\n$ /Users/u/.local/bin/kebbie report --state blocked --next nothing 'Read-only\ninspection complete.'", "the question opens at the overlay's title, not at Codex's transcript above it");
+        assert_eq!(menu.options, ["Yes, proceed (y)", "Yes, and don't ask again for commands that start with `/Users/u/.local/bin/kebbie report` (p)", "No, and tell Codex what to do differently (esc)"]);
+        assert_eq!((menu.focused, menu.numbered), (0, true));
+        assert_eq!(parse_for(CODEX_APPROVAL, Agent::Claude), None, "Claude's focus mark is ❯, never Codex's ›");
+        let (id, text) = relay_text("hub@kebbie", CODEX_APPROVAL, Agent::Codex, None);
+        assert_eq!(id, fingerprint("hub@kebbie", &menu));
+        for needed in ["hub@kebbie waits on its Codex's own prompt (prompt", "$ /Users/u/.local/bin/kebbie report", "  1. Yes, proceed (y)  (focused)", "  3. No, and tell Codex what to do differently (esc)", &format!("kebbie choose hub@kebbie <number> --prompt {id}, or with the key an option shows in brackets in place of its number, as kebbie choose hub@kebbie y --prompt {id}")] {
+            assert!(text.contains(needed), "{needed}: {text}");
+        }
+        let words = CODEX_APPROVAL.replace("Read-only", "Trust this folder? Trust and continue");
+        assert!(relay_text("hub@kebbie", &words, Agent::Codex, None).1.contains("waits on its Codex's own prompt"), "a command that shows Codex's start-up words is still an approval");
+    }
+
+    #[test]
+    fn a_codex_past_its_first_prompt_is_relayed_by_what_its_screen_shows_never_as_a_start_up_question() {
+        let diff = "• Edited src/agent/codex.rs\n    + screen.contains(\"Welcome to Codex\")\n\n› Ask Codex to do anything\n\n  100% context left";
+        let (_, text) = relay_text("hub@kebbie", diff, Agent::Codex, None);
+        assert!(!text.contains("before it takes the task's prompt") && text.contains("could not read as a menu") && text.contains("Welcome to Codex"), "a view titled Action Required with no menu kebbie reads is relayed with its last lines: {text}");
+        let question = "• I need one decision before I go on.\n\n  Question 1/2 (2 unanswered)\n  Which queue should the refunds use?\n\n  › 1. Sidekiq  The one billing runs\n    2. Solid Queue  Rails' own\n    3. None of the above  Optionally, add details in notes (tab)\n\n  tab to add notes | enter to submit answer | esc to interrupt";
+        let menu = parse_for(question, Agent::Codex).unwrap();
+        assert_eq!(menu.question, "Question 1/2 (2 unanswered)\nWhich queue should the refunds use?", "Codex's request_user_input view opens at its count (tui/src/bottom_pane/request_user_input)");
+        assert_eq!((menu.options.len(), menu.numbered), (3, true));
+        let (_, text) = relay_text("hub@kebbie", question, Agent::Codex, None);
+        assert!(text.contains("  1. Sidekiq  The one billing runs  (focused)") && !text.contains("in place of its number"), "tab is no key that chooses an option: {text}");
+        let field = "  Field 1/1\n  Allow this request?\n  › 1. Allow                   Run the tool and continue\n    2. Cancel                  Cancel this tool call\n";
+        assert_eq!(parse_for(field, Agent::Codex).unwrap().question, "Field 1/1\nAllow this request?", "an MCP server's form (mcp_server_elicitation.rs)");
+    }
+
+    #[test]
+    fn only_a_codex_menu_offers_the_key_an_option_shows_in_brackets() {
+        let claude = PERMISSION.replace("(esc)", "(no)");
+        let (_, text) = relay_text("billing@ios", &claude, Agent::Claude, None);
+        assert!(!text.contains("in place of its number"), "{text}");
+        let id = fingerprint("billing@ios", &parse_for(&claude, Agent::Claude).unwrap());
+        let (result, sent) = chosen(Caller::Lead, &[&claude], "no", &id);
+        assert!(result.unwrap_err().contains("the option's number") && sent.is_empty(), "Claude's menu takes no such key");
+    }
+
+    #[test]
+    fn the_last_lines_of_a_codex_screen_drop_codexs_own_focus_mark() {
+        assert_eq!(tail("  Pick one\n› Type your answer (optional)\n", Agent::Codex), "Pick one\nType your answer (optional)");
+        assert_eq!(tail("❯ copy the images\n", Agent::Claude), "copy the images");
+    }
+
+    #[test]
+    fn the_lead_answers_a_codex_approval_by_its_number_or_its_key() {
+        let id = fingerprint("hub@kebbie", &parse_for(CODEX_APPROVAL, Agent::Codex).unwrap());
+        let state = crate::sh::test_dir("menu-codex-choose");
+        for (choice, digit) in [("1", "1"), ("y", "1"), ("p", "2"), ("esc", "3")] {
+            let mut screens = [CODEX_APPROVAL.to_string(), "• Ran kebbie report".to_string()].into_iter();
+            let mut last = String::new();
+            let mut sent = Vec::new();
+            let mut read = |_: &str| { if let Some(next) = screens.next() { last = next; } Ok(last.clone()) };
+            let mut send = |_: &str, keys: &[&str]| { sent.push(keys.join(" ")); Ok(()) };
+            let panes = [Pane { address: "hub@kebbie", pane: "w1C:p1", agent: Agent::Codex }];
+            let result = choose_with(&Caller::Lead, &state, &panes, choice, &id, &mut Sent { read: &mut read, send: &mut send, pause: &mut || {} });
+            assert!(result.is_ok(), "{choice}: {result:?}");
+            assert_eq!(sent, [digit], "{choice}: Codex's list takes a digit as its option whatever the focus (tui/src/bottom_pane/list_selection_view.rs)");
+        }
+        let mut read = |_: &str| Ok(CODEX_APPROVAL.to_string());
+        let mut send = |_: &str, _: &[&str]| Ok(());
+        let panes = [Pane { address: "hub@kebbie", pane: "w1C:p1", agent: Agent::Codex }];
+        let refused = choose_with(&Caller::Lead, &state, &panes, "q", &id, &mut Sent { read: &mut read, send: &mut send, pause: &mut || {} });
+        assert!(refused.unwrap_err().contains("1 to 3, or the key it shows in brackets"));
+        let _ = fs::remove_dir_all(state);
+    }
+
     #[test]
     fn a_claude_whose_screen_shows_codexs_start_up_words_is_relayed_as_its_own_prompt() {
         let screen = format!("⏺ Read src/agent/codex.rs\n  screen.contains(\"Welcome to Codex\")\n\n{PERMISSION}");
-        let (id, text) = relay_text("billing@ios", &screen, Agent::Claude);
-        assert!(!text.contains("waits on Codex") && text.contains("waits on its Claude's own prompt") && id == fingerprint("billing@ios", &parse(&screen).unwrap()), "{text}");
+        let (id, text) = relay_text("billing@ios", &screen, Agent::Claude, None);
+        assert!(!text.contains("waits on Codex") && text.contains("waits on its Claude's own prompt") && id == fingerprint("billing@ios", &parse_for(&screen, Agent::Claude).unwrap()), "{text}");
     }
 
     #[test]
     fn a_screen_without_a_menu_is_unreadable_and_the_lead_gets_its_last_lines() {
         let screen = "⏺ Working on it\n\n╭────────────────────────────╮\n│ ❯ copy the images          │\n╰────────────────────────────╯\n  ? for shortcuts\n";
-        assert_eq!(parse(screen), None, "the input box is no menu");
-        assert_eq!(parse("Proceed?\n❯ 1. Yes\n"), None, "one option is no menu");
-        let (_, text) = relay_text("billing@ios", screen, Agent::Claude);
+        assert_eq!(parse_for(screen, Agent::Claude), None, "the input box is no menu");
+        assert_eq!(parse_for("Proceed?\n❯ 1. Yes\n", Agent::Claude), None, "one option is no menu");
+        let (_, text) = relay_text("billing@ios", screen, Agent::Claude, None);
         assert!(text.contains("could not read as a menu") && text.contains("  ? for shortcuts") && text.contains("in its Space") && text.contains("not the user's words"), "{text}");
     }
 
     #[test]
     fn a_users_past_multi_line_prompt_above_claudes_answer_is_no_menu() {
         let screen = "❯ copy the images from web\n  into the iOS assets\n  and resize them\n\n⏺ I'll copy them now.\n\n────────────────────────────────\n❯ \n────────────────────────────────\n  ? for shortcuts\n";
-        assert_eq!(parse(screen), None);
+        assert_eq!(parse_for(screen, Agent::Claude), None);
         let far = format!("Proceed?\n❯ 1. Yes\n  2. No\n{}", "line\n".repeat(BOTTOM_LINES));
-        assert_eq!(parse(&far), None, "a menu scrolled far up is no prompt waiting now");
+        assert_eq!(parse_for(&far, Agent::Claude), None, "a menu scrolled far up is no prompt waiting now");
     }
 
     #[test]
     fn a_multi_select_question_with_checkboxes_is_left_to_the_space() {
         let screen = "Which images?\n❯ 1. [ ] logo.png\n  2. [x] icon.png\n  3. Submit\n";
-        assert_eq!(parse(screen), None);
-        assert_eq!(parse(&screen.replace("[ ]", "☐").replace("[x]", "☒")), None);
-        assert_eq!(parse(&screen.replace("[ ]", "◻").replace("[x]", "◼")), None);
-        assert_eq!(parse(&screen.replace("[ ]", "○").replace("[x]", "●")), None);
-        assert!(relay_text("billing@ios", screen, Agent::Claude).1.contains("could not read as a menu"));
+        assert_eq!(parse_for(screen, Agent::Claude), None);
+        assert_eq!(parse_for(&screen.replace("[ ]", "☐").replace("[x]", "☒"), Agent::Claude), None);
+        assert_eq!(parse_for(&screen.replace("[ ]", "◻").replace("[x]", "◼"), Agent::Claude), None);
+        assert_eq!(parse_for(&screen.replace("[ ]", "○").replace("[x]", "●"), Agent::Claude), None);
+        assert!(relay_text("billing@ios", screen, Agent::Claude, None).1.contains("could not read as a menu"));
     }
 
     #[test]
     fn options_that_take_text_are_marked_in_the_relay_and_refused_by_choose() {
-        assert!(!relay_text("billing@ios", PERMISSION, Agent::Claude).1.contains("(takes text"), "a permission prompt's No is a plain option the lead can choose");
+        assert!(!relay_text("billing@ios", PERMISSION, Agent::Claude, None).1.contains("(takes text"), "a permission prompt's No is a plain option the lead can choose");
         let asked = "Which way?\n❯ 1. Sidekiq\n  2. Solid Queue\n  3. Type something.\n  4. Chat about this\n";
-        let (id, text) = relay_text("billing@ios", asked, Agent::Claude);
+        let (id, text) = relay_text("billing@ios", asked, Agent::Claude, None);
         assert!(text.contains("3. Type something.  (takes text") && text.contains("4. Chat about this  (takes text") && !text.contains("2. Solid Queue  (takes"), "{text}");
         let (result, sent) = chosen(Caller::Lead, &[asked], "4", &id);
         assert!(result.unwrap_err().contains("takes the user's own words") && sent.is_empty());
-        let (result, sent) = chosen(Caller::Lead, &[PERMISSION, "⏺ Stopped"], "3", &fingerprint("billing@ios", &parse(PERMISSION).unwrap()));
+        let (result, sent) = chosen(Caller::Lead, &[PERMISSION, "⏺ Stopped"], "3", &fingerprint("billing@ios", &parse_for(PERMISSION, Agent::Claude).unwrap()));
         assert!(result.is_ok() && sent == [vec!["3".to_string()]], "the lead can deny a permission");
     }
 
     #[test]
     fn a_question_cut_at_its_line_cap_says_there_is_more_above() {
         let long = format!("────────\n{}Do you want to proceed?\n❯ 1. Yes\n  2. No\n", (1..=10).map(|line| format!("line {line}\n")).collect::<String>());
-        let menu = parse(&long).unwrap();
+        let menu = parse_for(&long, Agent::Claude).unwrap();
         assert!(menu.cut && menu.question.lines().count() == QUESTION_LINES);
-        assert!(relay_text("billing@ios", &long, Agent::Claude).1.contains("(more above; see its Space)"));
-        assert!(!relay_text("billing@ios", PERMISSION, Agent::Claude).1.contains("more above"));
+        assert!(relay_text("billing@ios", &long, Agent::Claude, None).1.contains("(more above; see its Space)"));
+        assert!(!relay_text("billing@ios", PERMISSION, Agent::Claude, None).1.contains("more above"));
     }
 
     #[test]
@@ -398,12 +499,12 @@ mod tests {
         let state = crate::sh::test_dir("menu-relay");
         let screen = RefCell::new(PERMISSION.to_string());
         let told = RefCell::new(Vec::new());
-        let blocked = vec![("billing@ios".to_string(), "w2:p1".to_string(), Agent::Claude)];
-        let run = |blocked: &[(String, String, Agent)]| pass(&state, blocked, |_| Ok(screen.borrow().clone()), |text| { told.borrow_mut().push(text.to_string()); Ok(()) });
+        let blocked = blocked("billing@ios", Agent::Claude, None);
+        let run = |blocked: &[Blocked]| pass(&state, blocked, |_| Ok(screen.borrow().clone()), |text| { told.borrow_mut().push(text.to_string()); Ok(()) });
         run(&blocked);
         run(&blocked);
         assert_eq!(told.borrow().len(), 1, "the keeper's repeated passes tell it once");
-        let id = fingerprint("billing@ios", &parse(PERMISSION).unwrap());
+        let id = fingerprint("billing@ios", &parse_for(PERMISSION, Agent::Claude).unwrap());
         assert!(told.borrow()[0].contains(&format!("kebbie choose billing@ios <number> --prompt {id}")) && told.borrow()[0].contains("  1. Yes  (focused)"), "{}", told.borrow()[0]);
         *screen.borrow_mut() = PERMISSION.replace("logo.png", "icon.png");
         run(&blocked);
@@ -422,9 +523,9 @@ mod tests {
     fn the_same_prompt_asked_again_right_after_a_choice_is_told_again_without_a_tick_in_between() {
         let state = crate::sh::test_dir("menu-again");
         let told = RefCell::new(0);
-        let blocked = vec![("billing@ios".to_string(), "w2:p1".to_string(), Agent::Claude)];
+        let blocked = blocked("billing@ios", Agent::Claude, None);
         pass(&state, &blocked, |_| Ok(PERMISSION.to_string()), |_| { *told.borrow_mut() += 1; Ok(()) });
-        let id = fingerprint("billing@ios", &parse(PERMISSION).unwrap());
+        let id = fingerprint("billing@ios", &parse_for(PERMISSION, Agent::Claude).unwrap());
         let (result, _) = chosen_in(&state, Caller::Lead, &[PERMISSION, "⏺ Copied"], "1", &id);
         assert!(result.is_ok());
         pass(&state, &blocked, |_| Ok(PERMISSION.to_string()), |_| { *told.borrow_mut() += 1; Ok(()) });
@@ -436,7 +537,7 @@ mod tests {
         let mut screens = screens.iter().map(|screen| Some(screen.to_string()));
         let mut last = String::new();
         let mut sent = Vec::new();
-        let panes = [Pane { address: "billing@ios", pane: "w2:p1" }];
+        let panes = [Pane { address: "billing@ios", pane: "w2:p1", agent: Agent::Claude }];
         let mut read = |_: &str| match screens.next() {
             Some(Some(next)) => { last = next; Ok(last.clone()) }
             _ => Ok(last.clone()),
@@ -455,29 +556,29 @@ mod tests {
 
     #[test]
     fn choose_sends_the_digit_for_a_numbered_menu_and_arrows_then_enter_for_one_without_numbers() {
-        let id = fingerprint("billing@ios", &parse(PERMISSION).unwrap());
+        let id = fingerprint("billing@ios", &parse_for(PERMISSION, Agent::Claude).unwrap());
         let (result, sent) = chosen(Caller::Lead, &[PERMISSION, "⏺ Copied"], "2", &id);
         assert_eq!(sent, [vec!["2".to_string()]]);
         assert_eq!(result.unwrap(), "Chose \"2. Yes, and don’t ask again for: cp ../web/public/images/*\" in billing@ios's prompt; the menu is gone.");
-        let trust = fingerprint("billing@ios", &parse(TRUST).unwrap());
+        let trust = fingerprint("billing@ios", &parse_for(TRUST, Agent::Claude).unwrap());
         let focused_on_yes = TRUST.replace("│ ❯ No, exit  ", "│   No, exit  ").replace("│   Yes, I trust this folder  ", "│ ❯ Yes, I trust this folder  ");
         let (result, sent) = chosen(Caller::User, &[TRUST, &focused_on_yes, ""], "2", &trust);
         assert_eq!(sent, [vec!["down".to_string()], vec!["enter".to_string()]], "enter goes only once the focus is read on the chosen option");
         assert!(result.is_ok());
         let moved = PERMISSION.replace(" ❯ 1. Yes", "   1. Yes").replace("   2. Yes, and", " ❯ 2. Yes, and");
-        assert_eq!(keys(&parse(&moved).unwrap(), 1), Keys::Arrows(vec!["up".to_string()]), "focus the user moved may sit on an editable option, so no digit goes there");
+        assert_eq!(keys(&parse_for(&moved, Agent::Claude).unwrap(), 1), Keys::Arrows(vec!["up".to_string()]), "focus the user moved may sit on an editable option, so no digit goes there");
     }
 
     #[test]
     fn choose_refuses_a_changed_menu_a_task_caller_a_number_off_the_menu_and_a_focus_that_went_elsewhere() {
-        let id = fingerprint("billing@ios", &parse(PERMISSION).unwrap());
+        let id = fingerprint("billing@ios", &parse_for(PERMISSION, Agent::Claude).unwrap());
         let (result, sent) = chosen(Caller::Lead, &[&PERMISSION.replace("logo.png", "icon.png")], "1", &id);
         assert!(result.unwrap_err().contains("the prompt changed or is gone; read it again") && sent.is_empty());
         let (result, sent) = chosen(Caller::Task("billing@ios".to_string()), &[PERMISSION], "1", &id);
         assert!(result.unwrap_err().contains("the task billing@ios cannot") && sent.is_empty());
         let (result, sent) = chosen(Caller::Lead, &[PERMISSION], "4", &id);
         assert!(result.unwrap_err().contains("1 to 3") && sent.is_empty());
-        let trust = fingerprint("billing@ios", &parse(TRUST).unwrap());
+        let trust = fingerprint("billing@ios", &parse_for(TRUST, Agent::Claude).unwrap());
         let (result, sent) = chosen(Caller::User, &[TRUST, TRUST], "2", &trust);
         assert!(result.unwrap_err().contains("the focus moved elsewhere or the menu changed; read it again"));
         assert_eq!(sent, [vec!["down".to_string()]], "no enter after arrows that did not land");
@@ -485,14 +586,14 @@ mod tests {
 
     #[test]
     fn a_choice_is_confirmed_only_by_a_read_without_the_menu_never_by_a_failed_read() {
-        let id = fingerprint("billing@ios", &parse(PERMISSION).unwrap());
+        let id = fingerprint("billing@ios", &parse_for(PERMISSION, Agent::Claude).unwrap());
         let (result, _) = chosen(Caller::Lead, &[PERMISSION], "1", &id);
         assert!(result.unwrap_err().contains("could not confirm the menu went away; see its Space"), "a menu that stays is reported, not taken as chosen");
         let state = crate::sh::test_dir("menu-unread");
         let mut reads = 0;
         let mut read = |_: &str| { reads += 1; if reads == 1 { Ok(PERMISSION.to_string()) } else { Err("herdr pane read failed".to_string()) } };
         let mut send = |_: &str, _: &[&str]| Ok(());
-        let panes = [Pane { address: "billing@ios", pane: "w2:p1" }];
+        let panes = [Pane { address: "billing@ios", pane: "w2:p1", agent: Agent::Claude }];
         let result = choose_with(&Caller::Lead, &state, &panes, "1", &id, &mut Sent { read: &mut read, send: &mut send, pause: &mut || {} });
         assert!(result.unwrap_err().contains("could not confirm"), "a read herdr refused is not a menu gone");
         let mut read = |_: &str| Err("herdr pane read failed".to_string());

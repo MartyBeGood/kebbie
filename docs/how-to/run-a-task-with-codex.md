@@ -116,6 +116,20 @@ With `task.sandbox` on, the default, a Codex task runs in Codex's own sandbox. C
 
 Every command Codex runs gets kebbie's push block in its environment and `KEBBIE_ADDRESS` set to the task's address. A Codex process kebbie started counts as that task when it calls kebbie, and any other Codex counts as an agent, so neither can run `kebbie push`, `approve` or another of your commands.
 
+## Approvals and choices
+
+When Codex stops to ask you something mid-task, such as whether to run a command outside its sandbox, a question of its own or an MCP server's form, its terminal title starts with `[ ! ] Action Required`. kebbie reads that title, so the task waits under Needs you with `answer Codex's prompt in its Space or through the lead`, and `kebbie peers` shows it as waiting for an answer. The Codex sessions kebbie starts show Codex's default title, whatever `tui.terminal_title` in your Codex config lists.
+
+The lead hears it once, as it hears a Claude task's prompt: the question with the command, then the options in order, with the key Codex shows for each. For example:
+
+```text
+1. Yes, proceed (y)  (focused)
+2. Yes, and don't ask again for commands that start with `kebbie report` (p)
+3. No, and tell Codex what to do differently (esc)
+```
+
+The lead answers only on a choice you type in its chat, with `kebbie choose <task> <number> --prompt <id>`: `<number>` is the option's number, or the key it shows in its place, as in `kebbie choose <task> y --prompt <id>`, and `<id>` is the prompt's id from kebbie's message to the lead. A view kebbie cannot read as a menu reaches the lead as its last lines on screen. You can always answer in the task's Space yourself instead.
+
 ## Messages to a Codex task
 
 Codex has no inbox kebbie can write to, so kebbie types a message into the task's composer, only when it is empty. It counts the message as taken once the composer lets it go or the session's rollout file shows it as a user turn.

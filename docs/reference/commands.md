@@ -556,7 +556,7 @@ It is refused when the id is taken or config.toml does not parse.
 | `kebbie focus` | In the lead Space, move focus between the board and the lead's chat. From any other Space, go to the lead's chat. A hidden chat is shown first. |
 | `kebbie away [on\|off]` | Away mode. Yours only. |
 | `kebbie decide <task> <answer>` | The lead's own answer to a task's question about how, whether or not you are here. |
-| `kebbie choose <task> <n> --prompt <id>` | Answer the prompt a task's Claude shows in its own pane with option `<n>`. See [below](#kebbie-choose). |
+| `kebbie choose <task> <n> --prompt <id>` | Answer the prompt a task's Claude or Codex shows in its own pane with option `<n>` or the key it shows. See [below](#kebbie-choose). |
 | `kebbie defer <task>` | The lead keeps a task's question for you while you are away. |
 | `kebbie notify <text>` | Run `notify.command` with this text as a `summary` event. You or the lead only. |
 | `kebbie tell --force <to> <text>` | Yours or the lead's: deliver now, for a delivery that is stuck behind a draft. |
@@ -585,10 +585,10 @@ It is refused when the id is taken or config.toml does not parse.
 
 ### `kebbie choose`
 
-Answers the prompt a task's Claude shows in its own pane, such as a permission or trust question, with option `<n>` as kebbie numbered it for the lead. `<id>` is the prompt's id from kebbie's message.
+Answers the prompt a task's Claude or Codex shows in its own pane, such as a permission or trust question or a Codex approval, with option `<n>` as kebbie numbered it for the lead. `<n>` can also be the key an option shows in brackets, such as Codex's `y`, `p` or `esc`. `<id>` is the prompt's id from kebbie's message.
 
 1. kebbie reads the pane again and refuses when that prompt is no longer on screen.
-2. On a menu with numbers whose focus is on its first option, for options 1 to 9, it presses the option's digit. Otherwise it moves the focus with the arrow keys, reads the pane to check the focus landed on the chosen option, and only then presses Enter.
+2. On a menu with numbers whose focus is on its first option, for options 1 to 9, it presses the option's digit, whether you named its number or its key. Otherwise it moves the focus with the arrow keys, reads the pane to check the focus landed on the chosen option, and only then presses Enter.
 3. It reads the pane again and says whether the menu went away, or that it could not confirm it.
 
 It never types text, and refuses an option that takes your own words; that one you answer in the Space. It is refused for a task.
