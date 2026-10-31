@@ -7,7 +7,7 @@ use crate::peers;
 use crate::repo::{ahead_behind, default_branch, git, main_checkout, name_of};
 use crate::sh::Result;
 use crate::tasks;
-use crate::trusted_spawn;
+use crate::trusted_spawn::{self, Queue};
 
 pub const TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const REASON_LIMIT: usize = 120;
@@ -21,6 +21,8 @@ fn dir(state: &Path) -> PathBuf {
     }
     dir
 }
+
+const QUEUE: Queue = Queue { dir, args: &["review", "--assess"], is_ours: is_assessor };
 
 fn file(state: &Path, address: &str) -> PathBuf {
     dir(state).join(address)
@@ -36,10 +38,8 @@ pub fn reason_in(state: &Path, address: &str) -> Option<String> {
 }
 
 pub fn forget_in(state: &Path, address: &str) {
-    if let Some(pid) = assessor_pid(state, address) {
-        crate::review::stop_group(&pid);
-    }
-    for path in [file(state, address), marked(state, address, "pushed"), marked(state, address, "wanted"), marked(state, address, "running"), marked(state, address, "run"), marked(state, address, "claude"), marked(state, address, "log")] {
+    QUEUE.forget(state, address);
+    for path in [file(state, address), marked(state, address, "pushed"), marked(state, address, "claude"), marked(state, address, "log")] {
         let _ = fs::remove_file(path);
     }
 }
@@ -152,20 +152,18 @@ pub fn ask(state: &Path, address: &str, worktree: &Path, auto: ReviewAuto) -> Re
     if crate::review::in_review(state, address) || crate::review::withdrawn_in(state, address) || ahead_behind(worktree, &default_branch(&main_checkout(worktree)?)?)?.0 == 0 {
         return Ok(false);
     }
-    crate::state::write(&marked(state, address, "wanted"), format!("{}\n{}\n", worktree.display(), auto.key()))?;
+    QUEUE.want(state, address, worktree, auto.key())?;
     crate::state::write(&file(state, address), ASSESSING)?;
     Ok(true)
 }
 
-fn mode_in(text: &str) -> ReviewAuto {
-    let key = text.lines().nth(1).unwrap_or_default().trim();
-    ReviewAuto::ALL.into_iter().find(|auto| auto.key() == key).unwrap_or_default()
+fn mode_of(payload: &str) -> ReviewAuto {
+    ReviewAuto::ALL.into_iter().find(|auto| auto.key() == payload.trim()).unwrap_or_default()
 }
 
 // Under require, a push waits for the assessment too, as it would for the review it may ask for.
 pub fn holds_push(state: &Path, address: &str) -> Option<&'static str> {
-    let asked = fs::read_to_string(marked(state, address, "wanted")).or_else(|_| fs::read_to_string(marked(state, address, "running"))).ok()?;
-    (mode_in(&asked) == ReviewAuto::Require).then_some("its need for a review is being assessed")
+    (mode_of(&QUEUE.asked(state, address)?.payload) == ReviewAuto::Require).then_some("its need for a review is being assessed")
 }
 
 // The ready report's sentence on it, for the task's Claude.
@@ -187,43 +185,18 @@ pub fn is_assessor(args: &str) -> bool {
     args.contains(" review --assess") && args.split_whitespace().any(|word| Path::new(word).file_name().is_some_and(|name| name.to_string_lossy().starts_with("kebbie")))
 }
 
-fn assessor_pid(state: &Path, address: &str) -> Option<String> {
-    let pid = fs::read_to_string(marked(state, address, "running")).ok()?.lines().next()?.trim().to_string();
-    (!pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit())).then_some(pid.clone())
-        .filter(|pid| crate::sh::run("ps", &["-p", pid, "-o", "args="], None).is_ok_and(|args| is_assessor(&args)))
-}
-
 pub fn tick(state: &Path) -> Vec<String> {
     tick_with(state, &trusted_spawn::reviewer_env(std::env::vars()))
 }
 
 fn tick_with(state: &Path, env: &[(String, String)]) -> Vec<String> {
-    let Ok(entries) = fs::read_dir(dir(state)) else { return Vec::new() };
-    let wanted: Vec<String> = entries.flatten().filter_map(|entry| entry.file_name().to_string_lossy().strip_suffix(".wanted").map(str::to_string)).collect();
-    let mut notes = Vec::new();
-    for address in wanted {
-        if assessor_pid(state, &address).is_some() {
-            continue;
+    QUEUE.tick(state, env, |address| marked(state, address, "log")).into_iter().map(|(address, ask, started)| match started {
+        Ok(()) => format!("review: assessing whether {address} needs a review"),
+        Err(error) => {
+            settle(state, &address, &ask.worktree, mode_of(&ask.payload), None);
+            format!("review: {address}: the assessor could not start ({error})")
         }
-        let asked = fs::read_to_string(marked(state, &address, "wanted")).unwrap_or_default();
-        let _ = fs::remove_file(marked(state, &address, "wanted"));
-        let Some(worktree) = asked.lines().next().map(PathBuf::from).filter(|path| crate::rules_check::worktree_is(path, &address)) else { continue };
-        match begin(state, &address, &worktree, &asked, env) {
-            Ok(()) => notes.push(format!("review: assessing whether {address} needs a review")),
-            Err(error) => {
-                settle(state, &address, &worktree, mode_in(&asked), None);
-                notes.push(format!("review: {address}: the assessor could not start ({error})"));
-            }
-        }
-    }
-    notes
-}
-
-fn begin(state: &Path, address: &str, worktree: &Path, asked: &str, env: &[(String, String)]) -> Result<()> {
-    let claude = trusted_spawn::claude_path(env).ok_or("kebbie found no claude on the keeper's PATH")?;
-    let command = trusted_spawn::command(&peers::own_exe()?, worktree, &["-C", &worktree.to_string_lossy(), "review", "--assess"], env, &claude);
-    let pid = trusted_spawn::launch(command, &marked(state, address, "log"), &marked(state, address, "run"), "")?;
-    crate::state::write(&marked(state, address, "running"), format!("{pid}\n{}\n", mode_in(asked).key()))
+    }).collect()
 }
 
 // The background half, `kebbie review --assess`: only the keeper's own start with its nonce settles anything.
@@ -233,13 +206,10 @@ pub fn run(cwd: &Path) -> Result<String> {
     let slot = tasks::find_task(&repo, None, cwd)?;
     let address = peers::address(tasks::task_of(&slot), &name_of(&repo));
     let state = crate::lead::state_dir()?;
-    let record = fs::read_to_string(marked(&state, &address, "run")).ok();
-    let _ = fs::remove_file(marked(&state, &address, "run"));
-    if !trusted_spawn::trusted(&crate::permit::caller(), &presented, record.as_deref()) {
+    let Some(payload) = QUEUE.take(&state, &address, &presented, &crate::permit::caller()) else {
         return Err(format!("This assessment of {address} was not started by kebbie's keeper, so it settles nothing."));
-    }
-    let auto = mode_in(&fs::read_to_string(marked(&state, &address, "running")).unwrap_or_default());
-    crate::state::write(&marked(&state, &address, "running"), format!("{}\n{}\n", std::process::id(), auto.key()))?;
+    };
+    let auto = mode_of(&payload);
     let answer = assess(&state, &repo, &slot.path, &address);
     let assessment = answer.as_deref().ok().and_then(parse);
     let said = settle(&state, &address, &slot.path, auto, assessment.as_ref());
@@ -281,7 +251,7 @@ fn tell_task(address: &str, text: &str) -> Result<()> {
 fn settle(state: &Path, address: &str, worktree: &Path, auto: ReviewAuto, assessment: Option<&Assessment>) -> String {
     let reason = reason_text(assessment, auto);
     let _ = crate::state::write(&file(state, address), &reason);
-    let _ = fs::remove_file(marked(state, address, "running"));
+    QUEUE.done(state, address);
     match crate::decisions::write(state, address, &reason, crate::messages::now()) {
         Ok(note) => if let Some(line) = crate::decisions::for_the_task(&note, &reason) && let Err(error) = tell_task(address, &line) {
             eprintln!("kebbie: {address} was not told to note its review: {error}");

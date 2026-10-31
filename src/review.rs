@@ -23,8 +23,10 @@ pub fn verdict_file(state: &Path, address: &str) -> PathBuf {
     dir(state).join(format!("{address}.md"))
 }
 
+pub(crate) const QUEUE: crate::trusted_spawn::Queue = crate::trusted_spawn::Queue { dir, args: &["review", "--run"], is_ours: is_reviewer };
+
 fn running_file(state: &Path, address: &str) -> PathBuf {
-    dir(state).join(format!("{address}.running"))
+    QUEUE.file(state, address, "running")
 }
 
 fn log_file(state: &Path, address: &str) -> PathBuf {
@@ -183,13 +185,8 @@ pub fn again_for_tests(cwd: &Path, address: &str, shown_name: &str) {
     }
 }
 
-// A marker whose process is gone, or whose pid now belongs to another program after a reboot, is a review that died.
 fn running_pid(state: &Path, address: &str) -> Option<String> {
-    let pid = fs::read_to_string(running_file(state, address)).ok()?.trim().to_string();
-    if pid.is_empty() || !pid.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    crate::sh::run("ps", &["-p", &pid, "-o", "args="], None).ok().filter(|args| is_reviewer(args)).map(|_| pid)
+    QUEUE.pid(state, address)
 }
 
 pub(crate) fn running_in(state: &Path, address: &str) -> bool {
@@ -208,10 +205,8 @@ pub fn forget(task: &str, repo: &Path) {
 
 // A reviewer still running is stopped first, so no verdict lands for a task that is gone.
 pub fn forget_in(state: &Path, address: &str) {
-    if let Some(pid) = running_pid(state, address) {
-        stop_group(&pid);
-    }
-    for file in [verdict_file(state, address), running_file(state, address), log_file(state, address), marked(state, address, "wanted"), marked(state, address, "run"), marked(state, address, "withdrawn"), marked(state, address, "advised")] {
+    QUEUE.forget(state, address);
+    for file in [verdict_file(state, address), log_file(state, address), marked(state, address, "withdrawn"), marked(state, address, "advised")] {
         let _ = fs::remove_file(file);
     }
 }
@@ -296,7 +291,7 @@ pub fn withdrawn_in(state: &Path, address: &str) -> bool {
 
 // A task asks from its own process, so the keeper starts the reviewer from its own environment; the task waits in review meanwhile.
 pub fn want(state: &Path, address: &str, worktree: &Path) -> Result<()> {
-    crate::state::write(&marked(state, address, "wanted"), format!("{}\n", worktree.display()))
+    QUEUE.want(state, address, worktree, "")
 }
 
 // review.auto = "run": the reviewer reads the branch while its push stays free, until you or the lead send it to review.
@@ -310,38 +305,15 @@ pub fn tick(state: &Path) -> Vec<String> {
 }
 
 fn tick_with(state: &Path, env: &[(String, String)]) -> Vec<String> {
-    let Ok(entries) = fs::read_dir(dir(state)) else { return Vec::new() };
-    let wanted: Vec<String> = entries.flatten().filter_map(|entry| entry.file_name().to_string_lossy().strip_suffix(".wanted").map(str::to_string)).collect();
-    let mut notes = Vec::new();
-    for address in wanted {
-        if running_in(state, &address) {
-            let _ = fs::remove_file(marked(state, &address, "wanted"));
-            continue;
-        }
-        let worktree = fs::read_to_string(marked(state, &address, "wanted")).ok().map(|text| PathBuf::from(text.trim()));
-        let Some(worktree) = worktree.filter(|path| crate::rules_check::worktree_is(path, &address)) else {
-            let _ = fs::remove_file(marked(state, &address, "wanted"));
-            continue;
-        };
-        match begin(state, &address, &worktree, env) {
-            Ok(()) => notes.push(format!("review: started the reviewer for {address}")),
-            Err(error) => {
-                if let Err(told) = messages::to_lead(messages::ToLead::Findings, &format!("{address} asked for its reviewer, but it could not start: {error}. Send it again with kebbie review once that is fixed.")) {
-                    eprintln!("Could not tell the lead: {told}");
-                }
-                notes.push(format!("review: {address}: {error}"));
+    QUEUE.tick(state, env, |address| log_file(state, address)).into_iter().map(|(address, _, started)| match started {
+        Ok(()) => format!("review: started the reviewer for {address}"),
+        Err(error) => {
+            if let Err(told) = messages::to_lead(messages::ToLead::Findings, &format!("{address} asked for its reviewer, but it could not start: {error}. Send it again with kebbie review once that is fixed.")) {
+                eprintln!("Could not tell the lead: {told}");
             }
+            format!("review: {address}: {error}")
         }
-        let _ = fs::remove_file(marked(state, &address, "wanted"));
-    }
-    notes
-}
-
-fn begin(state: &Path, address: &str, worktree: &Path, env: &[(String, String)]) -> Result<()> {
-    let claude = crate::trusted_spawn::claude_path(env).ok_or("kebbie found no claude on the keeper's PATH")?;
-    let command = crate::trusted_spawn::command(&peers::own_exe()?, worktree, &["-C", &worktree.to_string_lossy(), "review", "--run"], env, &claude);
-    let pid = crate::trusted_spawn::launch(command, &log_file(state, address), &marked(state, address, "run"), "")?;
-    crate::state::write(&running_file(state, address), pid.to_string())
+    }).collect()
 }
 
 // The background half: runs the reviewer, saves its verdict and tells the lead, also when it fails.
@@ -351,15 +323,11 @@ pub fn run(cwd: &Path) -> Result<String> {
     let slot = tasks::find_task(&repo, None, cwd)?;
     let address = peers::address(tasks::task_of(&slot), &name_of(&repo));
     let state = state_dir()?;
-    let record = fs::read_to_string(marked(&state, &address, "run")).ok();
-    let _ = fs::remove_file(marked(&state, &address, "run"));
-    if !crate::trusted_spawn::trusted(&crate::permit::caller(), &presented, record.as_deref()) {
+    if QUEUE.take(&state, &address, &presented, &crate::permit::caller()).is_none() {
         return Err(format!("This review of {address} was not started by kebbie review or the keeper, so it gives no verdict."));
     }
-    let marker = running_file(&state, &address);
-    crate::state::write(&marker, std::process::id().to_string())?;
     let result = review(&repo, &slot, &address, &state);
-    let _ = fs::remove_file(&marker);
+    QUEUE.done(&state, &address);
     let (what, notice) = match &result {
         Ok((text, true)) => (messages::ToLead::ReviewPassed, text.clone()),
         Ok((text, false)) => (messages::ToLead::Findings, text.clone()),

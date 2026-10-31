@@ -10,7 +10,7 @@ use crate::repo::{ahead_behind, default_branch, git, main_checkout, name_of};
 use crate::review::{self, Verdict};
 use crate::sh::Result;
 use crate::tasks::{self, Slot};
-use crate::trusted_spawn::{self, claude_path, reviewer_env, trusted};
+use crate::trusted_spawn::{Queue, reviewer_env};
 
 pub const TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub const EVERY: u64 = 5;
@@ -18,6 +18,8 @@ pub const EVERY: u64 = 5;
 fn dir(state: &Path) -> PathBuf {
     state.join("rules")
 }
+
+const QUEUE: Queue = Queue { dir, args: &["review", "--run", "--rules"], is_ours: review::is_reviewer };
 
 fn file(state: &Path, address: &str, kind: &str) -> PathBuf {
     dir(state).join(format!("{address}.{kind}"))
@@ -126,9 +128,11 @@ pub fn start(cwd: &Path) -> Result<Started> {
     if let Asked::Broken(findings) = asked {
         return Ok(Started::Retold(findings));
     }
-    fs::create_dir_all(dir(&state)).map_err(|error| error.to_string())?;
-    let kind = if running_in(&state, &address) { "again" } else { "wanted" };
-    crate::state::write(&file(&state, &address, kind), format!("{head}\n0\n{}\n", slot.path.display()))?;
+    if running_in(&state, &address) {
+        crate::state::write(&file(&state, &address, "again"), &head)?;
+    } else {
+        QUEUE.want(&state, &address, &slot.path, "0")?;
+    }
     Ok(Started::Queued)
 }
 
@@ -157,26 +161,13 @@ pub fn tick(state: &Path) -> Vec<String> {
 }
 
 fn tick_with(state: &Path, env: &[(String, String)]) -> Vec<String> {
-    let Ok(entries) = fs::read_dir(dir(state)) else { return Vec::new() };
-    let wanted: Vec<String> = entries.flatten().filter_map(|entry| entry.file_name().to_string_lossy().strip_suffix(".wanted").map(str::to_string)).collect();
-    let mut notes = Vec::new();
-    for address in wanted {
-        if running_in(state, &address) {
-            continue;
+    QUEUE.tick(state, env, |address| log_file(state, address)).into_iter().map(|(address, ask, started)| match started {
+        Ok(()) => format!("rules: started the reviewer for {address}"),
+        Err(error) => {
+            let _ = ask_lead(state, &address, &ask.worktree, Some(&format!("the reviewer could not start ({error}), so the check is yours")));
+            format!("rules: {address}: {error}")
         }
-        let wanted = fs::read_to_string(file(state, &address, "wanted")).unwrap_or_default();
-        let _ = fs::remove_file(file(state, &address, "wanted"));
-        let round = wanted.lines().nth(1).and_then(|round| round.trim().parse::<u32>().ok()).unwrap_or(0);
-        let Some(worktree) = wanted.lines().nth(2).map(PathBuf::from).filter(|path| worktree_is(path, &address)) else { continue };
-        match begin(state, &address, &worktree, round, env) {
-            Ok(()) => notes.push(format!("rules: started the reviewer for {address}")),
-            Err(error) => {
-                let _ = ask_lead(state, &address, &worktree, Some(&format!("the reviewer could not start ({error}), so the check is yours")));
-                notes.push(format!("rules: {address}: {error}"));
-            }
-        }
-    }
-    notes
+    }).collect()
 }
 
 // The folder a ready report named is read again by kebbie, so only that task's own worktree is checked.
@@ -184,23 +175,8 @@ pub(crate) fn worktree_is(path: &Path, address: &str) -> bool {
     main_checkout(path).ok().and_then(|repo| tasks::find_task(&repo, None, path).ok().map(|slot| peers::address(tasks::task_of(&slot), &name_of(&repo)))).as_deref() == Some(address)
 }
 
-fn reviewer_command(kebbie: &Path, worktree: &Path, env: &[(String, String)], claude: &Path) -> std::process::Command {
-    trusted_spawn::command(kebbie, worktree, &["-C", &worktree.to_string_lossy(), "review", "--run", "--rules"], env, claude)
-}
-
-fn begin(state: &Path, address: &str, worktree: &Path, round: u32, env: &[(String, String)]) -> Result<()> {
-    let claude = claude_path(env).ok_or("kebbie found no claude on the keeper's PATH")?;
-    let command = reviewer_command(&peers::own_exe()?, worktree, env, &claude);
-    let pid = trusted_spawn::launch(command, &log_file(state, address), &file(state, address, "run"), &format!("{round}\n"))?;
-    crate::state::write(&file(state, address, "running"), pid.to_string())
-}
-
 fn running_pid(state: &Path, address: &str) -> Option<String> {
-    let pid = fs::read_to_string(file(state, address, "running")).ok()?.trim().to_string();
-    if pid.is_empty() || !pid.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    crate::sh::run("ps", &["-p", &pid, "-o", "args="], None).ok().filter(|args| review::is_reviewer(args)).map(|_| pid)
+    QUEUE.pid(state, address)
 }
 
 // The reviewer's claude runs in a group of its own so the timeout stops its children too; a pid now held by another program is never signalled.
@@ -248,9 +224,7 @@ pub fn forget(task: &str, repo: &Path) {
 
 // A reviewer still running is stopped first, so no approval lands for a task that is gone.
 pub fn forget_in(state: &Path, address: &str) {
-    if let Some(pid) = running_pid(state, address) {
-        review::stop_group(&pid);
-    }
+    QUEUE.forget(state, address);
     if let Some(pid) = claude_pid(state, address) {
         review::stop_group(&pid);
     }
@@ -261,19 +235,16 @@ pub fn forget_in(state: &Path, address: &str) {
 
 // The background half: the reviewer checks the commits against the rules skill, and kebbie settles its verdict.
 pub fn run(cwd: &Path) -> Result<String> {
-    let presented = trusted_spawn::presented();
+    let presented = crate::trusted_spawn::presented();
     let repo = main_checkout(cwd)?;
     let slot = tasks::find_task(&repo, None, cwd)?;
     let address = peers::address(tasks::task_of(&slot), &name_of(&repo));
     let upstream = default_branch(&repo)?;
     let state = state_dir()?;
-    let record = fs::read_to_string(file(&state, &address, "run")).ok();
-    let _ = fs::remove_file(file(&state, &address, "run"));
-    if !trusted(&crate::permit::caller(), &presented, record.as_deref()) {
+    let Some(payload) = QUEUE.take(&state, &address, &presented, &crate::permit::caller()) else {
         return Err(format!("This rules check of {address} was not started by kebbie's keeper, so it approves nothing."));
-    }
-    let round = record.as_deref().and_then(|record| record.lines().nth(1)).and_then(|round| round.trim().parse::<u32>().ok()).unwrap_or(0);
-    crate::state::write(&file(&state, &address, "running"), std::process::id().to_string())?;
+    };
+    let round = payload.trim().parse::<u32>().unwrap_or(0);
     let sha = git(&slot.path, &["rev-parse", "HEAD"]);
     let answer = sha.clone().and_then(|sha| check(&state, &repo, &slot, &address, &upstream, &sha));
     let _ = fs::remove_file(file(&state, &address, "claude"));
@@ -284,7 +255,7 @@ pub fn run(cwd: &Path) -> Result<String> {
         (Err(error), _) => Err(error),
         (_, None) => Err("kebbie could not read the commits' fingerprint".to_string()),
     };
-    let _ = fs::remove_file(file(&state, &address, "running"));
+    QUEUE.done(&state, &address);
     let reach = |to: To, text: &str| {
         let sent = match to {
             To::Task => tell_task(&address, text),
@@ -322,7 +293,7 @@ pub fn again(state: &Path, address: &str, worktree: &Path, verdict: bool, moved:
     if round > 0 {
         return Ok(Again::Lead);
     }
-    crate::state::write(&file(state, address, "wanted"), format!("\n{}\n{}\n", round + 1, worktree.display()))?;
+    QUEUE.want(state, address, worktree, &(round + 1).to_string())?;
     Ok(Again::Run)
 }
 
@@ -331,7 +302,7 @@ fn check(state: &Path, repo: &Path, slot: &Slot, address: &str, upstream: &str, 
     let kebbie = install_root()?;
     let rules = &settings.rules_skill.value;
     let rules_file = review::rules_file(rules, &slot.path, &kebbie).ok_or(format!("kebbie found no file for the rules skill `{rules}`"))?;
-    let claude = trusted_spawn::claude_from_keeper()?;
+    let claude = crate::trusted_spawn::claude_from_keeper()?;
     let commits = git(&slot.path, &["log", "--reverse", "--format=%h %s", &format!("{upstream}..{sha}")])?;
     let docs = if settings.docs_required.value { Some(review::docs_brief(&slot.path, upstream, sha, &kebbie.join("skills/keep-docs/SKILL.md"))?) } else { None };
     let quoted = review::quoted_rules(rules);
@@ -429,7 +400,7 @@ mod tests {
     use crate::tasks::test_support::*;
     use crate::repo::git;
     use crate::permit::Caller;
-    use crate::trusted_spawn::{REVIEWER_BIN, SPAWNED, digest};
+    use crate::trusted_spawn::{REVIEWER_BIN, SPAWNED, claude_path, digest, trusted};
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
@@ -544,7 +515,7 @@ mod tests {
         let env = reviewer_env(own.iter().map(|(name, value)| (name.to_string(), value.clone())));
         assert_eq!(env.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["PATH", "HOME", "KEBBIE_STATE_DIR"], "no task identity and nothing kebbie does not need");
         assert_eq!(claude_path(&env), Some(claude.clone()), "found on the keeper's own PATH, its relative entries skipped");
-        let command = reviewer_command(Path::new("/bin/kebbie"), Path::new("/src/wt1.app"), &env, &claude);
+        let command = QUEUE.command(Path::new("/bin/kebbie"), Path::new("/src/wt1.app"), &env, &claude);
         let args: Vec<String> = command.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
         assert_eq!(command.get_program(), "/bin/kebbie");
         assert_eq!(args, ["-C", "/src/wt1.app", "review", "--run", "--rules"]);

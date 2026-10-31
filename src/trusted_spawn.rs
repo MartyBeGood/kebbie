@@ -4,6 +4,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::permit::Caller;
@@ -78,6 +79,142 @@ pub fn trusted(caller: &Caller, presented: &str, recorded: Option<&str>) -> bool
     !matches!(caller, Caller::Task(_) | Caller::Sandboxed | Caller::LeadSandboxed) && !presented.trim().is_empty() && recorded.and_then(|record| record.lines().next()).is_some_and(|hash| hash.trim() == digest(presented))
 }
 
+// A task asks from its own process; the keeper's tick starts the child from its own environment, with a nonce only the child reads.
+pub struct Queue {
+    pub dir: fn(&Path) -> PathBuf,
+    pub args: &'static [&'static str],
+    pub is_ours: fn(&str) -> bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ask {
+    pub worktree: PathBuf,
+    #[serde(default)]
+    pub payload: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+}
+
+impl Ask {
+    // A marker an older kebbie wrote is lines: a pid alone, or the worktree among other lines.
+    fn read(text: &str) -> Ask {
+        serde_json::from_str(text).unwrap_or_else(|_| Ask {
+            worktree: text.lines().map(str::trim).find(|line| line.starts_with('/')).map(PathBuf::from).unwrap_or_default(),
+            payload: String::new(),
+            pid: text.lines().next().map(str::trim).filter(|line| !line.is_empty() && line.bytes().all(|byte| byte.is_ascii_digit())).and_then(|pid| pid.parse().ok()),
+        })
+    }
+}
+
+impl Queue {
+    pub fn file(&self, state: &Path, address: &str, kind: &str) -> PathBuf {
+        (self.dir)(state).join(format!("{address}.{kind}"))
+    }
+
+    fn write(&self, state: &Path, address: &str, kind: &str, ask: &Ask) -> Result<()> {
+        crate::state::write(&self.file(state, address, kind), serde_json::to_string(ask).map_err(|error| error.to_string())?)
+    }
+
+    fn read(&self, state: &Path, address: &str, kind: &str) -> Option<Ask> {
+        fs::read_to_string(self.file(state, address, kind)).ok().map(|text| Ask::read(&text))
+    }
+
+    // Wanted, or started and not settled yet, whether or not its child still runs.
+    pub fn asked(&self, state: &Path, address: &str) -> Option<Ask> {
+        self.wanted(state, address).or_else(|| self.read(state, address, "running"))
+    }
+
+    pub fn want(&self, state: &Path, address: &str, worktree: &Path, payload: &str) -> Result<()> {
+        self.write(state, address, "wanted", &Ask { worktree: worktree.to_path_buf(), payload: payload.to_string(), pid: None })
+    }
+
+    pub fn wanted(&self, state: &Path, address: &str) -> Option<Ask> {
+        self.read(state, address, "wanted")
+    }
+
+    pub fn unwant(&self, state: &Path, address: &str) {
+        let _ = fs::remove_file(self.file(state, address, "wanted"));
+    }
+
+    // The marker's pid while that process is still this queue's child; a pid another program has since a reboot is no child.
+    pub fn pid(&self, state: &Path, address: &str) -> Option<String> {
+        let pid = self.read(state, address, "running")?.pid?.to_string();
+        crate::sh::run("ps", &["-p", &pid, "-o", "args="], None).ok().filter(|args| (self.is_ours)(args)).map(|_| pid)
+    }
+
+    pub fn done(&self, state: &Path, address: &str) {
+        let _ = fs::remove_file(self.file(state, address, "running"));
+    }
+
+    // A child still running is stopped first, so nothing it settles lands for a task that is gone.
+    pub fn forget(&self, state: &Path, address: &str) {
+        if let Some(pid) = self.pid(state, address) {
+            crate::review::stop_group(&pid);
+        }
+        for kind in ["wanted", "running", "run"] {
+            let _ = fs::remove_file(self.file(state, address, kind));
+        }
+    }
+
+    fn addresses(&self, state: &Path, kind: &str) -> Vec<String> {
+        let suffix = format!(".{kind}");
+        fs::read_dir((self.dir)(state)).into_iter().flatten().flatten().filter_map(|entry| entry.file_name().to_string_lossy().strip_suffix(&suffix).map(str::to_string)).collect()
+    }
+
+    pub fn tick(&self, state: &Path, env: &[(String, String)], log: impl Fn(&str) -> PathBuf) -> Vec<(String, Ask, Result<()>)> {
+        let mut started = Vec::new();
+        for address in self.addresses(state, "wanted") {
+            if self.pid(state, &address).is_some() {
+                continue;
+            }
+            let Some(ask) = self.wanted(state, &address) else { continue };
+            self.unwant(state, &address);
+            if !crate::rules_check::worktree_is(&ask.worktree, &address) {
+                continue;
+            }
+            let begun = claude_path(env).ok_or_else(|| "kebbie found no claude on the keeper's PATH".to_string())
+                .and_then(|claude| self.begin(state, &address, &ask, self.command(&crate::peers::own_exe()?, &ask.worktree, env, &claude), &log(&address), launch));
+            started.push((address, ask, begun));
+        }
+        started
+    }
+
+    pub(crate) fn command(&self, kebbie: &Path, worktree: &Path, env: &[(String, String)], claude: &Path) -> Command {
+        let place = worktree.to_string_lossy();
+        let args: Vec<&str> = ["-C", place.as_ref()].into_iter().chain(self.args.iter().copied()).collect();
+        command(kebbie, worktree, &args, env, claude)
+    }
+
+    // The marker is there before the child, so a second ask right after the first finds it starting.
+    fn begin(&self, state: &Path, address: &str, ask: &Ask, command: Command, log: &Path, launch: fn(Command, &Path, &Path, &str) -> Result<u32>) -> Result<()> {
+        self.write(state, address, "running", ask)?;
+        match launch(command, log, &self.file(state, address, "run"), &ask.payload) {
+            Ok(pid) => {
+                if self.read(state, address, "running").is_some_and(|running| running.pid.is_none()) {
+                    self.write(state, address, "running", &Ask { pid: Some(pid), ..ask.clone() })?;
+                }
+                Ok(())
+            }
+            Err(error) => {
+                self.done(state, address);
+                Err(error)
+            }
+        }
+    }
+
+    // The child's half: only the keeper's start with its nonce, and no task in the chain, gets the payload the keeper recorded.
+    pub fn take(&self, state: &Path, address: &str, presented: &str, caller: &Caller) -> Option<String> {
+        let record = fs::read_to_string(self.file(state, address, "run")).ok();
+        let _ = fs::remove_file(self.file(state, address, "run"));
+        if !trusted(caller, presented, record.as_deref()) {
+            return None;
+        }
+        let ask = self.read(state, address, "running").unwrap_or_default();
+        let _ = self.write(state, address, "running", &Ask { pid: Some(std::process::id()), ..ask });
+        Some(record.unwrap_or_default().lines().skip(1).collect::<Vec<_>>().join("\n"))
+    }
+}
+
 #[cfg(not(test))]
 fn spawn(command: Command, nonce: &str) -> Result<u32> {
     spawn_now(command, nonce)
@@ -117,4 +254,42 @@ fn spawn(command: Command, nonce: &str) -> Result<u32> {
     };
     SPAWNED.with(|all| all.borrow_mut().push(spawned));
     Ok(std::process::id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const QUEUED: Queue = Queue { dir: |state| state.join("queued"), args: &["review", "--assess"], is_ours: |args| args.contains(" review --assess") };
+
+    #[test]
+    fn a_queued_child_takes_its_payload_from_the_keepers_record_once() {
+        let state = crate::sh::test_dir("trusted-queue");
+        QUEUED.want(&state, "billing@app", Path::new("/src/wt1.app"), "require").unwrap();
+        let ask = QUEUED.wanted(&state, "billing@app").unwrap();
+        assert_eq!((ask.worktree.as_path(), ask.payload.as_str()), (Path::new("/src/wt1.app"), "require"));
+        let begin = || {
+            QUEUED.begin(&state, "billing@app", &ask, Command::new("/bin/kebbie"), &state.join("child.log"), launch).unwrap();
+            QUEUED.write(&state, "billing@app", "running", &Ask { payload: "suggest".to_string(), ..ask.clone() }).unwrap();
+            SPAWNED.with(|all| all.borrow_mut().pop().unwrap().nonce)
+        };
+        begin();
+        assert_eq!(QUEUED.take(&state, "billing@app", "guess", &Caller::User), None, "no nonce, no payload");
+        let nonce = begin();
+        assert_eq!(QUEUED.take(&state, "billing@app", &nonce, &Caller::User).as_deref(), Some("require"), "the child reads what the keeper recorded, not the marker beside it");
+        assert_eq!(QUEUED.take(&state, "billing@app", &nonce, &Caller::User), None, "a record is taken once");
+        assert_eq!(QUEUED.pid(&state, "billing@app"), None, "its pid is no child of this queue");
+        QUEUED.forget(&state, "billing@app");
+        assert!(QUEUED.asked(&state, "billing@app").is_none());
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn a_marker_an_older_kebbie_wrote_still_reads() {
+        assert_eq!(Ask::read("12345\n"), Ask { worktree: PathBuf::new(), payload: String::new(), pid: Some(12345) });
+        assert_eq!(Ask::read("12345\nrequire\n").pid, Some(12345));
+        assert_eq!(Ask::read("/src/wt1.app\nrequire\n").worktree, Path::new("/src/wt1.app"));
+        assert_eq!(Ask::read("abc123\n0\n/src/wt1.app\n").worktree, Path::new("/src/wt1.app"));
+        assert_eq!(Ask::read("$(id)").pid, None);
+    }
 }
