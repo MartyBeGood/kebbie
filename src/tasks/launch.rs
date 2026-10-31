@@ -408,10 +408,7 @@ fn launch_new(repo: &Path, task: &str, slot: &Slot, address: &str, place: Launch
     }
     store_prompt(&prompt_file(&session_file(task, repo)?), prompt)?;
     let space = open_space(repo, slot, task, false)?;
-    let agent_pane = match space.root_pane_id {
-        Some(pane) => pane,
-        None => herdr::create_tab(&space.workspace_id, &slot.path, task)?,
-    };
+    let agent_pane = agent_pane(&space, &slot.path, task, space.root_pane_id.clone(), &codex_session(profile.agent).env)?;
     name_agent_tab(&agent_pane, task);
     let configured = configured_mode(repo)?;
     let configured = profile.permission_mode.clone().or(configured);
@@ -551,7 +548,8 @@ fn launch(place: &Launch, pane: &str, session: Session) -> Result<(String, Resul
     let agent_name: String = if taken { format!("{task}_{}", slug(&name_of(repo))?) } else { task.to_string() }.chars().take(32).collect();
     let agent = profile.agent;
     let address = peers::address(task, &name_of(repo));
-    let files = TaskFiles { address: &address, settings: &prepared.settings, role: &prepared.role, sandboxed: prepared.sandboxed, tmp: Some(&prepared.tmp) };
+    let codex = codex_session(agent);
+    let files = TaskFiles { address: &address, settings: &prepared.settings, role: &prepared.role, sandboxed: prepared.sandboxed, tmp: Some(&prepared.tmp), hidden: &codex.hidden };
     let agent_args = agent.start_args(mode, profile, &files, &session);
     let started = agent.start(&agent_name, pane, &agent_args.iter().map(String::as_str).collect::<Vec<_>>(), agent.trusted_by_user(repo));
     if let Ok(started) = &started {
@@ -561,6 +559,29 @@ fn launch(place: &Launch, pane: &str, session: Session) -> Result<(String, Resul
         crate::state::write(&session_file(task, repo)?, record_text(&record))?;
     }
     Ok((agent_name, started))
+}
+
+fn codex_session(agent: Agent) -> crate::agent::codex_setup::Session {
+    if agent != Agent::Codex {
+        return crate::agent::codex_setup::Session::default();
+    }
+    let config = crate::agent::codex_setup::read_config(crate::agent::codex::home().as_deref());
+    crate::agent::codex_setup::session(&crate::agent::claude::home().unwrap_or_default(), &config)
+}
+
+// A Codex that reads the vault's keys from its environment starts in a tab whose shell has them, so they are never typed into a pane or put on a command line.
+fn agent_pane(space: &herdr::Space, cwd: &Path, task: &str, root: Option<String>, env: &[(String, String)]) -> Result<String> {
+    if env.is_empty() {
+        return match root {
+            Some(pane) => Ok(pane),
+            None => herdr::create_tab(&space.workspace_id, cwd, task),
+        };
+    }
+    let pane = herdr::create_tab_with_env(&space.workspace_id, cwd, task, env)?;
+    if let Some(root) = root {
+        let _ = herdr::close_pane(&root);
+    }
+    Ok(pane)
 }
 
 // The session a started agent's record names: the one it resumed, whether its record or a scan of its conversations found it, and for a new Codex none until its SessionStart hook records the one Codex picked.
@@ -594,10 +615,8 @@ fn restart(place: &Launch, slot: &Slot, focus: bool, given: Option<&str>) -> Res
         return Ok(Begun { said: Notice::new(Tone::NotNow, "It is already running").detail("task", task).detail("folder", slot.path.display().to_string()).to_string(), started: Started::Ready });
     }
     let space = open_space(place.repo, slot, task, false)?;
-    let pane = match (&open, space.root_pane_id) {
-        (None, Some(pane)) => pane,
-        _ => herdr::create_tab(&space.workspace_id, &slot.path, task)?,
-    };
+    let root = space.root_pane_id.clone().filter(|_| open.is_none());
+    let pane = agent_pane(&space, &slot.path, task, root, &codex_session(place.profile.agent).env)?;
     name_agent_tab(&pane, task);
     let Record { session: recorded, mode, .. } = recorded_session(task, place.repo);
     let agent = place.profile.agent;
@@ -1156,7 +1175,7 @@ mod tests {
         assert_eq!(chosen_mode(None, None, configured.as_deref()), Some("acceptEdits"), "the profile's mode goes ahead of task.permission_mode");
         assert_eq!(chosen_mode(Some(BYPASS), None, configured.as_deref()), Some(BYPASS), "--mode goes ahead of the profile's");
         let (file, role) = (Path::new("/state/roles/billing@app.settings.json"), Path::new("/state/roles/billing@app.md"));
-        let files = TaskFiles { address: "billing@app", settings: file, role, sandboxed: true, tmp: None };
+        let files = TaskFiles { address: "billing@app", settings: file, role, sandboxed: true, tmp: None, hidden: &[] };
         let args = Agent::Claude.start_args(chosen_mode(None, None, configured.as_deref()), &designer, &files, &Session::New("1f0c".to_string()));
         assert_eq!(args, ["--permission-mode", "acceptEdits", "--model", "opus", "--effort", "high", "--settings", "/state/roles/billing@app.settings.json", "--append-system-prompt-file", "/state/roles/billing@app.md", "--session-id", "1f0c"]);
         assert_eq!(Agent::Claude.start_args(None, &task, &files, &Session::Resume("1f0c".to_string())), claude_args(None, file, role, &Session::Resume("1f0c".to_string())));

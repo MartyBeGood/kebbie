@@ -249,19 +249,33 @@ fn socket() -> Result<PathBuf> {
         .map_err(|_| "Neither HERDR_SOCKET_PATH nor HOME is set".to_string())
 }
 
-// The CLI has no command for the order of Spaces, so this one goes to the socket API.
-pub fn move_workspace(workspace_id: &str, insert_index: usize) -> Result<()> {
-    let path = socket()?;
-    let mut stream = UnixStream::connect(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let request = json!({ "id": "kebbie", "method": "workspace.move", "params": { "workspace_id": workspace_id, "insert_index": insert_index } });
+fn socket_call(path: &Path, method: &str, params: Value) -> Result<Value> {
+    let mut stream = UnixStream::connect(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let request = json!({ "id": "kebbie", "method": method, "params": params });
     writeln!(stream, "{request}").map_err(|error| error.to_string())?;
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).map_err(|error| error.to_string())?;
-    let reply: Value = serde_json::from_str(&line).map_err(|error| format!("herdr workspace.move: {error}"))?;
+    let reply: Value = serde_json::from_str(&line).map_err(|error| format!("herdr {method}: {error}"))?;
     match reply.get("error") {
-        Some(error) => Err(format!("herdr workspace.move: {error}")),
-        None => Ok(()),
+        Some(error) => Err(format!("herdr {method}: {error}")),
+        None => Ok(reply["result"].clone()),
     }
+}
+
+// The CLI has no command for the order of Spaces, so this one goes to the socket API.
+pub fn move_workspace(workspace_id: &str, insert_index: usize) -> Result<()> {
+    socket_call(&socket()?, "workspace.move", json!({ "workspace_id": workspace_id, "insert_index": insert_index })).map(|_| ())
+}
+
+// The CLI's --env would put a value on its command line, so a tab whose shell must hold a secret is made over the socket.
+pub fn create_tab_with_env(workspace_id: &str, cwd: &Path, label: &str, env: &[(String, String)]) -> Result<String> {
+    create_tab_with_env_at(&socket()?, workspace_id, cwd, label, env)
+}
+
+fn create_tab_with_env_at(socket: &Path, workspace_id: &str, cwd: &Path, label: &str, env: &[(String, String)]) -> Result<String> {
+    let env: serde_json::Map<String, Value> = env.iter().map(|(name, value)| (name.clone(), Value::from(value.as_str()))).collect();
+    let result = socket_call(socket, "tab.create", json!({ "workspace_id": workspace_id, "cwd": cwd.to_string_lossy(), "label": label, "env": env, "focus": false }))?;
+    text(&result["root_pane"]["pane_id"]).ok_or_else(|| "herdr tab.create returned no pane".to_string())
 }
 
 pub fn read_pane(pane_id: &str) -> Result<String> {
@@ -276,6 +290,32 @@ pub fn agent_ready(name: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tab_with_secrets_in_its_shell_is_made_over_the_socket_and_never_on_a_command_line() {
+        let dir = PathBuf::from(format!("/tmp/kebbie-sock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("herdr.sock");
+        let _ = std::fs::remove_file(&socket);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let served = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            writeln!(&stream, "{}", json!({ "id": "kebbie", "result": { "type": "tab_created", "tab": { "tab_id": "t_2" }, "root_pane": { "pane_id": "p_9" } } })).unwrap();
+            line
+        });
+        let env = [("S3_ACCESS_KEY".to_string(), "AKIA1".to_string()), ("S3_SECRET_KEY".to_string(), "hunter2".to_string())];
+        assert_eq!(create_tab_with_env_at(&socket, "w_1", Path::new("/src/wt1.app"), "billing", &env).unwrap(), "p_9");
+        let request: Value = serde_json::from_str(&served.join().unwrap()).unwrap();
+        assert_eq!(request["method"], "tab.create");
+        assert_eq!(request["params"]["env"], json!({ "S3_ACCESS_KEY": "AKIA1", "S3_SECRET_KEY": "hunter2" }), "the keys go to herdr's server in the request, so no process's argv holds them");
+        assert_eq!((request["params"]["workspace_id"].as_str(), request["params"]["cwd"].as_str(), request["params"]["focus"].as_bool()), (Some("w_1"), Some("/src/wt1.app"), Some(false)));
+        let source = include_str!("herdr.rs");
+        let body = &source[source.find("fn create_tab_with_env_at(").unwrap()..];
+        assert!(!body[..body.find("\n}\n").unwrap()].contains("call(&["), "no herdr command line carries the env");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn only_a_tab_label_herdr_the_sync_or_an_earlier_kebbie_gave_is_renamed() {

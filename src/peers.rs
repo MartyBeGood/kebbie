@@ -309,9 +309,9 @@ pub fn role_file(task: &str, place: &Place) -> Result<(PathBuf, String)> {
     Ok((file, fill(&template, &quiet) + place.profile))
 }
 
-// A Codex session has no vault tools, so the lead keeps its note and its plan goes in the plan file.
-fn vault_parts(agent: crate::agent::Agent, sources: &[crate::config::Source], note: Option<&str>, kebbie: &str, task: &str, plans: &Path) -> (String, String, bool) {
-    if agent == crate::agent::Agent::Codex {
+// A Codex without the vault server in its config has no vault tools, so the lead keeps its note and its plan goes in the plan file.
+fn vault_parts(agent: crate::agent::Agent, codex_vault: bool, sources: &[crate::config::Source], note: Option<&str>, kebbie: &str, task: &str, plans: &Path) -> (String, String, bool) {
+    if agent == crate::agent::Agent::Codex && !codex_vault {
         let sources: Vec<crate::config::Source> = sources.iter().copied().filter(|source| *source != crate::config::Source::Vault).collect();
         return (plan_step(&sources, None, kebbie, task, plans), lead_keeps_note(note, kebbie), false);
     }
@@ -324,7 +324,8 @@ fn role_values(task: &str, place: &Place, peers: &str) -> Result<Vec<(&'static s
     let peers = peers.to_string();
     let kebbie = kebbie_command()?;
     let plans = plan_file(place.sandboxed, &me, || crate::tasks::task_tmp(place.worktree), crate::lead::state_dir)?;
-    let (plan, vault, tools) = vault_parts(place.agent, &crate::config::sources().unwrap_or_default(), place.note, &kebbie, task, &plans);
+    let codex_vault = place.agent == crate::agent::Agent::Codex && crate::agent::codex_setup::found_server(&crate::agent::codex_setup::read_config(crate::agent::codex::home().as_deref())).is_some();
+    let (plan, vault, tools) = vault_parts(place.agent, codex_vault, &crate::config::sources().unwrap_or_default(), place.note, &kebbie, task, &plans);
     let settings = crate::config::resolve(Some(place.repo))?.settings;
     let noticed = noticed_section(settings.also_noticed.value, tools && crate::vault_cli::detect().is_some(), &kebbie);
     let docs = docs_line(place.agent, settings.docs_required.value);
@@ -579,7 +580,7 @@ mod tests {
         use crate::agent::Agent;
         use crate::config::Source;
         let plans = Path::new("/src/app/.git/worktrees/1/kebbie-tmp/plan.md");
-        let (plan, vault, tools) = vault_parts(Agent::Codex, &[Source::Vault], Some("Projects/kebbie-billing.md"), "/bin/kebbie", "billing", plans);
+        let (plan, vault, tools) = vault_parts(Agent::Codex, false, &[Source::Vault], Some("Projects/kebbie-billing.md"), "/bin/kebbie", "billing", plans);
         assert!(!tools, "a Codex session gets no vault MCP tools, so it files what it notices with kebbie backlog add");
         assert!(plan.contains("/bin/kebbie ask --plan /src/app/.git/worktrees/1/kebbie-tmp/plan.md") && !plan.contains("vault"), "{plan}");
         let role = fill(include_str!("../roles/task.md"), &[("vault", &vault)]);
@@ -587,9 +588,11 @@ mod tests {
             assert!(role.contains(needed), "{needed}: {role}");
         }
         assert!(!role.contains("vault MCP tools") && !role.contains("with the vault tools"), "{role}");
-        assert_eq!(vault_parts(Agent::Codex, &[], None, "/bin/kebbie", "billing", plans).1, "", "no note, no vault section");
-        let (plan, vault, tools) = vault_parts(Agent::Claude, &[Source::Vault], Some("Projects/kebbie-billing.md"), "/bin/kebbie", "billing", plans);
+        assert_eq!(vault_parts(Agent::Codex, false, &[], None, "/bin/kebbie", "billing", plans).1, "", "no note, no vault section");
+        let (plan, vault, tools) = vault_parts(Agent::Claude, false, &[Source::Vault], Some("Projects/kebbie-billing.md"), "/bin/kebbie", "billing", plans);
         assert!(tools && plan.contains("--plan vault:Projects/kebbie-billing.md") && vault == vault_section(Some("Projects/kebbie-billing.md"), "/bin/kebbie"));
+        let (plan, vault, tools) = vault_parts(Agent::Codex, true, &[Source::Vault], Some("Projects/kebbie-billing.md"), "/bin/kebbie", "billing", plans);
+        assert!(tools && plan.contains("--plan vault:Projects/kebbie-billing.md") && vault == vault_section(Some("Projects/kebbie-billing.md"), "/bin/kebbie"), "a Codex with the vault server keeps its own note");
     }
 
     #[test]

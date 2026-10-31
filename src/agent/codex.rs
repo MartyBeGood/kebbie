@@ -301,7 +301,7 @@ fn env_override(address: &str, tmp: Option<&Path>) -> String {
 }
 
 // Codex picks a new session's id itself, so a new start names none and the SessionStart hook records it; a resume is the resume subcommand with the id last.
-pub(crate) fn start_args(mode: Option<&str>, profile: &Profile, address: &str, sandboxed: bool, tmp: Option<&Path>, session: &Session) -> Vec<String> {
+pub(crate) fn start_args(mode: Option<&str>, profile: &Profile, address: &str, sandboxed: bool, tmp: Option<&Path>, hidden: &[String], session: &Session) -> Vec<String> {
     let mut args = Vec::new();
     if let Session::Resume(_) = session {
         args.push("resume".to_string());
@@ -314,6 +314,7 @@ pub(crate) fn start_args(mode: Option<&str>, profile: &Profile, address: &str, s
         args.extend(["-c".to_string(), format!("model_reasoning_effort={}", toml_string(effort))]);
     }
     args.extend(["-c".to_string(), env_override(address, tmp)]);
+    args.extend(hidden.iter().cloned());
     args.extend(plugin_args());
     if let Session::Resume(id) = session {
         args.push(id.clone());
@@ -858,7 +859,7 @@ mod tests {
 
     #[test]
     fn a_sandboxed_codex_task_writes_only_its_workspace_and_asks_before_leaving_it() {
-        let args = start_args(None, &profile(Some("gpt-5.5"), Some("high")), "billing@app", true, Some(Path::new("/src/app/.git/worktrees/1/kebbie-tmp")), &Session::New("ignored".to_string()));
+        let args = start_args(None, &profile(Some("gpt-5.5"), Some("high")), "billing@app", true, Some(Path::new("/src/app/.git/worktrees/1/kebbie-tmp")), &[], &Session::New("ignored".to_string()));
         assert_eq!(after(&args, "--sandbox"), ["workspace-write"]);
         assert_eq!(after(&args, "--ask-for-approval"), ["on-request"]);
         assert_eq!(after(&args, "--model"), ["gpt-5.5"]);
@@ -888,7 +889,7 @@ mod tests {
 
     #[test]
     fn a_resumed_codex_task_names_its_session_last_after_the_resume_subcommand() {
-        let args = start_args(Some("default"), &profile(None, None), "billing@app", true, None, &Session::Resume("019b3136-fdf0-7d50-8762-84076af7f203".to_string()));
+        let args = start_args(Some("default"), &profile(None, None), "billing@app", true, None, &[], &Session::Resume("019b3136-fdf0-7d50-8762-84076af7f203".to_string()));
         assert_eq!(args.first().map(String::as_str), Some("resume"));
         assert_eq!(args.last().map(String::as_str), Some("019b3136-fdf0-7d50-8762-84076af7f203"));
         assert!(!args.iter().any(|word| word.starts_with("model_reasoning_effort") || word == "--model"), "no model or effort the profile did not name");
@@ -1123,7 +1124,7 @@ mod tests {
     #[test]
     fn a_codex_kebbie_starts_skips_its_update_check_and_its_update_screen_holds_the_start() {
         for session in [Session::New("x".to_string()), Session::Resume("id".to_string())] {
-            let args = start_args(None, &profile(None, None), "billing@app", true, None, &session);
+            let args = start_args(None, &profile(None, None), "billing@app", true, None, &[], &session);
             assert!(after(&args, "-c").contains(&"check_for_update_on_startup=false"), "codex-rs/tui/src/updates.rs reads config.check_for_update_on_startup before it shows tui/src/update_prompt.rs: {args:?}");
         }
         let resumed = with_role(&resume_args(&["codex".to_string(), "-c".to_string(), NO_UPDATE_CHECK.to_string()], "id").unwrap());
@@ -1170,8 +1171,17 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_task_that_reads_the_vault_keys_from_its_environment_names_them_only_to_keep_them_from_its_commands() {
+        let hidden = crate::agent::codex_setup::hide_args(&toml::Table::new(), &["S3_ACCESS_KEY".to_string(), "S3_SECRET_KEY".to_string()]);
+        let args = start_args(None, &profile(None, None), "billing@app", true, None, &hidden, &Session::Resume("019b".to_string()));
+        assert!(after(&args, "-c").contains(&"shell_environment_policy.filters.S3_SECRET_KEY=\"exclude\""), "{args:?}");
+        assert_eq!(args.last().map(String::as_str), Some("019b"), "the session id stays last");
+        assert!(!lacks_role(&args) && resume_args(&std::iter::once("codex".to_string()).chain(args.iter().skip(1).cloned()).collect::<Vec<_>>(), "019b").unwrap().iter().any(|arg| arg.contains("S3_SECRET_KEY")), "a restart keeps the exclude with the rest of its flags");
+    }
+
+    #[test]
     fn the_codex_sessions_kebbie_starts_title_their_terminal_with_codexs_default_items() {
-        let args = start_args(None, &profile(None, None), "billing@app", true, None, &Session::New("x".to_string()));
+        let args = start_args(None, &profile(None, None), "billing@app", true, None, &[], &Session::New("x".to_string()));
         assert!(after(&args, "-c").contains(&"tui.terminal_title=[\"activity\",\"thread-name\",\"project-name\"]"), "config/src/types.rs: when unset the TUI shows activity, thread-name and project-name; a user's own list would hide Action Required or the thread title: {args:?}");
         let parsed: toml::Table = TITLE_ITEMS.replacen("tui.terminal_title=", "items = ", 1).parse().unwrap();
         assert_eq!(parsed["items"].as_array().map(Vec::len), Some(3), "the value parses as a TOML list");

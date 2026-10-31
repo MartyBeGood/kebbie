@@ -111,6 +111,16 @@ pub fn vault_server(plugin_root: &Path, options: &Value) -> Option<Server> {
     Some(Server { command, args, env, env_vars })
 }
 
+// The keys a Codex session needs in its environment, read where the Claude vault plugin keeps them; only those Codex's own config names.
+pub fn vault_secrets(plugin_root: &Path, options: &Value, wanted: &[String]) -> Vec<(String, String)> {
+    let server = plugin_server(plugin_root);
+    server["env"].as_object().into_iter().flatten()
+        .filter(|(name, _)| SECRETS.contains(&name.as_str()) && wanted.contains(name))
+        .map(|(name, value)| (name.clone(), filled(value.as_str().unwrap_or_default(), options)))
+        .filter(|(_, value)| !value.is_empty())
+        .collect()
+}
+
 fn list(items: &[String]) -> String {
     format!("[{}]", items.iter().map(|item| quoted(item)).collect::<Vec<_>>().join(", "))
 }
@@ -163,6 +173,50 @@ pub fn with_vault(text: &str, server: &Server) -> Result<String> {
     let ours: toml_edit::DocumentMut = block.parse().map_err(|error| format!("kebbie's vault server lines do not parse: {error}"))?;
     document["mcp_servers"][SERVER] = ours["mcp_servers"][SERVER].clone();
     Ok(document.to_string())
+}
+
+// The secret names Codex reads from the environment for its vault server, as its config.toml gives them.
+pub fn wanted_secrets(config: &toml::Table) -> Vec<String> {
+    found_server(config).and_then(|server| server.get("env_vars")).and_then(toml::Value::as_array).into_iter().flatten()
+        .filter_map(|item| item.as_str().map(str::to_string).or_else(|| item.get("name").and_then(toml::Value::as_str).map(str::to_string)))
+        .filter(|name| SECRETS.contains(&name.as_str()))
+        .collect()
+}
+
+
+// What a Codex task's session needs for the vault: the keys by the names its config gives, read where the Claude vault plugin keeps them, and those names kept from its commands.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Session {
+    pub vault: bool,
+    pub env: Vec<(String, String)>,
+    pub hidden: Vec<String>,
+}
+
+pub fn read_config(codex_home: Option<&Path>) -> toml::Table {
+    codex_home.and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok()).and_then(|text| text.parse().ok()).unwrap_or_default()
+}
+
+pub fn session(claude_dir: &Path, config: &toml::Table) -> Session {
+    let names = wanted_secrets(config);
+    let env = match crate::vault_cli::installed(claude_dir) {
+        Some((_, _, root)) if !names.is_empty() => vault_secrets(&root, &vault_options(claude_dir), &names),
+        _ => Vec::new(),
+    };
+    Session { vault: found_server(config).is_some(), hidden: hide_args(config, &names), env }
+}
+
+// Codex hands its own environment to the commands it runs (shell_environment_policy inherits all), so the keys are excluded by name; a config on the older exclude list keeps its entries, as filters and that list cannot mix.
+pub fn hide_args(config: &toml::Table, names: &[String]) -> Vec<String> {
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let policy = config.get("shell_environment_policy").and_then(toml::Value::as_table);
+    if policy.is_some_and(|policy| policy.contains_key("exclude") || policy.contains_key("include_only")) {
+        let theirs = policy.and_then(|policy| policy.get("exclude")).and_then(toml::Value::as_array).into_iter().flatten().filter_map(toml::Value::as_str).map(str::to_string);
+        let all: Vec<String> = theirs.chain(names.iter().cloned()).collect();
+        return vec!["-c".to_string(), format!("shell_environment_policy.exclude={}", list(&all))];
+    }
+    names.iter().flat_map(|name| ["-c".to_string(), format!("shell_environment_policy.filters.{name}=\"exclude\"")]).collect()
 }
 
 // Codex's default: the listed model it ranks first (models-manager, the lowest priority number).
@@ -223,6 +277,9 @@ mod tests {
         assert!(!server.lines().join("\n").contains("hunter2") && !server.lines().join("\n").contains("AKIA1"));
         let folder = vault_server(&root, &serde_json::json!({ "vault_path": "/notes/vault" })).unwrap();
         assert_eq!(folder.lines()[3..], ["[mcp_servers.vault.env]", "VAULT_PATH = \"/notes/vault\""], "a folder vault has no keys to name");
+        let wanted = vec!["S3_ACCESS_KEY".to_string(), "S3_SECRET_KEY".to_string()];
+        assert_eq!(vault_secrets(&root, &s3(), &wanted), [("S3_ACCESS_KEY".to_string(), "AKIA1".to_string()), ("S3_SECRET_KEY".to_string(), "hunter2".to_string())]);
+        assert!(vault_secrets(&root, &s3(), &[]).is_empty(), "only the names Codex's config asks for");
         assert_eq!(vault_server(&dir.join("missing"), &s3()), None);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -243,7 +300,33 @@ mod tests {
         let replaced = with_vault(&other, &server).unwrap();
         assert!(replaced.starts_with(mine) && replaced.contains("[mcp_servers.github]\ncommand = \"gh-mcp\"") && replaced.contains("notes-vault-mcp==0.8.0") && !replaced.contains("0.5.0"), "{replaced}");
         assert_eq!(vault_placed(Some(&replaced), &server), Placed::Current);
+        assert_eq!(wanted_secrets(&replaced.parse().unwrap()), ["S3_ACCESS_KEY", "S3_SECRET_KEY"]);
         assert!(with_vault("model = ", &server).unwrap_err().contains("does not parse"), "a file kebbie cannot read is left alone");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_codex_task_gets_the_vault_keys_in_its_environment_and_its_commands_never_see_them() {
+        let dir = crate::sh::test_dir("codex-vault-session");
+        let claude = dir.join("claude");
+        let root = vault_plugin(&dir);
+        std::fs::create_dir_all(root.join("hooks")).unwrap();
+        std::fs::write(root.join("hooks/hooks.json"), "uvx notes-vault-mcp==0.8.0 hook session-start").unwrap();
+        std::fs::create_dir_all(claude.join("plugins")).unwrap();
+        std::fs::write(claude.join("plugins/installed_plugins.json"), serde_json::json!({ "plugins": { "vault@gronare": [{ "version": "0.2.19", "installPath": root }] } }).to_string()).unwrap();
+        std::fs::write(claude.join("settings.json"), serde_json::json!({ "pluginConfigs": { "vault@gronare": { "options": s3() } } }).to_string()).unwrap();
+        let server = vault_server(&root, &s3()).unwrap();
+        let config: toml::Table = with_vault("", &server).unwrap().parse().unwrap();
+        let found = session(&claude, &config);
+        assert!(found.vault);
+        assert_eq!(found.env, [("S3_ACCESS_KEY".to_string(), "AKIA1".to_string()), ("S3_SECRET_KEY".to_string(), "hunter2".to_string())]);
+        assert_eq!(found.hidden, ["-c", "shell_environment_policy.filters.S3_ACCESS_KEY=\"exclude\"", "-c", "shell_environment_policy.filters.S3_SECRET_KEY=\"exclude\""]);
+        assert!(found.hidden.iter().all(|arg| !arg.contains("hunter2") && !arg.contains("AKIA1")), "only names go on the command line");
+        let legacy: toml::Table = format!("{}\n[shell_environment_policy]\nexclude = [\"AWS_*\"]\n", with_vault("", &server).unwrap()).parse().unwrap();
+        assert_eq!(session(&claude, &legacy).hidden, ["-c", "shell_environment_policy.exclude=[\"AWS_*\", \"S3_ACCESS_KEY\", \"S3_SECRET_KEY\"]"], "the user's own exclude list stays, as Codex refuses filters beside it");
+        assert_eq!(session(&claude, &toml::Table::new()), Session::default(), "no vault server in Codex, nothing to set");
+        let folder: toml::Table = with_vault("", &vault_server(&root, &serde_json::json!({ "vault_path": "/notes" })).unwrap()).unwrap().parse().unwrap();
+        assert_eq!(session(&claude, &folder), Session { vault: true, env: Vec::new(), hidden: Vec::new() }, "a folder vault needs no keys");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

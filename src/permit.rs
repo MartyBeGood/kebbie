@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn a_codex_kebbie_started_is_its_task_and_any_other_codex_an_agent_so_neither_passes_as_the_user() {
         let profile = crate::profiles::Profile { agent: crate::agent::Agent::Codex, ..crate::profiles::built_in(crate::profiles::TASK).unwrap() };
-        let args = crate::agent::codex::start_args(None, &profile, "billing@app", true, Some(Path::new("/src/app/.git/worktrees/1/kebbie-tmp")), &crate::tasks::Session::New("x".to_string()));
+        let args = crate::agent::codex::start_args(None, &profile, "billing@app", true, Some(Path::new("/src/app/.git/worktrees/1/kebbie-tmp")), &[], &crate::tasks::Session::New("x".to_string()));
         let codex = format!("/Users/ada/.local/bin/codex {}", args.join(" "));
         let table = |agent: &str| processes(&format!("  1     0 /sbin/launchd\n 40     1 /usr/bin/herdr server\n 50    40 {agent}\n 60    50 /bin/zsh -c kebbie push billing\n 70    60 /bin/kebbie push billing\n"));
         assert_eq!(caller_in(&table(&codex), 70), Caller::Task("billing@app".to_string()));
