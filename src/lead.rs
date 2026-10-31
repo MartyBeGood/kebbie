@@ -203,7 +203,7 @@ fn runs_kebbie(pane: &str, command: &str) -> bool {
 
 pub fn role_text(template: &str, sources: &[Source], vault: bool, propose: bool) -> String {
     let backlog::Role { finding, backlog, intake, vault_work, after_push } = backlog::role_texts(sources, vault);
-    template.replace("{finding}", &finding).replace("{backlog}", &backlog).replace("{intake}", &intake).replace("{vault_work}", &vault_work).replace("{after_push}", &after_push).replace("{issues}", issues_role(propose))
+    template.replace("{finding}", &finding).replace("{backlog}", &backlog).replace("{intake}", &intake).replace("{vault_work}", &vault_work).replace("{after_push}", &after_push).replace("{issues}", issues_role(propose)).replace("{task_commands}", &crate::sandbox::TASK_COMMANDS.join("`, `kebbie "))
 }
 
 // The {issues} part of roles/lead.md; the skill kebbie:propose-change reads "proposing kebbie issues is off" from it.
@@ -740,6 +740,13 @@ mod tests {
             assert!(role.contains(needed), "{needed}");
         }
         assert!(!role.contains("{issues}"));
+    }
+
+    #[test]
+    fn the_lead_calls_kebbies_own_task_commands_safe_to_let_through_and_recommends_dont_ask_again() {
+        let role = role_text(include_str!("../roles/lead.md"), &[Source::Local], false, true);
+        assert!(role.contains("one of kebbie's own task commands (`kebbie peers`, `kebbie tell`, `kebbie ask`, `kebbie report`, `kebbie steps`, `kebbie accepted`, `kebbie routine ok`, `kebbie link`, `kebbie backlog add`, `kebbie config`), that command is safe to let through") && role.contains("recommend the \"don't ask again\" answer for it"), "{role}");
+        assert!(!role.contains("{task_commands}"));
     }
 
     #[test]
