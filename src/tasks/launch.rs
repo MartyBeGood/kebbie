@@ -515,16 +515,20 @@ fn launch(place: &Launch, pane: &str, session: Session) -> Result<(String, Resul
     let agent_args = agent.start_args(mode, profile, &files, &session);
     let started = agent.start(&agent_name, pane, &agent_args.iter().map(String::as_str).collect::<Vec<_>>(), agent.trusted_by_user(repo));
     if let Ok(started) = &started {
-        let id = match &session {
-            Session::New(_) if agent == Agent::Codex => None,
-            Session::New(id) => Some(id.clone()),
-            Session::Resume(_) => recorded_session(task, repo).session,
-        };
+        let id = started_session(agent, &session);
         let mode = if *started == Started::BypassDisabled { None } else { mode.map(str::to_string) };
         let record = Record { session: id, mode, profile: Some(profile.name.clone()), agent: Some(agent.key().to_string()) };
         crate::state::write(&session_file(task, repo)?, record_text(&record))?;
     }
     Ok((agent_name, started))
+}
+
+// The session a started agent's record names: the one it resumed, whether its record or a scan of its conversations found it, and for a new Codex none until its SessionStart hook records the one Codex picked.
+fn started_session(agent: Agent, session: &Session) -> Option<String> {
+    match session {
+        Session::New(_) if agent == Agent::Codex => None,
+        Session::New(id) | Session::Resume(id) => Some(id.clone()),
+    }
 }
 
 fn agent_in(workspace: &str) -> Result<Option<String>> {
@@ -903,6 +907,14 @@ mod tests {
         assert!(!unheard_in(Agent::Codex, &heard));
         assert!(!unheard_in(Agent::Codex, &packed), "a compressed rollout is resumed without sending the prompt twice");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_resumed_task_records_the_session_it_resumed_even_one_found_by_a_scan() {
+        assert_eq!(started_session(Agent::Codex, &Session::Resume("019b3136-fdf0".to_string())).as_deref(), Some("019b3136-fdf0"), "a record that named no session, its id found among Codex's rollouts, keeps it from then on");
+        assert_eq!(started_session(Agent::Claude, &Session::Resume("1f0c".to_string())).as_deref(), Some("1f0c"));
+        assert_eq!(started_session(Agent::Claude, &Session::New("2a1d".to_string())).as_deref(), Some("2a1d"), "kebbie gives a new Claude its id");
+        assert_eq!(started_session(Agent::Codex, &Session::New("ignored".to_string())), None, "Codex picks a new session's id itself");
     }
 
     #[test]
