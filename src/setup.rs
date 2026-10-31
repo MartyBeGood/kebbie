@@ -186,16 +186,16 @@ pub fn link_binary(home: &Path, path: &[PathBuf]) -> Outcome {
     let bin_dir = home.join(".local/bin");
     let link = bin_dir.join("kebbie");
     let shown = |path: &Path| tilde(home, path);
-    let on_path = if path.contains(&bin_dir) { String::new() } else { format!("; {} is not on PATH yet, the line to add is under Next steps", shown(&bin_dir)) };
+    let on_path = || if crate::doctor::which("kebbie", path).is_some() { String::new() } else { format!("; {} is not on PATH yet, the line to add is under Next steps", shown(&bin_dir)) };
     if !binary.is_file() {
         return Outcome::new("skipped", format!("{} is missing: restart herdr so kebbie's startup links {}, then run this again", shown(&binary), shown(&home.join(".local/share/kebbie/current"))));
     }
     match std::fs::read_link(&link) {
-        Ok(target) if target == binary => Outcome::new("already", format!("{}{on_path}", shown(&link))),
+        Ok(target) if target == binary => Outcome::new("already", format!("{}{}", shown(&link), on_path())),
         Ok(target) => Outcome::new("skipped", format!("{} links to {}: remove it and run this again to link {}", shown(&link), target.display(), shown(&binary))),
         Err(_) if std::fs::symlink_metadata(&link).is_ok() => Outcome::new("skipped", format!("{} is a file kebbie did not put there: remove it and run this again", shown(&link))),
         Err(_) => match std::fs::create_dir_all(&bin_dir).and_then(|_| std::os::unix::fs::symlink(&binary, &link)) {
-            Ok(()) => Outcome::new("done", format!("{}{on_path}", shown(&link))),
+            Ok(()) => Outcome::new("done", format!("{}{}", shown(&link), on_path())),
             Err(error) => Outcome::new("failed", format!("linking {}: {error}", shown(&link))),
         },
     }
@@ -584,7 +584,7 @@ pub(crate) mod tests {
         let home = dir.join("home");
         let root = dir.join("herdr-install");
         std::fs::create_dir_all(root.join("target/release")).unwrap();
-        std::fs::write(root.join("target/release/kebbie"), "").unwrap();
+        crate::executable::write(root.join("target/release/kebbie"), "#!/bin/sh\n").unwrap();
         std::fs::create_dir_all(home.join(".local/share/kebbie")).unwrap();
         std::os::unix::fs::symlink(&root, home.join(".local/share/kebbie/current")).unwrap();
         let claude_dir = home.join(".claude");
@@ -637,6 +637,10 @@ pub(crate) mod tests {
         machine.path = Vec::new();
         let said = link_binary(&machine.home, &machine.path);
         assert!(said.verb == "done" && said.detail.contains("is not on PATH yet, the line to add is under Next steps"), "{said:?}");
+        let through = dir.join("through");
+        std::os::unix::fs::symlink(machine.home.join(".local/bin"), &through).unwrap();
+        let found = link_binary(&machine.home, std::slice::from_ref(&through));
+        assert!(found.verb == "already" && !found.detail.contains("not on PATH") && crate::doctor::kebbie_on_path(&machine.home, &[through]).fact != crate::doctor::NOT_ON_PATH, "the row says what doctor says: {found:?}");
         std::fs::remove_file(machine.home.join(".local/bin/kebbie")).unwrap();
         std::os::unix::fs::symlink("/opt/old/kebbie", machine.home.join(".local/bin/kebbie")).unwrap();
         assert!(link_binary(&machine.home, &machine.path).detail.contains("links to /opt/old/kebbie: remove it"));
