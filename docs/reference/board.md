@@ -162,6 +162,8 @@ kebbie keeps one phase per task, and only what changes it writes it: its start, 
 - A pushed task whose CI gh has not been able to read for 15 minutes, its row marked `gh cannot read it: <error>` meanwhile.
 - A task an API error stopped that kebbie will not resume, marked `stopped by <reason>: <Claude Code's words>`.
 
+`N` puts what needs you in one numbered list, in the order to do it. See [The Next window](#the-next-window).
+
 ### Working
 
 - Started with a prompt, or at work since its last report or since you answered it.
@@ -273,6 +275,7 @@ kebbie never posts a reply.
 | `1`, `2`, `3`, `,` | The Work page, the Areas page, the Routines page, the [Settings page](#settings-page). |
 | `tab` | Move focus to the lead's chat, showing it first when it is hidden. |
 | `h` | Hide the lead's chat so the board takes the whole width while the chat runs on, or show it again. Only on the board in the lead Space. See [Hiding the chat](../explanation/lead-and-away-mode.md#hiding-the-chat). |
+| `N` | [Next](#the-next-window): what needs you, in the order to do it. |
 | `i` | The inbox: the questions waiting on you, opened at the first. Works on the Areas page too. |
 | `m` | Messages: once shows them on one line, again opens them, again hides them. |
 | `H` | The [hub](#the-hub-window) window, to see this board on your phone. |
@@ -382,6 +385,58 @@ The note's card shows its whole title, area, status and summary, and who works o
 - `g` or `⏎` does what `g` does on the row.
 - `esc` closes it.
 - A click on the selected note opens it too.
+
+### The Next window
+
+`N` opens it over the board: one numbered list of what waits on you, what stops the most work first. The number is the order, the heading says why.
+
+```
+╭ Next · 6 need you ───────────────────────────────────────────────────────────────────────────╮
+│                                                                                              │
+│  STOPPED ON YOU                                                                              │
+│ ▸1  ? billing-vat         answer its question: Round per invoice or per line? waiting 42 min │
+│  2  ✗ booking-calendar    CI red after push · its Claude says outside the co… waiting 12 min │
+│                                                                                              │
+│  PUSH, IN THIS ORDER                                                                         │
+│  3  ↑ card-component      2 commits · 2 tasks wait on it                           ready 1 h │
+│  4  ↑ fix-grid            2 commits · bump-pins waits on it                     ready 20 min │
+│  5  ↑ copy-typo           2 commits                                                ready 3 h │
+│                                                                                              │
+│  TO READ                                                                                     │
+│  6  ◆ herdr-app-research  result ready · recommends staying on the TUI                   2 h │
+│                                                                                              │
+│ 4 working · 3 queued · 1 parked                                                              │
+│ ⏎ open · P push 3–5 in order · ↑↓ move · esc board                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+| Group | What is in it | In what order |
+| --- | --- | --- |
+| Stopped on you | A task that stands still until you act: a question or a plan to approve, Claude's own prompt, a report that asks you something, a crash, a red CI only you can settle. | The one most tasks wait behind first, then the one that has waited longest. |
+| Push, in this order | What is ready to push and not in the push line yet. | What other tasks of the same repo wait on first, then two tasks that change the same files in the order they were built, then the one that was ready first. |
+| To read | A task that reported ready with nothing to push, such as a research result. | The one a decision waits on first, then the oldest. |
+
+- The time on the right is how long it has waited on you.
+- Tasks at work, in review, waiting for CI, queued or parked stay out of the list and are counted on the line at the bottom. A red CI its agent is fixing counts as working.
+- When nothing needs you, it says `✓ Nothing needs you.` and what is on its way in: how many are working and which is next to come, what is queued and when a parked task comes back.
+- A list taller than the window scrolls with the selection, and `↓ more` on the keys line says there is more.
+- Next shows the same tasks as Needs you and Ready to push, in the same words; the board keeps those groups.
+
+| Key | Action |
+| --- | --- |
+| `↑` `↓`, `j` `k` | Move. `PgUp` `PgDn`, `Home` `End` move further. |
+| `⏎` | Open or do it: a question opens in the inbox, a push opens its push window, a result opens its card, anything else opens the task's options. Its row is selected on the board. |
+| `P` | Push the push group in its order, after a window that shows the order. |
+| `esc`, `q`, `N` | Back to the board. |
+
+`P` opens `Push 3 tasks in this order`, with each task, its commits and what waits on it.
+
+- `Push all three` pushes them one after the other, in the order shown. Each is rebased onto main and joins its repo's push line.
+- `Push card-component only` pushes the first.
+- The first push that is refused stops the rest: the window that follows names it, why, and what is still ready. The rest stay under Ready to push.
+- `←` `→` choose, `⏎` or a click pushes, `esc` goes back to the list.
+
+`kebbie next` prints the same list. See [Commands](commands.md#seeing-what-is-going-on).
 
 ### The card window
 
@@ -770,5 +825,6 @@ The actions are `work_page`, `areas_page`, `routines_page`, `settings_page`, `hi
 | Click a folded row, the parked line or the bugs to send | Select it. Click again to open it. |
 | Click a bug to send | Select it. Click again to show its report. |
 | Click a comment | Select it. Click again to open its window. |
+| Click a row in Next | Select it. Click again to open it. |
 | Scroll | Move through whatever is under the pointer. |
 | Click outside a window | Close it, except the routine steps, which keep what you typed. |

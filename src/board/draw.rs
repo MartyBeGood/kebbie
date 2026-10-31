@@ -135,6 +135,12 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Options(index) => modal_hits = draw_options(frame, app, *index),
         Mode::Questions(_) => modal_hits = draw_questions(frame, app),
         Mode::Hub(window) => super::hub_window::draw(frame, window),
+        Mode::Next(window) => {
+            let mut window = *window;
+            modal_hits = super::next_window::draw(frame, &crate::next::of(&app.tasks), &mut window, messages::now());
+            app.mode = Mode::Next(window);
+        }
+        Mode::PushAll { order, choice, .. } => modal_hits = super::next_window::draw_push_all(frame, order, *choice),
         Mode::Update => super::update_window::draw(frame, app),
         Mode::AgentUpdates => super::agent_updates::draw(frame, app),
         Mode::Report { id, scroll, read, nudged } => {

@@ -1,7 +1,8 @@
 use std::cmp::Reverse;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::board::widgets::{cut, text_width};
+use crate::notice::{Notice, Tone};
 use crate::peers;
 use crate::phase::{Phase, Why};
 use crate::sh::Result;
@@ -17,6 +18,21 @@ pub enum Part {
 impl Part {
     pub const ALL: [Part; 3] = [Part::Stopped, Part::Push, Part::Read];
 
+    pub fn title(self) -> &'static str {
+        match self {
+            Part::Stopped => "STOPPED ON YOU",
+            Part::Push => "PUSH, IN THIS ORDER",
+            Part::Read => "TO READ",
+        }
+    }
+
+    #[cfg(test)]
+    pub fn board_group(self) -> Group {
+        match self {
+            Part::Push => Group::ReadyToPush,
+            Part::Stopped | Part::Read => Group::NeedsYou,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -256,6 +272,17 @@ pub fn of(items: &[Item]) -> Next {
 }
 
 impl Next {
+    pub fn pushes(&self) -> Vec<&Row> {
+        self.rows.iter().filter(|row| row.part == Part::Push).collect()
+    }
+
+    // The push group's place in the numbered list, as 3–5.
+    pub fn push_span(&self) -> Option<String> {
+        let first = self.rows.iter().position(|row| row.part == Part::Push)? + 1;
+        let last = first + self.pushes().len() - 1;
+        Some(if first == last { first.to_string() } else { format!("{first}–{last}") })
+    }
+
     pub fn footer(&self) -> String {
         [(self.working > 0).then(|| format!("{} working", self.working)), (self.queued > 0).then(|| format!("{} queued", self.queued)), (self.parked > 0).then(|| format!("{} parked", self.parked))].into_iter().flatten().collect::<Vec<_>>().join(" · ")
     }
@@ -308,6 +335,27 @@ impl Next {
 
 pub fn print() -> Result<String> {
     Ok(of(&crate::status::gather()?).text(crate::messages::now(), &crate::recover::local_offset))
+}
+
+// Each push in turn; the first that is refused stops the rest, which stay ready.
+pub fn push_in_order(order: &[(String, PathBuf)], mut push: impl FnMut(&Path) -> Result<String>) -> Result<String> {
+    let mut sent: Vec<String> = Vec::new();
+    for (at, (name, path)) in order.iter().enumerate() {
+        if let Err(why) = push(path) {
+            let why = Notice::parse(&why).map_or(why.clone(), |notice| notice.headline);
+            let left: Vec<String> = order[at + 1..].iter().map(|(name, _)| name.clone()).collect();
+            let mut notice = Notice::new(Tone::Failed, format!("{name} did not push, so the rest wait")).detail("why", why);
+            if !sent.is_empty() {
+                notice = notice.detail("in the push line", crate::tasks::and_list(&sent));
+            }
+            if !left.is_empty() {
+                notice = notice.detail("still ready", crate::tasks::and_list(&left));
+            }
+            return notice.next("The rest stay under Ready to push; push them once it is sorted.").err();
+        }
+        sent.push(name.clone());
+    }
+    Notice::new(Tone::Moving, format!("Pushing {} in order", plural(sent.len(), "task"))).next("Each is rebased onto main and goes out in turn; a conflict or red tests go back to its agent.").detail("order", sent.join(", ")).ok()
 }
 
 #[cfg(test)]
@@ -468,6 +516,22 @@ pub(crate) mod tests {
         let mut codex = red(Some("a flake"));
         codex.agent.as_mut().unwrap().kind = crate::agent::Agent::Codex;
         assert!(of(&[codex]).rows[0].what.starts_with("CI red after push · its Codex says outside the code"), "the task's own agent is named");
+    }
+
+    #[test]
+    fn push_all_stops_at_the_first_failure_and_leaves_the_rest_ready() {
+        let order: Vec<(String, PathBuf)> = ["card-component", "fix-grid", "copy-typo"].iter().map(|name| (name.to_string(), PathBuf::from(format!("/work/{name}")))).collect();
+        let mut tried = Vec::new();
+        let outcome = push_in_order(&order, |path| {
+            tried.push(path.to_path_buf());
+            if path.ends_with("fix-grid") { Notice::new(Tone::Failed, "Not pushed: it is in review").err() } else { Ok("in line".to_string()) }
+        });
+        assert_eq!(tried, [PathBuf::from("/work/card-component"), PathBuf::from("/work/fix-grid")], "copy-typo is never pushed");
+        let notice = Notice::parse(&outcome.unwrap_err()).unwrap();
+        assert_eq!(notice.headline, "fix-grid did not push, so the rest wait");
+        assert!(notice.details.contains(&("why".to_string(), "Not pushed: it is in review".to_string())) && notice.details.contains(&("still ready".to_string(), "copy-typo".to_string())), "{:?}", notice.details);
+        let all = push_in_order(&order, |_| Ok(String::new())).unwrap();
+        assert!(Notice::parse(&all).unwrap().headline == "Pushing 3 tasks in order");
     }
 
     #[test]

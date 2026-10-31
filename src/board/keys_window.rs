@@ -112,6 +112,7 @@ const WORK: Sheet = Sheet {
             bind(&[Act::HideChat], "hide or show the lead's chat", "hide chat"),
         ]),
         group("WAITING ON YOU", &[
+            bind(&[Act::Next], "next: what needs you, in order", "next"),
             bind(&[Act::Inbox], "inbox: questions, one at a time", "inbox"),
             bind(&[Act::Messages], "messages", "messages"),
             bind(&[Act::Away], "away mode", "away mode"),
@@ -486,7 +487,7 @@ mod tests {
         let (rows, buffer) = render(&mut app, 150, 40);
         let screen = rows.join("\n");
         assert!(screen.contains("╭ keys · work ─"), "{screen}");
-        for (left, right) in [("MOVE AROUND", "THE SELECTED TASK"), ("WAITING ON YOU", "p         push, or take it out of the line"), ("i         inbox: questions, one at a time", "v         send to review"), ("↑ ↓ j k   move", "⏎         options, each one explained")] {
+        for (left, right) in [("MOVE AROUND", "THE SELECTED TASK"), ("WAITING ON YOU", "p         push, or take it out of the line"), ("N         next: what needs you, in order", "v         send to review"), ("↑ ↓ j k   move", "⏎         options, each one explained")] {
             let row = row_with(&rows, left);
             assert!(row.contains(right) && row.find(left) < row.find(right), "{left} sits left of {right}: {row}");
         }

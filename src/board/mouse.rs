@@ -131,6 +131,16 @@ impl App {
                         self.mode = Mode::Normal;
                         self.pick_park(address, name, index);
                     }
+                    (Some(Hit::Choice(index)), Mode::Next(window)) => {
+                        let window = *window;
+                        self.click_next(window, index);
+                    }
+                    (Some(Hit::Choice(index)), Mode::PushAll { order, .. }) => {
+                        let order = std::mem::take(order);
+                        self.push_all(order, index);
+                    }
+                    (Some(Hit::Key(code)), Mode::Next(_) | Mode::PushAll { .. }) => return Some(KeyEvent::from(code)),
+                    (None, Mode::Next(_) | Mode::PushAll { .. }) => self.mode = Mode::Normal,
                     (Some(Hit::Choice(index)), Mode::RestartLead(_)) => {
                         self.mode = Mode::Normal;
                         self.pick_restart(index);

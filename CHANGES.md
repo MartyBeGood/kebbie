@@ -25,6 +25,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 - A task whose profile names a Codex model Codex no longer lists starts on the model Codex names in its place, else on Codex's default, with a notice on the board and a word to the lead; the profile file stays as you wrote it
 - kebbie doctor warns of a Claude profile that names a full model id, which keeps its tasks on that model, where an alias (opus, sonnet, haiku, fable) follows Claude Code to each new one
 - The lead tells you kebbie's own task commands are safe to let through when an agent asks before one, and recommends its don't-ask-again answer
+- N on the board opens Next: what needs you in one numbered list, in the order to do it, under STOPPED ON YOU (the task most others wait behind first, then the one waiting longest), PUSH, IN THIS ORDER (what other tasks of its repo wait on first, two tasks in the same files in the order they were built, then the one ready first) and TO READ, with how long each has waited and a line counting what is working, queued and parked; ⏎ opens the question, the push or the card, and P pushes the push group in that order after a window that shows it, the first that is refused stopping the rest; with nothing waiting it says Nothing needs you and what is on its way in
 - kebbie next prints what needs you, numbered in the order to do it, and the lead answers a question about status or what to push first with it
 
 ### Fixed

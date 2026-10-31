@@ -15,6 +15,7 @@ pub(crate) mod keys_window;
 mod link;
 mod message_log;
 mod mouse;
+mod next_window;
 mod note_card;
 mod notices;
 mod options;
@@ -126,6 +127,8 @@ enum Mode {
     Comment { id: u64, scroll: u16, nudged: bool },
     Help(keys_window::Scroll),
     Hub(Box<hub_window::Window>),
+    Next(next_window::Window),
+    PushAll { order: Vec<next_window::Push>, choice: usize, back: next_window::Window },
     Update,
     AgentUpdates,
 }
@@ -230,6 +233,7 @@ struct App {
     comment_dir: Option<PathBuf>,
     copier: comments::Copier,
     reopener: comments::Reopener,
+    pusher: Option<next_window::Pusher>,
 }
 
 type Updater = std::sync::Arc<dyn Fn() -> Result<String> + Send + Sync>;
@@ -599,6 +603,8 @@ impl App {
             working @ Mode::Working { .. } => self.mode = working,
             Mode::Questions(window) => self.handle_questions(window, key),
             Mode::Hub(window) => self.handle_hub(window, key),
+            Mode::Next(window) => self.handle_next(window, key, act),
+            Mode::PushAll { order, choice, back } => self.handle_push_all(order, choice, back, key, act),
             Mode::Update => self.handle_update(key),
             Mode::AgentUpdates => self.handle_agent_updates(key),
             Mode::Report { id, scroll, read, .. } => self.confirm_report(id, scroll, read, key, cancels),
@@ -673,6 +679,7 @@ impl App {
         match act {
             Act::Messages => self.press_m(),
             Act::Hub => self.open_hub(),
+            Act::Next => self.open_next(),
             Act::Move => {
                 let (down, before) = (!matches!(key.code, KeyCode::Up | KeyCode::Char('k')), self.work_selected);
                 if ctx == Ctx::Work && self.enter_comments(down) {
@@ -1040,7 +1047,7 @@ impl App {
             updates: Vec::new(), updater: std::sync::Arc::new(|| update::run(&crate::doctor::Env::current().claude_dir, false, &crate::release::Request::Channel).map(|outcome| outcome.details.join("\n"))), update: None, progress_file: None, recheck: None, stale: Vec::new(), stale_at: 0, restart_after_update: false,
             agent_offer: None, agent_mode: std::sync::Arc::new(|| config::agent_updates_in(&config::path())), installer: agent_updates::default_install(),
             filter: None, ctrl_c: None, notice: None, lead_chat: None, restart_auto: true, lead_restarter: std::sync::Arc::new(crate::lead_restart::restart_now), lead_fresh_starter: std::sync::Arc::new(crate::lead_restart::fresh_now), lead_checker: std::sync::Arc::new(crate::lead::restart_refusal), lead_context: None, subject: None, shown: None, toast: None, hub_paths: None, hub_banner: None,
-            comments: Vec::new(), comment_panel: Default::default(), comment_dir: None, copier: comments::default_copier(), reopener: comments::default_reopener(),
+            comments: Vec::new(), comment_panel: Default::default(), comment_dir: None, copier: comments::default_copier(), reopener: comments::default_reopener(), pusher: None,
         }
     }
 }

@@ -117,7 +117,7 @@ const USAGE: &str = "kebbie: herding coding agents in herdr
                                   a proxy in front that ends TLS; writes nothing
   kebbie status [--json]          every task and Claude session, grouped by what it needs from you
   kebbie next                     what needs you, in the order to do it: what is stopped on you, what to push in
-                                  which order, what to read
+                                  which order, what to read; the same list N shows on the board
   kebbie board [--overlay]        the board: tasks and sessions, with keys to act on them
   kebbie areas                    the vault's areas with their repo: main against origin, last release, notes, actions
   kebbie lead                     go to the lead Space (creating it), or back to where you were
