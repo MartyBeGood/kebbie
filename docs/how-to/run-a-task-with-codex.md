@@ -134,7 +134,7 @@ The lead answers only on a choice you type in its chat, with `kebbie choose <tas
 
 ## Messages to a Codex task
 
-Codex has no inbox kebbie can write to, so kebbie types a message into the task's composer, only when it is empty. It counts the message as taken once the composer lets it go or the session's rollout file shows it as a user turn.
+Codex has no inbox kebbie can write to, so kebbie types a message into the task's composer, only when it is empty. It counts the message as taken once the composer lets it go, after it was seen holding the text or a second after the paste, or once the session's rollout file shows it as a user turn.
 
 - Empty means the composer shows nothing or Codex's own placeholder, `Ask Codex to do anything`. Any other text there, faint or not, keeps kebbie from typing, so nothing is glued onto it.
 - The task's first prompt waits the same way: when the new Codex's composer already holds text, the start says so, and kebbie types the prompt in once the composer is empty, while the keeper or an open board runs.
