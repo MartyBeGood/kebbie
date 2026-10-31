@@ -74,14 +74,25 @@ impl Word {
 struct Record {
     #[serde(flatten)]
     word: Word,
+    #[serde(default)]
+    code: String,
+}
+
+fn record_in(state: &Path, address: &str) -> Option<Record> {
+    serde_json::from_str(&fs::read_to_string(file(state, address)).ok()?).ok()
 }
 
 pub fn word_in(state: &Path, address: &str) -> Option<Word> {
-    serde_json::from_str::<Record>(&fs::read_to_string(file(state, address)).ok()?).ok().map(|record| record.word)
+    record_in(state, address).map(|record| record.word)
 }
 
-fn write_word(state: &Path, address: &str, word: Word) -> Result<()> {
-    crate::state::write(&file(state, address), serde_json::to_string(&Record { word }).map_err(|error| error.to_string())?)
+fn write_word(state: &Path, address: &str, word: Word, code: String) -> Result<()> {
+    crate::state::write(&file(state, address), serde_json::to_string(&Record { word, code }).map_err(|error| error.to_string())?)
+}
+
+// The code an assessment reads: the steps already pushed, then the open commits as the approval fingerprint sees them.
+fn code(state: &Path, address: &str, worktree: &Path, upstream: &str) -> Result<String> {
+    Ok(format!("{}\n{}", pushed_in(state, address).join(" "), tasks::fingerprint_at(worktree, upstream, "HEAD")?))
 }
 
 pub fn forget_in(state: &Path, address: &str) {
@@ -183,12 +194,18 @@ pub fn parse(answer: &str) -> Option<Assessment> {
 }
 
 // A ready report asks from the task's own process, so the keeper starts the assessor from its own environment.
+// Code already assessed, or being assessed, is not asked again, so a turn the assessment itself sets off does not start another.
 pub fn ask(state: &Path, address: &str, worktree: &Path, auto: ReviewAuto) -> Result<bool> {
-    if crate::review::in_review(state, address) || crate::review::withdrawn_in(state, address) || ahead_behind(worktree, &default_branch(&main_checkout(worktree)?)?)?.0 == 0 {
+    let upstream = default_branch(&main_checkout(worktree)?)?;
+    if crate::review::in_review(state, address) || crate::review::withdrawn_in(state, address) || ahead_behind(worktree, &upstream)?.0 == 0 {
+        return Ok(false);
+    }
+    let code = code(state, address, worktree, &upstream)?;
+    if record_in(state, address).is_some_and(|record| record.code == code) {
         return Ok(false);
     }
     QUEUE.want(state, address, worktree, auto.key())?;
-    write_word(state, address, Word::Assessing)?;
+    write_word(state, address, Word::Assessing, code)?;
     Ok(true)
 }
 
@@ -286,7 +303,7 @@ fn tell_task(address: &str, text: &str) -> Result<()> {
 fn settle(state: &Path, address: &str, worktree: &Path, auto: ReviewAuto, assessment: Option<&Assessment>) -> String {
     let word = Word::of(assessment, auto);
     let reason = word.text();
-    let _ = write_word(state, address, word.clone());
+    let _ = write_word(state, address, word.clone(), record_in(state, address).map(|record| record.code).unwrap_or_default());
     QUEUE.done(state, address);
     match crate::decisions::write(state, address, &reason, crate::messages::now()) {
         Ok(note) => if let Some(line) = crate::decisions::for_the_task(&note, &reason) && let Err(error) = tell_task(address, &line) {
@@ -390,6 +407,22 @@ mod tests {
         forget_in(&state, &address);
         assert!(!ask(&state, &address, &slot.path, ReviewAuto::Suggest).unwrap(), "a task already in review is not assessed");
         crate::review::forget_in(&state, &address);
+        forget_in(&state, &address);
+        cleanup(dir, origin, &slot);
+    }
+
+    #[test]
+    fn code_already_assessed_is_not_asked_again_so_noting_the_assessment_does_not_loop() {
+        let (dir, origin, slot, _) = task_with_a_commit("billing");
+        let state = state_of(&dir);
+        let address = peers::address("billing", &name_of(&dir));
+        assert!(ask(&state, &address, &slot.path, ReviewAuto::Suggest).unwrap());
+        assert!(!ask(&state, &address, &slot.path, ReviewAuto::Suggest).unwrap(), "a second ready report while it is assessed asks nothing");
+        QUEUE.unwant(&state, &address);
+        settle(&state, &address, &slot.path, ReviewAuto::Suggest, Some(&Assessment { needed: false, reason: "wording".to_string() }));
+        assert!(!ask(&state, &address, &slot.path, ReviewAuto::Suggest).unwrap(), "the ready report after the task noted its assessment finds the same code");
+        commit(&slot.path, "e", "Add e");
+        assert!(ask(&state, &address, &slot.path, ReviewAuto::Suggest).unwrap(), "changed code is assessed again");
         forget_in(&state, &address);
         cleanup(dir, origin, &slot);
     }
