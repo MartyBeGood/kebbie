@@ -6,7 +6,7 @@ Your answer is a **triage**: the owner reads your one line on the task's card an
 
 ## Steps
 
-1. **Facts.** Read the facts kebbie measured in your brief: the files with the lines each gained and lost, the test files, the migration and schema files, the number of commits. Done when you know the work's size and where it lands.
+1. **Facts.** Read the facts kebbie measured in your brief: the files with the lines each gained and lost, and the number of commits. The paths it names as tests or migrations are guesses from their names: confirm each when you read the work. Done when you know the work's size and where it lands.
 2. **The work.** Read every commit in your brief with `git show <sha>`, the pushed steps too. Open a file with Read when a hunk alone does not show what the code does. Done when you can say in one sentence what the work changes for its users.
 3. **Weigh.** Hold the work against the criteria below. Done when each criterion is either met by something you saw or ruled out.
 4. **Answer.** Write the block below.
@@ -23,7 +23,9 @@ The work **needs a review** when one of these holds:
 - **Security**: authentication, secrets, input from outside, what runs a command or reaches the network.
 - **Agent instructions**: a skill, a role, an `AGENTS.md` or `CLAUDE.md`, which steer what an agent does.
 
-It **needs no review** when none holds: wording, translations, docs, styles, a rename the compiler checks, a small fix with its test where the change is plain from the diff.
+It **needs no review** when none holds: the work changes what text says and nothing of what runs, renames what the compiler checks, or fixes one small thing, with its test, in a way the diff makes plain.
+
+Judge by what the change does, never by the kind of file it is in: a template can hold logic, a stylesheet can hide a control, and a Markdown file can be an agent's instructions.
 
 When you cannot tell, it needs one.
 

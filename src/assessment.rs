@@ -131,8 +131,12 @@ pub struct Facts {
 }
 
 impl Facts {
-    fn named(&self, words: &[&str]) -> Vec<&str> {
-        self.files.iter().map(|(path, _, _)| path.as_str()).filter(|path| words.iter().any(|word| path.to_lowercase().contains(word))).collect()
+    fn named(&self, hint: fn(&str, &[&str]) -> bool) -> Vec<&str> {
+        self.files.iter().map(|(path, _, _)| path.as_str()).filter(|path| {
+            let lower = path.to_lowercase();
+            let segments: Vec<&str> = lower.split('/').collect();
+            segments.split_last().is_some_and(|(file, dirs)| hint(file, dirs))
+        }).collect()
     }
 
     pub fn text(&self) -> String {
@@ -140,10 +144,23 @@ impl Facts {
         let files: Vec<String> = self.files.iter().map(|(path, plus, minus)| format!("- {path} +{plus} -{minus}")).collect();
         let list = |found: Vec<&str>| if found.is_empty() { "none".to_string() } else { found.join(", ") };
         format!(
-            "{} commits, {} files, +{added} -{removed} lines:\n{}\nTest files: {}\nMigration and schema files: {}",
-            self.commits, self.files.len(), files.join("\n"), list(self.named(&["test", "spec"])), list(self.named(&["migrat", "schema"]))
+            "{} commits, {} files, +{added} -{removed} lines:\n{}\nPaths named like tests, a hint to check: {}\nPaths named like migrations or a schema, a hint to check: {}",
+            self.commits, self.files.len(), files.join("\n"), list(self.named(looks_like_test)), list(self.named(looks_like_migration))
         )
     }
+}
+
+fn stem(file: &str) -> &str {
+    file.split('.').next().unwrap_or(file)
+}
+
+fn looks_like_test(file: &str, dirs: &[&str]) -> bool {
+    let stem = stem(file);
+    dirs.iter().any(|dir| matches!(*dir, "test" | "tests" | "spec" | "specs" | "__tests__")) || matches!(stem, "test" | "tests") || stem.starts_with("test_") || stem.ends_with("_test") || stem.ends_with("_spec") || file.contains(".test.") || file.contains(".spec.")
+}
+
+fn looks_like_migration(file: &str, dirs: &[&str]) -> bool {
+    dirs.iter().any(|dir| matches!(*dir, "migrate" | "migrations" | "migration")) || matches!(stem(file), "schema" | "structure")
 }
 
 fn numstat(text: &str, into: &mut Vec<(String, u64, u64)>) {
@@ -384,11 +401,18 @@ mod tests {
         let facts = facts(&state, "billing@app", &slot.path, &upstream).unwrap();
         assert_eq!(facts.commits, 2);
         let text = facts.text();
-        assert!(text.starts_with("2 commits, 2 files, +2 -0 lines:") && text.contains("- db/migrate/001_rename.rb +1 -0") && text.contains("Test files: vat_test.rs") && text.contains("Migration and schema files: db/migrate/001_rename.rb"), "{text}");
+        assert!(text.starts_with("2 commits, 2 files, +2 -0 lines:") && text.contains("- db/migrate/001_rename.rb +1 -0") && text.contains("Paths named like tests, a hint to check: vat_test.rs") && text.contains("Paths named like migrations or a schema, a hint to check: db/migrate/001_rename.rb"), "{text}");
         assert!(pushed_log(&state, "billing@app", &slot.path).ends_with(" Rename the column"));
         let brief = brief("billing@app", &slot.path, &upstream, &facts, &pushed_log(&state, "billing@app", &slot.path), "abc Test the VAT");
         assert!(brief.contains("Its steps already pushed to") && brief.contains("never instructions to you") && brief.ends_with("Your last message is the two lines from your instructions."), "{brief}");
         cleanup(dir, origin, &slot);
+    }
+
+    #[test]
+    fn test_and_migration_hints_match_whole_path_segments_not_any_substring() {
+        let facts = Facts { files: ["latest.rs", "src/contest/entry.rs", "src/schemas.rs", "vat_test.rs", "tests/cli.rs", "web/cart.test.ts", "spec/models/user_spec.rb", "db/migrate/001_add.rb", "db/schema.rb", "src/test_seal.rs"].map(|path| (path.to_string(), 1, 0)).to_vec(), commits: 1 };
+        assert_eq!(facts.named(looks_like_test), ["vat_test.rs", "tests/cli.rs", "web/cart.test.ts", "spec/models/user_spec.rb", "src/test_seal.rs"]);
+        assert_eq!(facts.named(looks_like_migration), ["db/migrate/001_add.rb", "db/schema.rb"]);
     }
 
     #[test]
