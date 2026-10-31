@@ -201,6 +201,7 @@ struct Agents {
     broken: Vec<(String, PathBuf, String)>,
     codex_models: Option<Vec<CachedModel>>,
     codex_default: Option<String>,
+    codex_effort: Option<String>,
     claude_default: Option<String>,
     review_model: Option<(String, Layer)>,
     version: String,
@@ -214,6 +215,7 @@ impl Agents {
             review_model: entries.iter().find(|entry| entry.key == "review.model" && entry.layer != Layer::Default).map(|entry| (edit_text(&entry.value), entry.layer)),
             codex_models: crate::agent::codex::cached_models(&paths.codex_home),
             codex_default: crate::agent::codex::configured_model(&paths.codex_home),
+            codex_effort: codex_effort(&paths.codex_home),
             claude_default: crate::agent::claude::configured_model(&paths.claude_home),
             version: crate::issue_recheck::version_at(&paths.kebbie).unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
         }
@@ -254,6 +256,12 @@ impl Agents {
         let from = if self.own_model(profile).is_none() { " from Codex's config.toml" } else { "" };
         Some(format!("⚠ {} runs {model}{from}, which Codex does not offer to your account; pick a model for it with m.", profile.name))
     }
+}
+
+// The effort Codex runs a profile without one at: its config.toml's model_reasoning_effort, ahead of the model's own default.
+fn codex_effort(home: &Path) -> Option<String> {
+    let config: toml::Table = std::fs::read_to_string(home.join("config.toml")).ok()?.parse().ok()?;
+    config.get("model_reasoning_effort").and_then(toml::Value::as_str).map(str::trim).filter(|effort| !effort.is_empty()).map(str::to_string)
 }
 
 fn edit_text(value: &str) -> String {
@@ -834,8 +842,13 @@ impl Page {
             (Agent::Codex, None) => (profiles::CODEX_EFFORTS.map(str::to_string).to_vec(), None, format!("{shown} is not in Codex's list, so these are every level Codex takes.")),
             (Agent::Claude, _) => (profiles::EFFORTS.map(str::to_string).to_vec(), None, format!("Claude Code's effort levels, for {shown}.")),
         };
+        let configured = agents.codex_effort.clone().filter(|_| agent == Agent::Codex);
+        let (default, said) = match configured {
+            Some(level) => (Some(level), "Codex's default, from its config.toml"),
+            None => (default, "Codex's default for this model"),
+        };
         let mut choices: Vec<Choice> = levels.iter().map(|level| {
-            let about = if default.as_deref() == Some(level.as_str()) { "Codex's default for this model" } else if level == "ultra" { "only some Codex models" } else { "" };
+            let about = if default.as_deref() == Some(level.as_str()) { said } else if level == "ultra" { "only some Codex models" } else { "" };
             choice(level, about, Then::Field(Field::Effort, Some(level.clone())), current == Some(level.as_str()))
         }).collect();
         let leave = match (agent, &default) {
@@ -2406,6 +2419,12 @@ mod tests {
         assert!(shown.contains("╭ effort · codex ") && shown.contains("The levels gpt-5.1-codex-max takes"), "a hidden model's own levels: {shown}");
         press(&mut fixture.page, &[KeyCode::Down, KeyCode::Enter]);
         assert!(!file(&fixture, "profiles/codex.toml").contains("effort"), "Default leaves it to Codex");
+        std::fs::write(fixture.dir.join("codex/config.toml"), "model = \"gpt-5.1-codex-max\"\nmodel_reasoning_effort = \"high\"\n").unwrap();
+        fixture.page.load();
+        go_to_profile(&mut fixture.page, "codex-build");
+        press(&mut fixture.page, &[KeyCode::Char('e')]);
+        let (shown, _) = screen_at(&mut fixture.page, 100, 30);
+        assert!(shown.contains("│  high                Codex's default, from its config.toml") && shown.contains("│  Default             leave it to Codex: high") && !shown.contains("Codex's default for this model"), "Codex's own config.toml wins over the model's default: {shown}");
     }
 
     #[test]
