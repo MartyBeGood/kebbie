@@ -127,23 +127,23 @@ The keeper calls the same functions the board did, with the same rules:
 
 When herdr was started without them, it imports the login shell's SSH agent and `PATH`, as the board does.
 
-## Claude Code sits behind one seam
+## Claude Code and Codex sit behind one seam
 
-Everything kebbie knows about Claude Code sits behind the `Agent` type in `src/agent`:
+Everything kebbie knows about Claude Code and Codex sits behind the `Agent` type in `src/agent`, one adapter for each:
 
-- the settings file and start flags a task's Claude gets,
-- the trust and bypass dialogs it answers or leaves to you,
+- the settings, plugin and start flags a task's agent gets,
+- the start-up questions it answers or leaves to you, such as the folder's trust,
+- how its screen is read: its input box, and the marks of its own menus, so the lead hears a prompt in a task's pane from either agent,
 - how it is ended, where its conversation is kept and which messages in it are yours,
-- how a running session is resumed with its own flags,
-- the read-only reviewer's command line.
+- how a running session is resumed with its own flags.
 
-Claude is the one agent behind it today. The rest of kebbie, from the pool and the worktrees to the push block, the messages, the questions, the board and the routines, asks the seam and knows nothing of the CLI.
+The rest of kebbie, from the pool and the worktrees to the push block, the messages, the questions, the board and the routines, asks the seam and knows nothing of either CLI.
+
+Two things stay outside the seam: the staleness checks, which read Claude Code's binary, plugins and MCP config and Codex's binary on `PATH`, and the read-only reviewer, which runs Claude whatever the profile says.
 
 ## A task keeps its agent across restarts
 
 A task's [profile](../reference/configuration.md#profiles) names its agent, and the task's session record keeps it, so a restart reaches the same one.
-
-Two things are Claude's alone and stay outside the seam: reading a Claude's screen for its own menus, and the staleness checks on Claude Code's binary, plugins and MCP config.
 
 ## Configuration lives in your home only
 
