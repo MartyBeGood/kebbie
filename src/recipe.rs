@@ -106,6 +106,14 @@ pub fn record(state: &Path, address: &str, name: &str, why: &str, caller: &Calle
     Ok(crate::decisions::for_the_task(&note, &line))
 }
 
+// A start writes the recipe into kebbie's own note once the task has none in the vault; a vault note's task, or the lead for a Codex one, writes it from the prompt.
+pub fn note_started(state: &Path, address: &str, now: u64) -> Result<()> {
+    match (load(state, address), crate::decisions::of(state, address)) {
+        (Some(recipe), crate::decisions::Note::Local(_)) => crate::decisions::write(state, address, &decision_line(&recipe), now).map(|_| ()),
+        _ => Ok(()),
+    }
+}
+
 pub fn decision_line(recipe: &Recipe) -> String {
     format!("{}, because {} ({})", recipe.shown(), recipe.why, recipe.by)
 }
@@ -191,6 +199,23 @@ mod tests {
         let playbook = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/playbook/SKILL.md")).unwrap();
         let headed: Vec<&str> = playbook.lines().filter_map(|line| line.strip_prefix("### `")?.strip_suffix('`')).collect();
         assert_eq!(headed, RECIPES.map(|(slug, _)| slug), "the skill's recipes are the names kebbie start --recipe takes, in order");
+    }
+
+    #[test]
+    fn a_started_tasks_recipe_goes_to_kebbies_note_only_when_the_task_has_no_vault_note() {
+        let state = crate::sh::test_dir("recipe-started");
+        let recipe = Recipe { name: "small-fix".to_string(), why: "one function".to_string(), by: "the lead".to_string() };
+        note_started(&state, "billing@app", 1_792_670_400).unwrap();
+        assert!(!crate::decisions::local_file(&state, "billing@app").exists(), "no recipe, nothing to note");
+        save(&state, "billing@app", &recipe).unwrap();
+        note_started(&state, "billing@app", 1_792_670_400).unwrap();
+        assert_eq!(fs::read_to_string(crate::decisions::local_file(&state, "billing@app")).unwrap(), "# billing@app\n\n## Decisions\n\n- 2026-10-22: recipe: small fix, because one function (the lead)\n");
+        fs::create_dir_all(state.join("started")).unwrap();
+        fs::write(state.join("started/search@app"), "Projects/app-search.md\n").unwrap();
+        save(&state, "search@app", &recipe).unwrap();
+        note_started(&state, "search@app", 1_792_670_400).unwrap();
+        assert!(!crate::decisions::local_file(&state, "search@app").exists(), "a vault note's task writes the recipe from its prompt, once");
+        let _ = fs::remove_dir_all(state);
     }
 
     #[test]

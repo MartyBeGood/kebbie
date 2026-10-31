@@ -366,7 +366,12 @@ fn launch(state: &Path, wait: &Wait, intro: &str, begin: Begin, tell: &mut dyn F
     let started = begin(&wait.repo, &wait.task, &options);
     unclaim(state, &wait.address());
     match started {
-        Ok(begun) => Ok(begun.said),
+        Ok(begun) => {
+            if let Err(error) = crate::recipe::note_started(state, &wait.address(), messages::now()) {
+                eprintln!("kebbie: the recipe of {} did not reach its note: {error}", wait.address());
+            }
+            Ok(begun.said)
+        }
         Err(error) => {
             let reason = format!("kebbie could not start it: {}", Notice::read(&error, true).details.iter().find(|(label, _)| label == "error").map_or(error.clone(), |(_, error)| error.clone()));
             let _ = save(state, &Wait { blocked: Some(reason.clone()), ..wait.clone() });
@@ -993,8 +998,11 @@ mod tests {
         assert_eq!(next(&wait, &facts(&[end("billing@api", 200, "done", None)], &[]), 200), Next::Start);
         let state = crate::sh::test_dir("after-starts");
         save(&state, &wait).unwrap();
+        crate::recipe::save(&state, "web-billing@web", &crate::recipe::Recipe { name: "small-fix".to_string(), why: "one function".to_string(), by: "the lead".to_string() }).unwrap();
+        assert!(!crate::decisions::local_file(&state, "web-billing@web").exists(), "a queued task's recipe waits for the start, where its note is known");
         let (started, _) = ticked(&state, &[end("billing@api", 200, "done", None)], 210);
         assert_eq!(started.iter().map(|started| started.task.as_str()).collect::<Vec<_>>(), ["web-billing"]);
+        assert!(fs::read_to_string(crate::decisions::local_file(&state, "web-billing@web")).unwrap().ends_with(": recipe: small fix, because one function (the lead)\n"), "started without a vault note, kebbie's own note takes it");
         assert!(load(&state, "web-billing@web").is_none() && !claimed_file(&state, "web-billing@web").exists(), "a started wait leaves nothing behind");
         fs::remove_dir_all(state).unwrap();
     }

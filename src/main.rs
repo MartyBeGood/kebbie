@@ -530,10 +530,11 @@ fn run(arguments: &Arguments) -> Result<String> {
                 prompt = format!("{prompt}\n\n{}", recipe::prompt_line(recipe, why)).trim_start().to_string();
             }
             let prompt = (!prompt.is_empty()).then_some(prompt.as_str());
-            let keep = |started: &[bool]| {
+            let keep = |started: &[bool], queued: bool| {
                 let Some((name, why)) = &recipe else { return };
                 for (address, _) in addresses.iter().zip(started).filter(|(_, started)| **started) {
-                    if let Err(error) = recipe::record(&state, address, name, why, &caller, messages::now()) {
+                    let kept = recipe::save(&state, address, &recipe::Recipe { name: name.clone(), why: why.clone(), by: recipe::by(&caller).to_string() });
+                    if let Err(error) = kept.and_then(|_| if queued { Ok(()) } else { recipe::note_started(&state, address, messages::now()) }) {
                         eprintln!("kebbie: the recipe of {address} was not kept: {error}");
                     }
                 }
@@ -545,7 +546,7 @@ fn run(arguments: &Arguments) -> Result<String> {
                     return Err("kebbie start --after and --at start from the default branch, so they take no --from".to_string());
                 }
                 if let Some(queued) = tasks::queue(&repos, &tasks::QueueAsked { name, prompt: prompt.unwrap_or_default(), after: &after, mode: arguments.value("--mode"), profile: arguments.value("--profile"), backlog: arguments.value("--backlog"), title: None, why: arguments.value("--why"), starts_at })? {
-                    keep(&vec![true; repos.len()]);
+                    keep(&vec![true; repos.len()], true);
                     return Ok(queued);
                 }
             }
@@ -555,7 +556,7 @@ fn run(arguments: &Arguments) -> Result<String> {
             let started: Vec<Result<String>> = repos.iter().enumerate()
                 .map(|(index, repo)| tasks::start(repo, name, &tasks::Start { focus: options.focus && index == 0, ..options }))
                 .collect();
-            keep(&started.iter().map(Result::is_ok).collect::<Vec<_>>());
+            keep(&started.iter().map(Result::is_ok).collect::<Vec<_>>(), false);
             let report = started.iter().map(|result| match result { Ok(text) | Err(text) => text.as_str() }).collect::<Vec<_>>().join("\n");
             if started.iter().any(Result::is_err) { Err(report) } else { Ok(report) }
         }

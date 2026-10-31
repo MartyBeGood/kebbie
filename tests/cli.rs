@@ -1776,7 +1776,7 @@ fn the_lead_names_a_tasks_recipe_to_start_it_and_kebbie_keeps_it_on_the_board_an
     assert!(queued.status.success(), "{}{}", stdout(&queued), stderr(&queued));
     let wait = fs::read_to_string(lab.state.join("after/search@app.json")).unwrap();
     assert!(wait.contains("Add the search page\\n\\nRecipe: task after task, because it builds on the refunds."), "the task's prompt carries its recipe: {wait}");
-    assert!(fs::read_to_string(lab.state.join("notes/search@app.md")).unwrap().contains(": recipe: task after task, because it builds on the refunds (the lead)"));
+    assert!(!lab.state.join("notes/search@app.md").exists(), "a queued task's recipe reaches its note when it starts, where kebbie knows which note it has");
 
     let status: serde_json::Value = serde_json::from_str(&stdout(&lab.run(&["status", "--json"]))).unwrap();
     let search = status["items"].as_array().unwrap().iter().find(|item| item["name"] == "search").unwrap().clone();
