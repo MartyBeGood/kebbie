@@ -118,3 +118,13 @@ fn a_published_release_starts_kebbie_dev_s_deploy_with_a_token_from_a_secret_and
     assert!(job.contains("GH_TOKEN: ${{ secrets.KEBBIE_SITE_DISPATCH_TOKEN }}") && job.contains("gh workflow run deploy.yml --repo gronare/kebbie-site --ref main"));
     assert!(job.contains("exit 0") && job.contains("|| echo \"::warning::"), "a missing token or a refused dispatch is a warning, not a failed release");
 }
+
+#[test]
+fn the_release_commit_has_a_short_subject_and_the_summary_as_its_body() {
+    let line = RELEASE.lines().find(|line| line.starts_with("body=")).expect("release.sh writes a body");
+    let output = std::process::Command::new("sh").args(["-c", &format!("version=1.2.3; summary='park tasks, comments on pushed commits, and steps by default for every task you start'; {line}; printf '%s' \"$body\"")]).output().unwrap();
+    let body = String::from_utf8_lossy(&output.stdout);
+    assert!(body.lines().count() > 1 && body.lines().all(|line| line.chars().count() <= 72 && line == line.trim_end()), "{body}");
+    assert!(body.starts_with("kebbie 1.2.3 brings park tasks") && body.ends_with("1.2.3."), "{body}");
+    assert!(RELEASE.contains("git commit --quiet -m \"Release kebbie $version\" -m \"$body\""), "a subject well under 72 characters, then the body");
+}

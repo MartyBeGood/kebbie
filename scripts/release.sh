@@ -32,7 +32,8 @@ for manifest in Cargo.toml herdr-plugin.toml; do grep -q "^version = \"$version\
 grep -q "\"version\": \"$version\"" .claude-plugin/plugin.json || fail ".claude-plugin/plugin.json still names another version"
 cargo check --quiet
 git add CHANGES.md Cargo.toml Cargo.lock herdr-plugin.toml .claude-plugin/plugin.json
-git commit --quiet -m "kebbie $version: $summary"
+body=$(printf 'kebbie %s brings %s. CHANGES.md lists each change under %s.\n' "$version" "$summary" "$version" | fold -s -w 72 | sed 's/ *$//')
+git commit --quiet -m "Release kebbie $version" -m "$body"
 git tag -a "$tag" -m "kebbie $version"
 git push --atomic --quiet origin main "$tag"
 echo "release: pushed $tag; waiting for the release workflow"
