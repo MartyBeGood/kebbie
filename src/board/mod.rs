@@ -28,6 +28,7 @@ mod review_draw;
 mod review_nvim;
 #[cfg(test)]
 mod review_tests;
+mod send_review;
 mod space;
 mod status_bar;
 mod steps;
@@ -105,6 +106,7 @@ enum Column {
 enum Mode {
     Normal,
     Options(usize),
+    ReviewMenu(Box<send_review::ReviewMenu>),
     Input { purpose: Purpose, label: String, buffer: String },
     Message(String),
     ConfirmDrop { path: PathBuf, name: String, force: bool, nudged: bool },
@@ -590,6 +592,7 @@ impl App {
         match std::mem::replace(&mut self.mode, Mode::Normal) {
             Mode::Normal => self.handle_normal(key),
             Mode::Options(index) => self.handle_options(index, act, key),
+            Mode::ReviewMenu(menu) => self.handle_review_menu(menu, act, key, terminal),
             Mode::Help(scroll) => if let Some(scroll) = scroll.key(&key) {
                 self.mode = Mode::Help(scroll);
             },
@@ -889,11 +892,9 @@ impl App {
                         self.about("permission", &item.name);
                         self.show(permit::toggle_task(&peers::address(&item.name, &item.place)));
                     }
-                    Act::SendReview => {
-                        if let Some(path) = &item.path {
-                            self.about("review", &item.name);
-                            self.show(if item.awaiting_review() { crate::review::withdraw(path, None) } else { crate::review::request(path, None, crate::review::Request::Review) });
-                        }
+                    Act::SendReview if item.path.is_some() => {
+                        self.about("review", &item.name);
+                        self.open_review_menu(&item);
                     }
                     Act::DismissCi if item.ci.as_ref().is_some_and(|ci| !ci.running()) => {
                         if let Some(path) = item.path.clone() {

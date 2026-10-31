@@ -47,9 +47,9 @@ pub(super) fn task_choices(item: Option<&Item>, dev_server: Option<&str>, dev_wo
     if !item.is_some_and(busy) {
         if item.and_then(|item| item.git.as_ref()).is_some_and(|git| git.ahead > 0) {
             choices.push(if item.is_some_and(Item::awaiting_review) {
-                choice(Act::SendReview, "Withdraw from review", "stop its reviewer and forget its verdict: push is offered again, and the lead is told")
+                choice(Act::SendReview, "Withdraw from review", "the review menu, whose v takes it out: its reviewer stops, its verdict goes, push is offered again")
             } else {
-                choice(Act::SendReview, "Send to review", "a separate, read-only Claude reviews its commits; the task waits under In review until it passes them")
+                choice(Act::SendReview, "Send to review", "the review menu: the reviewer review.profile names, or a second opinion too; the task waits under In review until its reviewer passes it")
             });
         }
         if let Some(git) = item.filter(|item| item.push_waits.is_none()).and_then(|item| item.git.as_ref()).filter(|git| git.behind > 0) {

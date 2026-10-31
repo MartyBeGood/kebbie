@@ -147,7 +147,7 @@ fn wanted_lines(wanted: &str, color: Color, highlighted: bool, width: usize) -> 
 
 pub(super) fn how_lines(item: &Item, highlighted: bool, width: usize) -> Vec<Line<'static>> {
     let recipe = item.recipe.as_ref().map(|recipe| if highlighted { format!("{}, because {}", recipe.shown(), recipe.why) } else { recipe.shown() });
-    let parts: Vec<String> = recipe.into_iter().chain(review_part(item)).collect();
+    let parts: Vec<String> = recipe.into_iter().chain(review_part(item)).chain(super::send_review::second_part(item)).collect();
     if parts.is_empty() {
         return Vec::new();
     }

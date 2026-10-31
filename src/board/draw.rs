@@ -133,6 +133,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     match &app.mode {
         Mode::Normal => {}
         Mode::Options(index) => modal_hits = draw_options(frame, app, *index),
+        Mode::ReviewMenu(menu) => modal_hits = super::send_review::draw_review_menu(frame, menu),
         Mode::Questions(_) => modal_hits = draw_questions(frame, app),
         Mode::Hub(window) => super::hub_window::draw(frame, window),
         Mode::Next(window) => {

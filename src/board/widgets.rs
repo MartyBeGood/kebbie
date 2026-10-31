@@ -24,6 +24,7 @@ pub const TEAL: Color = Color::Rgb(0x94, 0xe2, 0xd5);
 pub const RED: Color = Color::Rgb(0xf3, 0x8b, 0xa8);
 pub const LAVENDER: Color = Color::Rgb(0xb4, 0xbe, 0xfe);
 
+#[derive(Clone)]
 pub struct Choice {
     pub key: char,
     pub act: Option<Act>,

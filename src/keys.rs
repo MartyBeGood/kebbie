@@ -242,7 +242,7 @@ pub const TABLE: &[Binding] = &[
     Binding { act: Act::Card, on: &[Work], help: "the task's waiting question in the questions window, else its sign-off card with its images in a window: ← → image, ↑ ↓ scroll, p goes on to push", hint: Hint::No },
     Binding { act: Act::Server, on: &[Work], help: "start or stop the task's dev server (worktree.dev_server); its address shows in the task's details (worktree.dev_url)", hint: Hint::No },
     Binding { act: Act::Worker, on: &[Work], help: "start or stop the task's worker (worktree.dev_worker)", hint: Hint::No },
-    Binding { act: Act::SendReview, on: &[Work], help: "send the task to review: a read-only Claude reads its commits; on a task in review, withdraw it", hint: Hint::No },
+    Binding { act: Act::SendReview, on: &[Work], help: "the review menu: v sends the task to its reviewer (review.profile), or withdraws it while it is in review; s and o ask for the second opinion review.second names; i reads its points", hint: Hint::No },
     Binding { act: Act::Permit, on: &[Work], help: "let the lead push the task itself, or take that back", hint: Hint::No },
     Binding { act: Act::Rebase, on: &[Work], help: "rebase the task onto main now, without pushing; offered when it is behind, and a conflict goes to its Claude", hint: Hint::No },
     Binding { act: Act::Follow, on: &[Work], help: "keep the task rebased on main: the keeper rebases it when main moves, while its Claude is idle and its files are committed; or switch that off", hint: Hint::No },
