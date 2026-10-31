@@ -313,6 +313,11 @@ pub fn edit_in(dir: &Path, wanted: &str, changes: &[(&str, Option<&str>)]) -> Re
 }
 
 pub fn list_in(dir: &Path) -> (Vec<Profile>, Vec<String>) {
+    let (found, broken) = load_all_in(dir);
+    (found, broken.into_iter().map(|(_, _, error)| error).collect())
+}
+
+pub fn load_all_in(dir: &Path) -> (Vec<Profile>, Vec<(String, PathBuf, String)>) {
     let mut names = vec![TASK.to_string(), REVIEWER.to_string(), OPS.to_string()];
     let mut files: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten()
         .filter_map(|entry| entry.path().file_name()?.to_str()?.strip_suffix(".toml").map(str::to_string))
@@ -323,7 +328,7 @@ pub fn list_in(dir: &Path) -> (Vec<Profile>, Vec<String>) {
     for name in names {
         match load_in(dir, &name) {
             Ok(profile) => found.push(profile),
-            Err(error) => errors.push(error),
+            Err(error) => errors.push((name.clone(), dir.join(format!("{name}.toml")), error)),
         }
     }
     (found, errors)

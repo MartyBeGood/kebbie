@@ -198,7 +198,7 @@ pub struct Page {
 #[derive(Default)]
 struct Agents {
     profiles: Vec<Profile>,
-    ignored: Vec<String>,
+    broken: Vec<(String, PathBuf, String)>,
     codex_models: Option<Vec<CachedModel>>,
     codex_default: Option<String>,
     claude_default: Option<String>,
@@ -208,9 +208,9 @@ struct Agents {
 
 impl Agents {
     fn load(paths: &Paths, entries: &[Entry]) -> Self {
-        let (profiles, ignored) = profiles::list_in(&paths.profiles);
+        let (profiles, broken) = profiles::load_all_in(&paths.profiles);
         Agents {
-            profiles, ignored,
+            profiles, broken,
             review_model: entries.iter().find(|entry| entry.key == "review.model" && entry.layer != Layer::Default).map(|entry| (edit_text(&entry.value), entry.layer)),
             codex_models: crate::agent::codex::cached_models(&paths.codex_home),
             codex_default: crate::agent::codex::configured_model(&paths.codex_home),
@@ -377,7 +377,7 @@ impl Page {
         }
         SECTIONS.iter().enumerate().map(|(at, (name, _))| {
             let rows = match (*name, self.tab) {
-                (PROFILES, Tab::Machine) if self.error.is_none() => (0..self.agents.profiles.len()).collect(),
+                (PROFILES, Tab::Machine) if self.error.is_none() => (0..self.agents.profiles.len() + self.agents.broken.len()).collect(),
                 (PROFILES, _) => Vec::new(),
                 _ => (0..self.entries.len()).filter(|index| section_of(self.entries[*index].key) == at).collect::<Vec<_>>(),
             };
@@ -855,7 +855,17 @@ impl Page {
         Effect::Handled
     }
 
+    fn broken(&self) -> Option<&(String, PathBuf, String)> {
+        if !self.on_profiles() {
+            return None;
+        }
+        self.agents.broken.get(self.row.checked_sub(self.agents.profiles.len())?)
+    }
+
     fn open_profile(&mut self) -> Effect {
+        if let Some((_, file, _)) = self.broken() {
+            return Effect::Open(file.clone());
+        }
         let Some(profile) = self.profile() else { return Effect::Handled };
         match profile.file {
             Some(file) => Effect::Open(file),
@@ -875,7 +885,7 @@ impl Page {
                 let read = if users.is_empty() { "no profile reads it".to_string() } else { format!("read after kebbie's role by {}", users.join(", ")) };
                 self.say(format!("{shown}: {read}"), GREEN);
             }
-            Ok(_) => match self.agents.ignored.iter().find(|error| error.contains(&file.display().to_string())) {
+            Ok(_) => match self.agents.broken.iter().find(|(_, broken, _)| broken == file).map(|(_, _, error)| error) {
                 Some(error) => self.say(format!("✗ {}", error.replace(&file.display().to_string(), &shown)), RED),
                 None => self.say(format!("{shown} loads"), GREEN),
             },
@@ -1348,9 +1358,31 @@ impl Page {
             heading(&mut lines, "YOURS", format!("{} · an update never writes here", home_relative(&self.paths.profiles)));
             lines.extend(muted("none yet: n makes one", MUTED));
         }
-        for error in &agents.ignored {
-            let error = error.replace(&self.paths.profiles.display().to_string(), "profiles");
-            lines.extend(wrap(&format!("ignored: {error}"), width.saturating_sub(2), 3).into_iter().map(|text| Line::from(Span::styled(format!("  {text}"), style(RED)))));
+        if !agents.broken.is_empty() {
+            lines.push(Line::default());
+            let mut line = group_line("DOES NOT LOAD", agents.broken.len(), RED);
+            line.spans.insert(0, Span::raw(" "));
+            lines.push(line);
+            lines.extend(muted("kebbie leaves these out until they load; ⏎ opens one", MUTED));
+        }
+        for (at, (name, file, error)) in agents.broken.iter().enumerate() {
+            let chosen = agents.profiles.len() + at == self.row;
+            let shown = self.shown_file(file);
+            let row = fit(vec![
+                if chosen { Span::styled("▌", style(MAUVE)) } else { Span::raw(" ") },
+                Span::styled(format!(" {:<name_width$}", cut(name, name_width - 2)), if chosen { bold(RED) } else { style(RED) }),
+                Span::styled(shown.clone(), style(MUTED)),
+            ], width);
+            if !chosen {
+                lines.push(row);
+                continue;
+            }
+            selected = lines.len();
+            lines.push(row.style(Style::new().bg(SURFACE)));
+            let error = error.replace(&file.display().to_string(), &shown).replace(&self.paths.profiles.display().to_string(), "profiles");
+            lines.extend(wrap(&error, width.saturating_sub(4), 4).into_iter().map(|text| Line::from(Span::styled(format!("    {text}"), style(RED)))));
+            lines.push(Line::from(vec![Span::raw("    "), Span::styled("⏎", style(MAUVE)), Span::styled(" open file", style(SUBTEXT))]));
+            lines.push(Line::default());
         }
         lines.push(Line::default());
         lines.extend(muted("dim = the agent's own default:", MUTED));
@@ -1403,7 +1435,7 @@ impl Page {
             Mode::Normal if self.said.is_none() && self.on_profiles() => self.profile().map(|profile| match self.agents.warning(&profile) {
                 Some(warning) => (warning, YELLOW),
                 None => (self.summary(&profile), SUBTEXT),
-            }),
+            }).or_else(|| self.broken().map(|(name, _, _)| (format!("{name} does not load, so no task can start with it; ⏎ opens its file"), RED))),
             _ => self.said.clone(),
         };
         if let Some((text, color)) = under {
@@ -2397,13 +2429,22 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_file_that_does_not_load_is_named_under_the_list() {
+    fn a_profile_file_that_does_not_load_is_a_red_row_whose_enter_opens_it_kebbies_own_among_them() {
         let mut fixture = agents_fixture("settings-profile-broken");
         std::fs::write(fixture.dir.join("profiles/broken.toml"), "agent = \"gemini\"\n").unwrap();
+        std::fs::write(fixture.dir.join("profiles/task.toml"), "effort = \"huge\"\n").unwrap();
         fixture.page.load();
-        go_to_profile(&mut fixture.page, "task");
-        let (shown, _) = screen_at(&mut fixture.page, 140, 40);
-        assert!(shown.contains("ignored: profiles/broken.toml: agent: \"gemini\" is not an agent kebbie runs"), "{shown}");
+        go_to_profile(&mut fixture.page, "ops");
+        let (shown, buffer) = screen_at(&mut fixture.page, 140, 44);
+        assert!(shown.contains("▸ Profiles 7") && line_of(&shown, "FROM KEBBIE").ends_with("FROM KEBBIE  2") && line_of(&shown, "DOES NOT LOAD").ends_with(" DOES NOT LOAD  2"), "{shown}");
+        assert!(line_of(&shown, " task         profiles").ends_with(" task         profiles/task.toml") && line_of(&shown, " broken  ").ends_with(" broken       profiles/broken.toml"), "kebbie's own task, hidden by its file, has a row too: {shown}");
+        assert_eq!(color_of(&buffer, " broken  ", "broken"), Some(RED));
+        fixture.page.row = fixture.page.agents.profiles.len() + fixture.page.agents.broken.iter().position(|(name, _, _)| name == "broken").unwrap();
+        let (shown, _) = screen_at(&mut fixture.page, 140, 44);
+        assert!(shown.contains("    profiles/broken.toml: agent: \"gemini\" is not an agent kebbie runs") && shown.contains("    ⏎ open file") && shown.contains("broken does not load, so no task can start with it; ⏎ opens its file"), "{shown}");
+        press(&mut fixture.page, &[KeyCode::Char('m'), KeyCode::Char('x')]);
+        assert!(fixture.page.is_normal(), "a file that does not load has no picks");
+        assert!(matches!(fixture.page.handle(KeyEvent::from(KeyCode::Enter)), Effect::Open(file) if file == fixture.dir.join("profiles/broken.toml")));
         fixture.page.opened(&fixture.dir.join("profiles/broken.toml"), Ok(true));
         assert!(said(&fixture.page).starts_with("✗ profiles/broken.toml: agent:"), "{}", said(&fixture.page));
         fixture.page.opened(&fixture.dir.join("profiles/codex.toml"), Ok(true));
