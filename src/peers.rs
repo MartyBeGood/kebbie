@@ -289,9 +289,9 @@ pub fn steps_section(on: bool, kebbie: &str) -> String {
     format!(
         "## Steps\n\nBefore your first line of code, list your steps with `{kebbie} steps \"<step>\" \"<step>\" …`: this task's steps in the order they must go out, preparatory ones first and a migration as a step of its own; put `--` before the steps when one starts with `-`. \
          A step is one commit, finished and pushable on its own. \
-         The user accepts the commits one at a time and pushes the accepted ones while you build the next step, so keep building without waiting for them. \
+         The user may accept each commit and push the accepted ones while you build the next step, or push them together later, so keep building without waiting for them. \
          When the user says the split is wrong, run `{kebbie} steps` again with the new split before your next commit: every step not pushed yet is yours to reshape. \
-         Once the user accepts a step it goes out, so they only ever hold the next one in review: make each one finished and pushable on its own.\n"
+         A step can go out on its own the moment the user pushes it: make each one finished and pushable on its own.\n"
     )
 }
 

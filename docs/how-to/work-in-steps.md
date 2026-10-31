@@ -1,6 +1,6 @@
 # Work in steps
 
-Have a task list its work as steps, one commit each, accept the commits one at a time, and push the accepted ones while the task builds the next.
+Have a task list its work as steps, one commit each, and push them while the task builds the next: one at a time or together, accepting each first if you want to.
 
 Tasks work in steps by default. Turned off, a task commits its own way and you push it as a whole or in part (see [Push part of a task](push-part-of-a-task.md)).
 
@@ -27,6 +27,8 @@ Tasks work in steps by default. Turned off, a task commits its own way and you p
 - If a commit is not in the list, it shows as a step of its own, titled by its subject.
 
 ## Accept and push
+
+Accepting a step marks it as read and lets the push window start there. It is up to you: a step you did not accept pushes all the same.
 
 1. Read a step's commit in review and accept it. From the command line:
 

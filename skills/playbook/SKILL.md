@@ -28,7 +28,7 @@ The task's note is where the why lives: kebbie writes the recipe and the assesso
 ### `small-fix`
 
 - **When**: the prompt settles what changes and how it behaves; one behaviour in a few files, no screen to design, nothing for the user to choose.
-- **Phases**: one commit, with the test that goes red without it. No mockup, no plan.
+- **Phases**: one commit, with the test that goes red without it, listed as its one step when the task works in steps. No mockup and no plan beyond that step.
 - **The user**: the push.
 
 ### `feature-with-ui`

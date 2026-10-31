@@ -4,7 +4,7 @@
 
 <p align="center"><strong>Trunk-based development for coding agents.</strong></p>
 
-<p align="center">Tell the lead, a Claude Code session you talk to, what you want done. It plans the work from your backlog and starts the tasks, each with its own agent in its own worktree, side by side in <a href="https://herdr.dev">herdr</a>. One board shows what each one needs from you: a question, a review, a push. Accept the commits one at a time and they go straight onto main while the agent builds the next. No pull requests, no merges, and a red CI run goes back to the agent that wrote it.</p>
+<p align="center">Tell the lead, a Claude Code session you talk to, what you want done. It plans the work from your backlog and starts the tasks, each with its own agent in its own worktree, side by side in <a href="https://herdr.dev">herdr</a>. One board shows what each one needs from you: a question, a review, a push. Push its commits, each step on its own or together, and they go straight onto main while the agent builds the next. No pull requests, no merges, and a red CI run goes back to the agent that wrote it.</p>
 
 <p align="center">
 <a href="https://github.com/gronare/kebbie/releases/latest"><img src="https://img.shields.io/github/v/release/gronare/kebbie" alt="Release"></a>
@@ -27,7 +27,7 @@ A kebbie is a shepherd's crook, the Scots word for a staff with a hooked head. h
 - **A lead Claude that holds the picture.** It finds work in your backlog, writes informed task prompts, relays what one task needs to know from another, and settles questions of method itself, leaving you the ones about what you want.
 - **A read-only reviewer on every ready task.** A separate Claude, limited to reading the code, checks a task's commits against your rules before it can be pushed. A short assessor judges whether the work needs a full review and says why on the task; send it, or let kebbie start or require that review by itself.
 - **Review next to Claude.** A split shows the task's changes as diffs in nvim. Comment on a line and the comment is typed into Claude's input box.
-- **Work in steps.** A task lists its work as steps, one commit each, before it writes code. You accept the commits one at a time and push the accepted ones while it builds the next. `task.steps = false` turns it off.
+- **Work in steps.** A task lists its work as steps, one commit each, before it writes code. You push them as they land, one at a time or together, while it builds the next; accepting each one first is up to you. `task.steps = false` turns it off.
 - **Trunk-based by design.** kebbie rebases a task onto the default branch and pushes its commits there, one task at a time per repo. No pull requests and no merges.
 - **Try it on local main first.** In a repo you run from its main checkout, `kebbie stage` puts a ready task's commits on local main, unpushed, until you push main.
 - **Your board on your phone.** Connect a kebbie hub through your browser (`H` on the board): the board goes out sealed to your account, and any phone or browser you sign in on with your passkey reads it. The phone only reads, and notifications through the hub are not available in this version.
