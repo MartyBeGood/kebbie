@@ -566,7 +566,15 @@ impl Page {
         Effect::Handled
     }
 
-    pub fn mouse(&mut self, event: MouseEvent) -> Effect {
+    pub fn pointer(&mut self, event: MouseEvent) -> Effect {
+        match event.kind {
+            MouseEventKind::ScrollUp => self.handle(KeyCode::Up.into()),
+            MouseEventKind::ScrollDown => self.handle(KeyCode::Down.into()),
+            _ => self.mouse(event),
+        }
+    }
+
+    fn mouse(&mut self, event: MouseEvent) -> Effect {
         if event.kind != MouseEventKind::Down(MouseButton::Left) {
             return Effect::Handled;
         }
@@ -1523,28 +1531,31 @@ pub fn edit(cwd: &Path, repo: Option<&str>) -> Result<String> {
     let result = (|| -> Result<()> {
         loop {
             terminal.draw(|frame| page.draw_alone(frame)).map_err(|error| error.to_string())?;
-            match ratatui::crossterm::event::read().map_err(|error| error.to_string())? {
+            let effect = match ratatui::crossterm::event::read().map_err(|error| error.to_string())? {
                 ratatui::crossterm::event::Event::Key(key) if key.kind == ratatui::crossterm::event::KeyEventKind::Press => {
                     if crate::keys::ctrl_c(&key) {
                         return Ok(());
                     }
-                    match page.handle(key) {
-                        Effect::Left => return Ok(()),
-                        Effect::Open(file) => {
-                            let status = crate::board::terminal::outside(&mut terminal, || open_in_editor(&file));
-                            page.opened(&file, status);
-                        }
-                        Effect::Show(file) => {
-                            let status = crate::board::terminal::outside(&mut terminal, || show_in_pager(&file));
-                            page.shown(status);
-                        }
-                        Effect::Handled => {}
-                    }
+                    page.handle(key)
                 }
+                ratatui::crossterm::event::Event::Mouse(event) => page.pointer(event),
                 ratatui::crossterm::event::Event::Paste(text) => {
                     page.paste(&text);
+                    Effect::Handled
                 }
-                _ => {}
+                _ => Effect::Handled,
+            };
+            match effect {
+                Effect::Left => return Ok(()),
+                Effect::Open(file) => {
+                    let status = crate::board::terminal::outside(&mut terminal, || open_in_editor(&file));
+                    page.opened(&file, status);
+                }
+                Effect::Show(file) => {
+                    let status = crate::board::terminal::outside(&mut terminal, || show_in_pager(&file));
+                    page.shown(status);
+                }
+                Effect::Handled => {}
             }
         }
     })();
@@ -1697,7 +1708,7 @@ mod tests {
     fn click(page: &mut Page, shown: &str, text: &str) -> Effect {
         let (row, line) = shown.lines().enumerate().find(|(_, line)| line.contains(text)).unwrap_or_else(|| panic!("{text}: {shown}"));
         let column = line.chars().collect::<Vec<_>>().windows(text.chars().count()).position(|window| window.iter().collect::<String>() == text).unwrap();
-        page.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: column as u16, row: row as u16, modifiers: KeyModifiers::NONE })
+        page.pointer(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: column as u16, row: row as u16, modifiers: KeyModifiers::NONE })
     }
 
     #[test]
@@ -1720,6 +1731,14 @@ mod tests {
         let shown = screen(&mut fixture.page);
         click(&mut fixture.page, &shown, "Settings");
         assert!(fixture.page.is_normal(), "a click beside the pick closes it");
+        let wheel = |kind| MouseEvent { kind, column: 0, row: 0, modifiers: KeyModifiers::NONE };
+        let row = fixture.page.row;
+        fixture.page.pointer(wheel(MouseEventKind::ScrollDown));
+        assert_eq!(fixture.page.row, row + 1, "the wheel moves through the keys, kebbie config edit's too");
+        press(&mut fixture.page, &[KeyCode::Up, KeyCode::Enter]);
+        let index = match &fixture.page.mode { Mode::Choose(chooser) => chooser.index, _ => panic!("a pick") };
+        fixture.page.pointer(wheel(MouseEventKind::ScrollUp));
+        assert!(matches!(&fixture.page.mode, Mode::Choose(chooser) if chooser.index == index - 1), "and through a pick's answers");
     }
 
     #[test]

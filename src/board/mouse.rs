@@ -20,10 +20,7 @@ impl App {
             return;
         }
         if self.page == Page::Settings {
-            let effect = match event.kind {
-                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => self.settings.handle(KeyEvent::from(if event.kind == MouseEventKind::ScrollUp { KeyCode::Up } else { KeyCode::Down })),
-                _ => self.settings.mouse(event),
-            };
+            let effect = self.settings.pointer(event);
             return self.after_settings(effect, Some(terminal));
         }
         if self.page == Page::Routines {
