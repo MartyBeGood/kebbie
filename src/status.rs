@@ -259,7 +259,7 @@ impl Item {
     pub fn ci_note(&self) -> Option<String> {
         let note = self.ci.as_ref().map(crate::ci::Watch::note)?;
         Some(match &self.ci_outside {
-            Some(reason) => format!("{note} · its Claude says outside the code: {reason}"),
+            Some(reason) => format!("{note} · its {} says outside the code: {reason}", self.agent_name()),
             None => note,
         })
     }
@@ -290,19 +290,25 @@ impl Item {
             let place = if pending.ahead == 0 { "kebbie pushes it now".to_string() } else { tasks::place_in_line(pending.ahead, pending.after.as_deref()) };
             return Some(format!("pushing for {who} · {place}"));
         }
+        let agent = self.agent_name();
         let what = match pending.work {
-            _ if self.reported_since(pending.at, "ready") && self.git.as_ref().is_some_and(|git| git.approved) && stalled => "ready for a while, but kebbie has not seen its Claude take the request; push again",
-            _ if self.reported_since(pending.at, "ready") && self.git.as_ref().is_some_and(|git| git.approved) => "kebbie pushes it now",
-            _ if self.reported_since(pending.at, "ready") => "the new commits' rules are checked",
-            tasks::PushWork::Turn | tasks::PushWork::Tests => "its Claude runs the tests",
-            tasks::PushWork::Conflict => "its Claude resolves the conflict",
-            tasks::PushWork::Ci => "its Claude fixes the red CI",
+            _ if self.reported_since(pending.at, "ready") && self.git.as_ref().is_some_and(|git| git.approved) && stalled => format!("ready for a while, but kebbie has not seen its {agent} take the request; push again"),
+            _ if self.reported_since(pending.at, "ready") && self.git.as_ref().is_some_and(|git| git.approved) => "kebbie pushes it now".to_string(),
+            _ if self.reported_since(pending.at, "ready") => "the new commits' rules are checked".to_string(),
+            tasks::PushWork::Turn | tasks::PushWork::Tests => format!("its {agent} runs the tests"),
+            tasks::PushWork::Conflict => format!("its {agent} resolves the conflict"),
+            tasks::PushWork::Ci => format!("its {agent} fixes the red CI"),
         };
         Some(format!("pushing for {who} · {what}"))
     }
 
     fn reported_since(&self, at: u64, state: &str) -> bool {
         self.report.as_ref().is_some_and(|report| report.at > at && report.report.as_ref().is_some_and(|report| report.state == state))
+    }
+
+    // The task's own agent by name, for texts that say who does the work; one that is gone is the agent.
+    pub fn agent_name(&self) -> &'static str {
+        self.agent.as_ref().map_or("agent", |agent| agent.kind.name())
     }
 
     pub fn turn_under_way(&self) -> bool {
@@ -511,12 +517,12 @@ impl Item {
             return note;
         }
         let Some(git) = &self.git else {
-            return "Claude session outside a task worktree".to_string();
+            return format!("{} session outside a task worktree", self.agent.as_ref().map_or("Agent", |agent| agent.kind.name()));
         };
         let work = self.work(git);
         match (&self.workspace, &self.agent) {
             (None, None) => format!("no Space · {work}"),
-            (Some(_), None) => format!("no Claude · {work}"),
+            (Some(_), None) => format!("no agent · {work}"),
             _ => work,
         }
     }
@@ -531,7 +537,7 @@ impl Item {
         if self.group() == Group::ReadyToPush {
             let review: String = self.rules_note().into_iter().chain(self.review_note()).chain(self.unrecorded.clone()).map(|note| format!(" · {note}")).collect();
             let behind = if git.behind > 0 { format!(" · {} behind {}", git.behind, git.upstream.trim_start_matches("origin/")) } else { String::new() };
-            let turn = if self.turn_under_way() { " · its Claude is taking a turn" } else { "" };
+            let turn = if self.turn_under_way() { format!(" · its {} is taking a turn", self.agent_name()) } else { String::new() };
             let dirty = if git.uncommitted > 0 { format!(" · {}", plural(git.uncommitted, "uncommitted file")) } else { String::new() };
             return format!("{} · ready to push{dirty}{behind}{review}{turn}", plural(git.ahead, "commit"));
         }
@@ -1136,7 +1142,7 @@ pub(crate) mod tests {
         item.git.as_mut().unwrap().uncommitted = 2;
         assert_eq!(item.summary(), "no Space · 1 commit · 2 uncommitted files · 1 untracked file");
         item.workspace = Some("w1".to_string());
-        assert_eq!(item.summary(), "no Claude · 1 commit · 2 uncommitted files · 1 untracked file");
+        assert_eq!(item.summary(), "no agent · 1 commit · 2 uncommitted files · 1 untracked file");
         item.agent = task(Some("idle"), None, 0).agent;
         assert_eq!(item.summary(), "1 commit · 2 uncommitted files · 1 untracked file");
         assert_eq!(task(None, None, 0).summary(), "no Space · nothing yet");

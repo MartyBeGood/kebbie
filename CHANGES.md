@@ -35,6 +35,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 - kebbie next prints what needs you, numbered in the order to do it, and the lead answers a question about status or what to push first with it
 
 ### Fixed
+- A Codex task's row says its Codex runs the tests, resolves the conflict, fixes the red CI, is taking a turn or says the failure is outside the code, where it said its Claude, and a task whose agent is gone says no agent
 - The update window scrolls a list of what's new and fixed taller than the screen with ↑ ↓, PgUp PgDn, Home End and the mouse wheel, its keys line staying at the bottom with ↓ more while there is more, where the list was cut and the wheel closed the window
 - A Codex task's title on the board is the title Codex gives its conversation alone, where it read as Action Required | Fix the flaky checkout test | wt1.app, with Codex's status and the worktree's name around it; a title kebbie already kept that way shows the conversation's title
 - A Codex task that stops on an approval or a choice mid-task, its terminal titled [ ! ] Action Required, waits under Needs you and the lead hears the question with its options and the keys Codex shows, where the task showed under Working · nothing yet; kebbie choose takes an option's number or its key, as kebbie choose <task> y --prompt <id>
