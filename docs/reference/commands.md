@@ -183,7 +183,7 @@ How a task is done, by one of the recipes in the lead's playbook, and why. See [
 | --- | --- |
 | `kebbie recipe` | Lists the recipes: `small-fix`, `feature-with-ui`, `task-after-task`, `rollout-in-stages`, `follow-up`, `research`, `across-repos`, `waiting-on-outside`, `same-files`. |
 | `kebbie recipe <task>` | Shows the task's recipe, its why and who chose it. |
-| `kebbie recipe <task> "<recipe>: <why>"` | Sets it, such as `kebbie recipe billing "feature-with-ui: the refund needs a screen"`, and tells the task's Claude. |
+| `kebbie recipe <task> "<recipe>: <why>"` | Sets it, such as `kebbie recipe billing "feature-with-ui: the refund needs a screen"`, and tells the task's agent. |
 
 A recipe is named by its slug or as the board shows it (`small fix`), with a one-line why after the colon; any other name is refused with the list.
 

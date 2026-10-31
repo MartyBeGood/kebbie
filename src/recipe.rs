@@ -146,7 +146,7 @@ pub(crate) fn command_as(state: &Path, caller: &Caller, cwd: &Path, words: &[Str
     if !matches!(caller, Caller::Task(_)) {
         let text = format!("Your recipe is now {}, because {why}.{}", shown_name(&recipe), told.map(|line| format!(" {line}")).unwrap_or_default());
         if let Err(error) = tell(&address, &text) {
-            said = said.detail("its Claude", format!("not told ({error})"));
+            said = said.detail("its agent", format!("not told ({error})"));
         }
     } else if let Some(line) = told {
         said = said.next(line);
