@@ -538,6 +538,16 @@ fn short_error(message: &str) -> String {
     if text.chars().count() > 200 { format!("{}…", text.chars().take(200).collect::<String>()) } else { text }
 }
 
+// The model Codex runs when kebbie passes no --model: its config.toml's own, read, never written.
+pub fn configured_model(home: &Path) -> Option<String> {
+    let config: toml::Table = std::fs::read_to_string(home.join("config.toml")).ok()?.parse().ok()?;
+    model_in(&config)
+}
+
+pub fn model_in(config: &toml::Table) -> Option<String> {
+    config.get("model").and_then(toml::Value::as_str).filter(|model| !model.trim().is_empty()).map(str::to_string)
+}
+
 // Codex's own record of the folders the user trusted, in its config.toml's [projects] table; read, never written.
 pub fn trusted_by_user(dir: &Path) -> bool {
     let config = home().and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok()).and_then(|text| text.parse::<toml::Table>().ok());

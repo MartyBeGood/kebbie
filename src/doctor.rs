@@ -691,6 +691,9 @@ pub fn codex(found: &crate::agent::codex::Availability, config: Option<&toml::Ta
     } else {
         missing("codex hooks", format!("{}: {}", home.join("config.toml").display(), blocked.join("; ")), one("turn them back on in Codex's /hooks, or drop [features] hooks = false"))
     });
+    if let Some(model) = config.and_then(crate::agent::codex::model_in) {
+        checks.push(ok("codex model", format!("{model}, from {}, for a Codex profile without model", home.join("config.toml").display())));
+    }
     checks.extend(signed.map(|signed| match login("codex login", signed, crate::agent::login::CODEX_FIX, "codex tasks cannot start") {
         check if check.level == Level::Warn && needed => Check { level: Level::Fail, ..check },
         check => check,
@@ -1389,7 +1392,8 @@ mod tests {
         assert!(needed[0].fix.iter().any(|fix| fix.contains("https://chatgpt.com/codex/install.sh")));
         let ready = Availability { binary: Some(PathBuf::from("/u/.local/bin/codex")), version: Some("codex-cli 0.163.0".to_string()), plugin: Installed::Current };
         let lines = codex(&ready, Some(&"model = \"gpt-5.5\"\n".parse().unwrap()), true, home, None);
-        assert_eq!(lines.iter().map(|check| (check.level, check.name.as_str())).collect::<Vec<_>>(), [(Level::Ok, "codex"), (Level::Ok, "codex plugin"), (Level::Ok, "codex hooks")]);
+        assert_eq!(lines.iter().map(|check| (check.level, check.name.as_str())).collect::<Vec<_>>(), [(Level::Ok, "codex"), (Level::Ok, "codex plugin"), (Level::Ok, "codex hooks"), (Level::Ok, "codex model")]);
+        assert_eq!(lines[3].fact, "gpt-5.5, from /u/.codex/config.toml, for a Codex profile without model");
         assert_eq!(lines[0].fact, "0.163.0 at /u/.local/bin/codex");
         assert!(lines[1].fact.contains("/u/.codex/plugins/cache/kebbie-tasks/kebbie/local") && lines[2].fact.contains("trusts its three hooks by hash"));
         let old = Availability { version: Some("codex-cli 0.120.4".to_string()), plugin: Installed::Missing, ..ready };

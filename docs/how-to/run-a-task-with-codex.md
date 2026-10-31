@@ -74,6 +74,9 @@ The plugin follows kebbie's updates: `kebbie update` and `kebbie setup --yes` re
 
 A Codex profile takes `about`, `for`, `agent`, `model`, `effort`, `role`, `skills`, `permission_mode` and `sandbox.enabled`. `model` goes to `codex --model`, `effort` to `model_reasoning_effort`.
 
+- If the profile sets no `model`, Codex runs the `model` in its own `config.toml`. `kebbie profiles` shows it on the profile's `runs:` line, as `model gpt-5.5 from Codex's config.toml`, and `kebbie doctor` names it on its `codex model` line.
+- If that model is one your Codex login cannot use, such as a model a ChatGPT plan does not include, the task's first turn stops on an API error. Set `model` in the profile to one it can.
+
 `deny`, `allow`, `[claude]` and the other `[sandbox]` keys set Claude Code's options, which Codex doesn't read. A Codex profile that has them doesn't load, and `kebbie profiles` names the key.
 
 ## Start the task

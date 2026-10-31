@@ -300,7 +300,8 @@ pub fn to_json(profile: &Profile) -> Value {
     })
 }
 
-pub fn describe(profiles: &[Profile], errors: &[String], codex: Option<&str>) -> String {
+// codex_model is the model Codex's own config.toml names, which a Codex profile without model runs.
+pub fn describe(profiles: &[Profile], errors: &[String], codex: Option<&str>, codex_model: Option<&str>) -> String {
     let mut lines = Vec::new();
     for profile in profiles {
         let source = match (&profile.file, built_in(&profile.name).is_some()) {
@@ -315,6 +316,7 @@ pub fn describe(profiles: &[Profile], errors: &[String], codex: Option<&str>) ->
         }
         let mut runs = vec![profile.agent.key().to_string()];
         runs.extend(profile.model.iter().map(|model| format!("model {model}")));
+        runs.extend(codex_model.filter(|_| profile.agent == Agent::Codex && profile.model.is_none()).map(|model| format!("model {model} from Codex's config.toml")));
         runs.extend(profile.effort.iter().map(|effort| format!("effort {effort}")));
         runs.extend(profile.permission_mode.iter().map(|mode| format!("mode {mode}")));
         runs.extend((!profile.skills.is_empty()).then(|| format!("skills {}", profile.skills.join(", "))));
@@ -340,7 +342,8 @@ pub fn print(json: bool) -> Result<String> {
         shown.extend(errors.iter().map(|error| json!({ "error": error })));
         return serde_json::to_string_pretty(&shown).map_err(|error| error.to_string());
     }
-    Ok(describe(&profiles, &errors, codex.as_deref()))
+    let model = crate::agent::codex::home().and_then(|home| crate::agent::codex::configured_model(&home));
+    Ok(describe(&profiles, &errors, codex.as_deref(), model.as_deref()))
 }
 
 fn codex_availability() -> Option<String> {
@@ -460,7 +463,7 @@ mod tests {
         let (profiles, errors) = list_in(&dir);
         assert_eq!(profiles.iter().map(|profile| profile.name.as_str()).collect::<Vec<_>>(), ["task", "reviewer", "ops", "designer"]);
         assert_eq!(errors.len(), 1);
-        let shown = describe(&profiles, &errors, Some("codex-cli 0.163.0 at /bin/codex · kebbie's plugin installed"));
+        let shown = describe(&profiles, &errors, Some("codex-cli 0.163.0 at /bin/codex · kebbie's plugin installed"), None);
         assert!(shown.starts_with("task  (built in)\n  for: any task no other profile fits\n"), "{shown}");
         assert!(shown.contains(&format!("designer  ({})\n  for: UI, CSS\n  about: UI work\n  runs: claude · model opus", dir.join("designer.toml").display())), "{shown}");
         assert!(shown.contains("ignored: ") && shown.contains("broken.toml: agent: \"gemini\" is not an agent kebbie runs"), "{shown}");
@@ -507,8 +510,10 @@ mod tests {
         let dir = folder("profile-codex", &[("coder.toml", "about = \"Codex on GPT\"\nfor = \"a second opinion\"\nagent = \"codex\"\nmodel = \"gpt-5.5\"\neffort = \"xhigh\"\npermission_mode = \"acceptEdits\"\n[sandbox]\nenabled = true\n")]);
         let coder = load_in(&dir, "coder").unwrap();
         assert_eq!((coder.agent, coder.model.as_deref(), coder.effort.as_deref(), coder.sandbox.enabled), (Agent::Codex, Some("gpt-5.5"), Some("xhigh"), Some(true)));
-        let shown = describe(&[built_in(TASK).unwrap(), coder.clone()], &[], Some("codex-cli 0.163.0 at /bin/codex · kebbie's plugin installed"));
+        let shown = describe(&[built_in(TASK).unwrap(), coder.clone()], &[], Some("codex-cli 0.163.0 at /bin/codex · kebbie's plugin installed"), Some("gpt-5.1-codex-max"));
         assert!(shown.contains("coder  (") && shown.contains("  runs: codex · model gpt-5.5 · effort xhigh · mode acceptEdits\n  codex: codex-cli 0.163.0 at /bin/codex · kebbie's plugin installed"), "{shown}");
+        let unset = Profile { model: None, ..coder.clone() };
+        assert!(describe(&[unset], &[], None, Some("gpt-5.1-codex-max")).contains("  runs: codex · model gpt-5.1-codex-max from Codex's config.toml · effort xhigh"), "a profile without model names the one Codex runs");
         assert!(shown.starts_with("task  (built in)\n") && shown.contains("nothing added\n  runs: claude\ncoder"), "the built-in profiles stay Claude: {shown}");
         assert_eq!(to_json(&coder)["agent"], "codex");
         let refused = |text: &str| { std::fs::write(dir.join("x.toml"), format!("agent = \"codex\"\n{text}")).unwrap(); load_in(&dir, "x").unwrap_err() };
