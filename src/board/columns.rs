@@ -162,12 +162,12 @@ pub(super) fn how_lines(item: &Item, highlighted: bool, width: usize) -> Vec<Lin
 
 // A suggested review names the key that sends it; once sent, the suggestion is the review.
 fn review_part(item: &Item) -> Option<String> {
-    let reason = item.assessment.as_deref()?;
-    Some(match reason.strip_prefix("review suggested") {
-        Some(rest) if item.verdict.is_some() => format!("review{rest}"),
-        Some(_) => format!("{reason} · {}", keys::key(Act::SendReview)),
-        None if reason == "review not assessed" && item.verdict.is_none() => format!("{reason} · {}", keys::key(Act::SendReview)),
-        None => reason.to_string(),
+    use crate::assessment::Word;
+    let word = item.assessment.as_ref()?;
+    Some(match word {
+        Word::Suggested { reason } if item.verdict.is_some() => Word::Review { reason: reason.clone() }.text(),
+        word if word.asks_for_review() && item.verdict.is_none() => format!("{} · {}", word.text(), keys::key(Act::SendReview)),
+        word => word.text(),
     })
 }
 
@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn the_assessments_word_shows_muted_under_the_task_row_and_a_task_without_one_shows_none() {
         let mut item = crate::status::tests::task(Some("idle"), Some("ready"), 2);
-        item.assessment = Some("review: changes how VAT is rounded".to_string());
+        item.assessment = Some(crate::assessment::Word::Review { reason: "changes how VAT is rounded".to_string() });
         let mut app = test_app(vec![item.clone()]);
         app.work_selected = 9;
         let (rows, buffer) = render(&mut app, 120, 30);
@@ -440,12 +440,12 @@ mod tests {
         let (narrow, _) = render(&mut app, 40, 30);
         let line = narrow.iter().find(|row| row.contains("review: ")).unwrap();
         assert!(line.trim_end().ends_with('…') && line.trim_end().chars().count() <= 40, "a long line is cut to the column: {}", narrow.join("\n"));
-        item.assessment = Some("review not assessed".to_string());
+        item.assessment = Some(crate::assessment::Word::NotAssessed);
         let mut app = test_app(vec![item.clone()]);
         app.work_selected = 9;
         let (rows, _) = render(&mut app, 120, 30);
         assert_eq!(rows[at + 1].trim(), "review not assessed · v", "no answer is a suggestion too: {}", rows.join("\n"));
-        item.assessment = Some("review suggested: changes how VAT is rounded".to_string());
+        item.assessment = Some(crate::assessment::Word::Suggested { reason: "changes how VAT is rounded".to_string() });
         let mut app = test_app(vec![item.clone()]);
         app.work_selected = 9;
         let (rows, _) = render(&mut app, 120, 30);
@@ -466,7 +466,7 @@ mod tests {
     fn a_tasks_recipe_leads_the_line_under_its_row_and_the_open_task_says_why() {
         let mut item = crate::status::tests::task(Some("idle"), Some("ready"), 2);
         item.recipe = Some(crate::recipe::Recipe { name: "small-fix".to_string(), why: "one function and its test".to_string(), by: "the lead".to_string() });
-        item.assessment = Some("review: changes VAT rounding".to_string());
+        item.assessment = Some(crate::assessment::Word::Review { reason: "changes VAT rounding".to_string() });
         let mut app = test_app(vec![item.clone()]);
         let (open, _) = render(&mut app, 120, 30);
         let at = find(&open, "billing")[0].1;

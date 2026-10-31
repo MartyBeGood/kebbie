@@ -135,7 +135,7 @@ pub struct Item {
     pub staged: bool,
     pub steps: tasks::Steps,
     pub parked: Option<tasks::Parked>,
-    pub assessment: Option<String>,
+    pub assessment: Option<crate::assessment::Word>,
     pub recipe: Option<crate::recipe::Recipe>,
 }
 
@@ -533,7 +533,7 @@ impl Item {
     pub fn to_json(&self) -> Value {
         let mut shown = self.shown_json();
         shown["staged"] = json!(self.staged);
-        shown["assessment"] = json!(self.assessment);
+        shown["assessment"] = json!(self.assessment.as_ref().map(crate::assessment::Word::text));
         shown["recipe"] = self.recipe.as_ref().map_or(Value::Null, crate::recipe::Recipe::to_json);
         shown["parked_until"] = self.parked.map_or(Value::Null, |parked| parked.until.map_or(json!(tasks::UNPARKED), |at| json!(at)));
         shown
@@ -898,7 +898,7 @@ pub fn gather() -> Result<Vec<Item>> {
                 staged: state.as_deref().is_some_and(|state| tasks::staged(state, repo, &address)),
                 steps,
                 parked: state.as_deref().and_then(|state| tasks::park_of(state, &address, began)),
-                assessment: state.as_deref().and_then(|state| crate::assessment::reason_in(state, &address)),
+                assessment: state.as_deref().and_then(|state| crate::assessment::word_in(state, &address)),
                 recipe: state.as_deref().and_then(|state| crate::recipe::load(state, &address)),
                 phase: None,
                 title: state.as_deref().and_then(|state| title_of(state, &address, agent_title.as_deref(), &name_of(repo), &task, &name_of(&slot.path))),

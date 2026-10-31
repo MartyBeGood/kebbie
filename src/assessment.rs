@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use crate::config::{self, ReviewAuto};
 use crate::peers;
 use crate::repo::{ahead_behind, default_branch, git, main_checkout, name_of};
@@ -32,9 +34,54 @@ fn marked(state: &Path, address: &str, kind: &str) -> PathBuf {
     dir(state).join(format!("{address}.{kind}"))
 }
 
-// The assessor's word on the task as it last reported ready, for the board: "review suggested: …", "no review: …" or "review not assessed".
-pub fn reason_in(state: &Path, address: &str) -> Option<String> {
-    fs::read_to_string(file(state, address)).ok().map(|text| text.trim().to_string()).filter(|text| !text.is_empty())
+// The assessor's word on the task as it last reported ready; a word the assessor did not give reads as a suggestion, never as no review.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "word", rename_all = "snake_case")]
+pub enum Word {
+    Assessing,
+    NotAssessed,
+    NoReview { reason: String },
+    Suggested { reason: String },
+    Review { reason: String },
+}
+
+impl Word {
+    pub fn of(assessment: Option<&Assessment>, auto: ReviewAuto) -> Word {
+        match assessment {
+            None => Word::NotAssessed,
+            Some(Assessment { needed: false, reason }) => Word::NoReview { reason: reason.clone() },
+            Some(Assessment { reason, .. }) if auto == ReviewAuto::Suggest => Word::Suggested { reason: reason.clone() },
+            Some(Assessment { reason, .. }) => Word::Review { reason: reason.clone() },
+        }
+    }
+
+    pub fn text(&self) -> String {
+        match self {
+            Word::Assessing => "review being assessed".to_string(),
+            Word::NotAssessed => "review not assessed".to_string(),
+            Word::NoReview { reason } => format!("no review: {reason}"),
+            Word::Suggested { reason } => format!("review suggested: {reason}"),
+            Word::Review { reason } => format!("review: {reason}"),
+        }
+    }
+
+    pub fn asks_for_review(&self) -> bool {
+        matches!(self, Word::Suggested { .. } | Word::NotAssessed)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Record {
+    #[serde(flatten)]
+    word: Word,
+}
+
+pub fn word_in(state: &Path, address: &str) -> Option<Word> {
+    serde_json::from_str::<Record>(&fs::read_to_string(file(state, address)).ok()?).ok().map(|record| record.word)
+}
+
+fn write_word(state: &Path, address: &str, word: Word) -> Result<()> {
+    crate::state::write(&file(state, address), serde_json::to_string(&Record { word }).map_err(|error| error.to_string())?)
 }
 
 pub fn forget_in(state: &Path, address: &str) {
@@ -135,25 +182,13 @@ pub fn parse(answer: &str) -> Option<Assessment> {
     (!reason.is_empty()).then_some(Assessment { needed, reason })
 }
 
-// The word on the card: an assessment the assessor did not give reads as a suggestion, never as no review.
-pub fn reason_text(assessment: Option<&Assessment>, auto: ReviewAuto) -> String {
-    match assessment {
-        None => "review not assessed".to_string(),
-        Some(Assessment { needed: false, reason }) => format!("no review: {reason}"),
-        Some(Assessment { reason, .. }) if auto == ReviewAuto::Suggest => format!("review suggested: {reason}"),
-        Some(Assessment { reason, .. }) => format!("review: {reason}"),
-    }
-}
-
-const ASSESSING: &str = "review being assessed";
-
 // A ready report asks from the task's own process, so the keeper starts the assessor from its own environment.
 pub fn ask(state: &Path, address: &str, worktree: &Path, auto: ReviewAuto) -> Result<bool> {
     if crate::review::in_review(state, address) || crate::review::withdrawn_in(state, address) || ahead_behind(worktree, &default_branch(&main_checkout(worktree)?)?)?.0 == 0 {
         return Ok(false);
     }
     QUEUE.want(state, address, worktree, auto.key())?;
-    crate::state::write(&file(state, address), ASSESSING)?;
+    write_word(state, address, Word::Assessing)?;
     Ok(true)
 }
 
@@ -249,8 +284,9 @@ fn tell_task(address: &str, text: &str) -> Result<()> {
 
 // What an assessment, or none, does under review.auto, said to the lead too when it suggests or starts a review.
 fn settle(state: &Path, address: &str, worktree: &Path, auto: ReviewAuto, assessment: Option<&Assessment>) -> String {
-    let reason = reason_text(assessment, auto);
-    let _ = crate::state::write(&file(state, address), &reason);
+    let word = Word::of(assessment, auto);
+    let reason = word.text();
+    let _ = write_word(state, address, word.clone());
     QUEUE.done(state, address);
     match crate::decisions::write(state, address, &reason, crate::messages::now()) {
         Ok(note) => if let Some(line) = crate::decisions::for_the_task(&note, &reason) && let Err(error) = tell_task(address, &line) {
@@ -265,7 +301,7 @@ fn settle(state: &Path, address: &str, worktree: &Path, auto: ReviewAuto, assess
         _ => Ok(""),
     };
     let said = format!("{address}: {reason}.{}", started.unwrap_or(" The reviewer could not be asked for; send it with kebbie review."));
-    if !reason.starts_with("no review") && let Err(error) = crate::messages::to_lead(crate::messages::ToLead::Notice, &said) {
+    if !matches!(word, Word::NoReview { .. }) && let Err(error) = crate::messages::to_lead(crate::messages::ToLead::Notice, &said) {
         eprintln!("Could not tell the lead: {error}");
     }
     said
@@ -281,8 +317,8 @@ mod tests {
     fn an_older_review_rule_folder_moves_over_on_the_first_look() {
         let state = crate::sh::test_dir("assessment-folder");
         std::fs::create_dir_all(state.join("review-rule")).unwrap();
-        std::fs::write(state.join("review-rule/billing@app"), "no review: wording").unwrap();
-        assert_eq!(reason_in(&state, "billing@app").as_deref(), Some("no review: wording"));
+        std::fs::write(state.join("review-rule/billing@app"), r#"{"word":"no_review","reason":"wording"}"#).unwrap();
+        assert_eq!(word_in(&state, "billing@app"), Some(Word::NoReview { reason: "wording".to_string() }));
         assert!(!state.join("review-rule").exists() && state.join("assessment/billing@app").is_file());
         std::fs::remove_dir_all(state).unwrap();
     }
@@ -302,13 +338,15 @@ mod tests {
     fn the_card_says_what_the_assessment_means_under_each_mode_and_no_answer_is_never_no_review() {
         let yes = Assessment { needed: true, reason: "changes how VAT is rounded".to_string() };
         let no = Assessment { needed: false, reason: "wording in two templates".to_string() };
-        assert_eq!(reason_text(Some(&yes), ReviewAuto::Suggest), "review suggested: changes how VAT is rounded");
-        assert_eq!(reason_text(Some(&yes), ReviewAuto::Run), "review: changes how VAT is rounded");
-        assert_eq!(reason_text(Some(&yes), ReviewAuto::Require), "review: changes how VAT is rounded");
+        assert_eq!(Word::of(Some(&yes), ReviewAuto::Suggest).text(), "review suggested: changes how VAT is rounded");
+        assert_eq!(Word::of(Some(&yes), ReviewAuto::Run).text(), "review: changes how VAT is rounded");
+        assert_eq!(Word::of(Some(&yes), ReviewAuto::Require).text(), "review: changes how VAT is rounded");
         for auto in ReviewAuto::ALL {
-            assert_eq!(reason_text(Some(&no), auto), "no review: wording in two templates");
-            assert_eq!(reason_text(None, auto), "review not assessed");
+            assert_eq!(Word::of(Some(&no), auto).text(), "no review: wording in two templates");
+            assert_eq!(Word::of(None, auto), Word::NotAssessed);
+            assert!(Word::of(None, auto).asks_for_review() && !Word::of(Some(&no), auto).asks_for_review());
         }
+        assert_eq!(Word::NotAssessed.text(), "review not assessed");
     }
 
     #[test]
@@ -336,7 +374,7 @@ mod tests {
         let state = state_of(&dir);
         let address = peers::address("billing", &name_of(&dir));
         assert!(ask(&state, &address, &slot.path, ReviewAuto::Require).unwrap());
-        assert_eq!(reason_in(&state, &address).as_deref(), Some(ASSESSING));
+        assert_eq!(word_in(&state, &address), Some(Word::Assessing));
         assert!(holds_push(&state, &address).is_some(), "under require the push waits for the assessment");
         assert!(holds_push(&state, "other@app").is_none());
         SPAWNED.with(|all| all.borrow_mut().clear());
@@ -369,11 +407,11 @@ mod tests {
         settle(&state, "require@app", &slot.path, ReviewAuto::Require, Some(&yes));
         assert_eq!(held("require@app"), Some((true, true)), "require holds the push for the pass");
         settle(&state, "no@app", &slot.path, ReviewAuto::Require, Some(&Assessment { needed: false, reason: "wording".to_string() }));
-        assert_eq!((held("no@app"), reason_in(&state, "no@app").as_deref()), (None, Some("no review: wording")));
+        assert_eq!((held("no@app"), word_in(&state, "no@app")), (None, Some(Word::NoReview { reason: "wording".to_string() })));
         let note = std::fs::read_to_string(crate::decisions::local_file(&state, "no@app")).unwrap();
         assert!(note.ends_with(": no review: wording\n"), "the assessment goes to the task's note: {note}");
         let said = settle(&state, "silent@app", &slot.path, ReviewAuto::Require, None);
-        assert_eq!((held("silent@app"), reason_in(&state, "silent@app").as_deref()), (None, Some("review not assessed")), "no answer reads as a suggestion: {said}");
+        assert_eq!((held("silent@app"), word_in(&state, "silent@app")), (None, Some(Word::NotAssessed)), "no answer reads as a suggestion: {said}");
         cleanup(dir, origin, &slot);
     }
 }
