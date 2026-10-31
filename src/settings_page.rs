@@ -9,7 +9,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::agent::Agent;
 use crate::agent::codex::CachedModel;
-use crate::board::widgets::{BLUE, FAINT, GREEN, MANTLE, MAUVE, MUTED, PEACH, RED, SUBTEXT, SURFACE, Spot, TEAL, TEXT, YELLOW, bold, choice_lines, cut, hint_line, modal, modal_spots, style, text_width, wrap};
+use crate::board::widgets::{self, BLUE, FAINT, GREEN, MANTLE, MAUVE, MUTED, PEACH, RED, SUBTEXT, SURFACE, Spot, TEAL, TEXT, YELLOW, bold, choice_lines, cut, hint_line, modal, modal_spots, options_lines, style, text_width, wrap};
 use crate::config::{self, Entry, Kind, Layer, Scope};
 use crate::config_edit::{self, Set};
 use crate::profiles::{self, Edited, Profile};
@@ -19,6 +19,7 @@ pub enum Effect {
     Handled,
     Left,
     Open(PathBuf),
+    Show(PathBuf),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -83,6 +84,15 @@ enum Then {
     Type(Typed),
     Field(Field, Option<String>),
     TypeModel,
+    Role(RoleTo),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum RoleTo {
+    File(String),
+    New,
+    Copy(String),
+    None,
 }
 
 #[derive(Clone, Debug)]
@@ -110,12 +120,13 @@ struct Chooser {
     choices: Vec<Choice>,
     index: usize,
     foot: Vec<String>,
+    opens: bool,
 }
 
 impl Chooser {
     fn new(title: String, question: &str, explain: String, choices: Vec<Choice>, foot: Vec<String>) -> Self {
         let index = choices.iter().position(|choice| choice.now).unwrap_or(0);
-        Chooser { title, question: question.to_string(), explain, choices, index, foot }
+        Chooser { title, question: question.to_string(), explain, choices, index, foot, opens: false }
     }
 
     fn view(&self, width: usize) -> (Vec<Line<'static>>, Vec<(usize, Spot)>) {
@@ -137,7 +148,10 @@ impl Chooser {
             }
             lines.push(Line::default());
         }
-        hint_line(&mut lines, &mut spots, &[("↑ ↓ choose", None), ("⏎ set", Some(KeyCode::Enter.into())), ("esc close", Some(KeyCode::Esc.into()))]);
+        let mut keys = vec![("↑ ↓ choose", None), ("⏎ set", Some(KeyCode::Enter.into()))];
+        keys.extend(self.opens.then(|| ("o open the file", Some(KeyCode::Char('o').into()))));
+        keys.push(("esc close", Some(KeyCode::Esc.into())));
+        hint_line(&mut lines, &mut spots, &keys);
         (lines, spots)
     }
 }
@@ -150,6 +164,7 @@ enum Mode {
     Filter { buffer: String },
     Team { key: &'static str, change: Change },
     Choose(Box<Chooser>),
+    Menu { name: String, index: usize },
 }
 
 pub struct Paths {
@@ -198,6 +213,7 @@ struct Agents {
     codex_default: Option<String>,
     claude_default: Option<String>,
     review_model: Option<(String, Layer)>,
+    version: String,
 }
 
 impl Agents {
@@ -209,6 +225,7 @@ impl Agents {
             codex_models: crate::agent::codex::cached_models(&paths.codex_home),
             codex_default: crate::agent::codex::configured_model(&paths.codex_home),
             claude_default: crate::agent::claude::configured_model(&paths.claude_home),
+            version: crate::issue_recheck::version_at(&paths.kebbie).unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
         }
     }
 
@@ -489,12 +506,30 @@ impl Page {
                 }
                 KeyCode::Enter => {
                     if let Some(choice) = chooser.choices.into_iter().nth(chooser.index) {
-                        self.then(choice.then);
+                        return self.then(choice.then);
                     }
                 }
+                KeyCode::Char('o') if chooser.opens => match chooser.choices.get(chooser.index).map(|choice| &choice.then) {
+                    Some(Then::Role(RoleTo::File(file))) => return Effect::Open(self.paths.profiles.join(file)),
+                    _ => {
+                        self.say("o opens a role file; this one has none yet".to_string(), MUTED);
+                        self.mode = Mode::Choose(chooser);
+                    }
+                },
                 KeyCode::Esc | KeyCode::Char('q') => {}
                 _ => self.mode = Mode::Choose(chooser),
             },
+            Mode::Menu { name, index } => {
+                let keys: Vec<char> = self.menu_choices(&name).iter().map(|choice| choice.key).collect();
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => self.mode = Mode::Menu { name, index: index.saturating_sub(1) },
+                    KeyCode::Down | KeyCode::Char('j') => self.mode = Mode::Menu { index: (index + 1).min(keys.len().saturating_sub(1)), name },
+                    KeyCode::Enter => return keys.get(index).map_or(Effect::Handled, |key| self.menu(*key)),
+                    KeyCode::Char(key) if keys.contains(&key) => return self.menu(key),
+                    KeyCode::Esc | KeyCode::Char('q') => {}
+                    _ => self.mode = Mode::Menu { name, index },
+                }
+            }
             Mode::Team { key: name, change } => match key.code {
                 KeyCode::Char('t') => self.apply(name, change, false),
                 KeyCode::Char('o') => self.apply(name, change, true),
@@ -505,10 +540,11 @@ impl Page {
         Effect::Handled
     }
 
-    fn then(&mut self, then: Then) {
+    fn then(&mut self, then: Then) -> Effect {
         match (then, self.current()) {
             (Then::Field(field, value), _) => self.set_field(field, value.as_deref()),
             (Then::TypeModel, _) => self.mode = Mode::Edit { typed: Typed::Model, buffer: self.profile().and_then(|profile| self.agents.own_model(&profile)).unwrap_or_default() },
+            (Then::Role(to), _) => return self.set_role(to),
             (Then::Write(change), Some(entry)) => self.request(entry.key, change),
             (Then::Type(typed), Some(entry)) => {
                 let now = edit_text(&entry.value);
@@ -517,6 +553,7 @@ impl Page {
             }
             _ => {}
         }
+        Effect::Handled
     }
 
     pub fn mouse(&mut self, event: MouseEvent) -> Effect {
@@ -524,11 +561,16 @@ impl Page {
             return Effect::Handled;
         }
         let hit = self.hits.iter().find(|(area, _)| area.contains(Position::new(event.column, event.row))).map(|(_, spot)| *spot);
-        match (hit, &mut self.mode) {
-            (Some(Spot::Choice(at)), Mode::Choose(chooser)) if chooser.index != at => chooser.index = at,
+        let selected = match &mut self.mode {
+            Mode::Choose(chooser) => Some(&mut chooser.index),
+            Mode::Menu { index, .. } => Some(index),
+            _ => None,
+        };
+        match (hit, selected) {
+            (Some(Spot::Choice(at)), Some(index)) if *index != at => *index = at,
             (Some(Spot::Choice(_)), _) => return self.handle(KeyCode::Enter.into()),
             (Some(Spot::Key { key, .. }), _) => return self.handle(key),
-            (None, Mode::Choose(_)) => self.mode = Mode::Normal,
+            (None, Some(_)) => self.mode = Mode::Normal,
             _ => {}
         }
         Effect::Handled
@@ -539,6 +581,7 @@ impl Page {
             match key.code {
                 KeyCode::Char('m') => return self.choose(Field::Model),
                 KeyCode::Char('e') => return self.choose(Field::Effort),
+                KeyCode::Char('r') => return self.role(),
                 KeyCode::Char('d') => {
                     let reviewed = self.profile().and_then(|profile| self.agents.review_model(&profile).map(str::to_string)).is_some();
                     let removed = reviewed.then(|| {
@@ -781,7 +824,7 @@ impl Page {
         match profile.file {
             Some(file) => Effect::Open(file),
             None => {
-                self.say(format!("{} is built in and has no file until a value is set: m or e writes profiles/{}.toml", profile.name, profile.name), MUTED);
+                self.say(format!("{} is kebbie's and has no file of yours until you set something: m, e or r writes profiles/{}.toml", profile.name, profile.name), MUTED);
                 Effect::Handled
             }
         }
@@ -789,13 +832,135 @@ impl Page {
 
     pub fn opened(&mut self, file: &Path, result: Result<bool>) {
         self.load();
+        let shown = self.shown_file(file);
         match result {
+            Ok(_) if file.extension().is_some_and(|extension| extension == "md") => {
+                let users: Vec<String> = self.agents.profiles.iter().filter(|profile| profile.role.as_deref() == Some(file)).map(|profile| profile.name.clone()).collect();
+                let read = if users.is_empty() { "no profile reads it".to_string() } else { format!("read after kebbie's role by {}", users.join(", ")) };
+                self.say(format!("{shown}: {read}"), GREEN);
+            }
             Ok(_) => match self.agents.ignored.iter().find(|error| error.contains(&file.display().to_string())) {
-                Some(error) => self.say(format!("✗ {}", error.replace(&file.display().to_string(), &self.shown_file(file))), RED),
-                None => self.say(format!("{} loads", self.shown_file(file)), GREEN),
+                Some(error) => self.say(format!("✗ {}", error.replace(&file.display().to_string(), &shown)), RED),
+                None => self.say(format!("{shown} loads"), GREEN),
             },
             Err(error) => self.say(format!("✗ the editor: {error}"), RED),
         }
+    }
+
+    pub fn shown(&mut self, result: Result<bool>) {
+        if let Err(error) = result {
+            self.say(format!("✗ the pager: {error}"), RED);
+        }
+    }
+
+    fn role_users(users: &[String], name: &str) -> String {
+        match users {
+            [] => "used by none".to_string(),
+            [only] if only == name => format!("only {name}"),
+            _ => format!("shared with {}", users.join(", ")),
+        }
+    }
+
+    fn role(&mut self) -> Effect {
+        let Some(profile) = self.profile() else { return Effect::Handled };
+        self.said = None;
+        if profiles::built_in(&profile.name).is_some() {
+            self.mode = Mode::Menu { name: profile.name, index: 0 };
+            return Effect::Handled;
+        }
+        let dir = &self.paths.profiles;
+        let current = profiles::role_name(dir, &profile);
+        let files = profiles::role_files(dir, &self.agents.profiles);
+        let mut choices = Vec::new();
+        if let Some(current) = &current {
+            let users = files.iter().find(|(file, _)| file == current).map(|(_, users)| users.clone()).unwrap_or_default();
+            choices.push(Choice { label: current.clone(), about: format!("now · {}", Self::role_users(&users, &profile.name)), then: Then::Role(RoleTo::File(current.clone())), now: true });
+        }
+        choices.extend(files.iter().filter(|(file, _)| Some(file) != current.as_ref()).map(|(file, users)| Choice::new(file, &Self::role_users(users, &profile.name), Then::Role(RoleTo::File(file.clone())), false)));
+        choices.push(Choice::new("New role", "an empty file, named after the profile", Then::Role(RoleTo::New), false));
+        if let Some(current) = &current {
+            choices.push(Choice::new(&format!("Copy of {current}"), "to change it for this profile alone", Then::Role(RoleTo::Copy(current.clone())), false));
+        }
+        choices.push(Choice::new("None", "kebbie's role alone", Then::Role(RoleTo::None), current.is_none()));
+        let explain = format!("Your lines, read after {}.", profiles::kebbie_role(&profile.name).0);
+        let mut chooser = Chooser::new(format!("role · {}", profile.name), "Which role?", explain, choices, vec!["A shared file changes for every profile that uses it.".to_string()]);
+        chooser.opens = true;
+        self.mode = Mode::Choose(Box::new(chooser));
+        Effect::Handled
+    }
+
+    // A role file made here is new or a copy, so it never replaces one the user has.
+    fn set_role(&mut self, to: RoleTo) -> Effect {
+        let Some(profile) = self.profile() else { return Effect::Handled };
+        let dir = self.paths.profiles.clone();
+        let made = match &to {
+            RoleTo::New | RoleTo::Copy(_) => {
+                let file = profiles::free_role(&dir, &profile.name);
+                let text = match &to { RoleTo::Copy(from) => std::fs::read_to_string(dir.join(from)).unwrap_or_default(), _ => String::new() };
+                if let Err(error) = crate::state::write(&dir.join(&file), text) {
+                    self.say(format!("✗ {file}: {error}"), RED);
+                    return Effect::Handled;
+                }
+                Some(file)
+            }
+            _ => None,
+        };
+        let role = match &to { RoleTo::File(file) => Some(file.clone()), RoleTo::None => None, _ => made.clone() };
+        self.write_profile(&[("role", role.as_deref())]);
+        match made {
+            Some(file) if self.said.as_ref().is_some_and(|(text, _)| text.starts_with('✗')) => {
+                let _ = std::fs::remove_file(dir.join(file));
+                Effect::Handled
+            }
+            Some(file) => Effect::Open(dir.join(file)),
+            None => Effect::Handled,
+        }
+    }
+
+    fn menu_choices(&self, name: &str) -> Vec<widgets::Choice> {
+        let row = |key: char, label: String, about: String| widgets::Choice { key, act: None, label, about, link: None };
+        let file = profiles::kebbie_role(name).1;
+        let every = if name == profiles::REVIEWER { "every review" } else { "every task" };
+        let own = self.agents.profiles.iter().find(|profile| profile.name == name).and_then(|profile| profiles::role_name(&self.paths.profiles, profile)).unwrap_or_else(|| format!("{name}.md"));
+        vec![
+            row('s', "Show kebbie's role".to_string(), format!("{file}, read-only")),
+            row('a', "Add your lines".to_string(), format!("profiles/{own}, read after kebbie's role by {every}")),
+        ]
+    }
+
+    fn menu(&mut self, key: char) -> Effect {
+        let Some(profile) = self.profile() else { return Effect::Handled };
+        match key {
+            's' => {
+                let file = self.paths.kebbie.join(profiles::kebbie_role(&profile.name).1);
+                if file.is_file() {
+                    return Effect::Show(file);
+                }
+                self.say(format!("✗ {} is not in kebbie's install", home_relative(&file)), RED);
+            }
+            'a' => {
+                if let Some(role) = profile.role {
+                    return Effect::Open(role);
+                }
+                let file = format!("{}.md", profile.name);
+                let path = self.paths.profiles.join(&file);
+                let made = !path.exists();
+                if made && let Err(error) = crate::state::write(&path, String::new()) {
+                    self.say(format!("✗ {file}: {error}"), RED);
+                    return Effect::Handled;
+                }
+                self.write_profile(&[("role", Some(&file))]);
+                if self.said.as_ref().is_some_and(|(text, _)| text.starts_with('✗')) {
+                    if made {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                    return Effect::Handled;
+                }
+                return Effect::Open(path);
+            }
+            _ => {}
+        }
+        Effect::Handled
     }
 
     fn runs(&self, profile: &Profile) -> String {
@@ -806,6 +971,25 @@ impl Page {
         };
         let effort = profile.effort.as_deref().map_or_else(String::new, |effort| format!(", effort {effort}"));
         format!("{} runs {} on {model}{effort}", profile.name, profile.agent.key())
+    }
+
+    fn summary(&self, profile: &Profile) -> String {
+        let model = match (self.agents.review_model.as_ref().filter(|_| profile.name == profiles::REVIEWER), &profile.model, self.agents.default_model(profile.agent)) {
+            (Some((model, layer)), _, _) => format!("{model} from review.model ({})", self.layer_word(*layer).0),
+            (None, Some(model), _) => model.clone(),
+            (None, None, Some(model)) => format!("{model} by {}'s default", profile.agent.name()),
+            (None, None, None) => format!("{}'s default model", profile.agent.name()),
+        };
+        let mut said = vec![format!("{}: {}, {model}", profile.name, profile.agent.key())];
+        said.extend(profile.effort.clone());
+        let mut text = said.join(", ");
+        if let Some(role) = profiles::role_name(&self.paths.profiles, profile) {
+            text.push_str(&format!(" · role {role}"));
+        }
+        if profiles::built_in(&profile.name).is_some() && let Some(file) = &profile.file {
+            text.push_str(&format!(" · your settings in {}", self.shown_file(file)));
+        }
+        text
     }
 
     fn write_profile(&mut self, changes: &[(&str, Option<&str>)]) {
@@ -842,7 +1026,7 @@ impl Page {
     pub fn hint_lines(&self) -> (Line<'static>, Line<'static>) {
         let line = |hints: &[&str]| Line::from(Span::styled(hints.join(" · "), style(MUTED)));
         if self.on_profiles() {
-            return (line(&["↑ ↓ profile", "m model", "e effort", "⏎ open file", "d default", "← → section", "esc board"]), line(&["↑ ↓ profile", "m model", "e effort", "⏎ open", "esc board"]));
+            return (line(&["↑ ↓ profile", "m model", "e effort", "r role", "⏎ open", "d default", "esc board"]), line(&["↑ ↓ profile", "m model", "e effort", "r role", "esc board"]));
         }
         let change = match self.current().map(|entry| entry.kind) {
             Some(Kind::Bool) => "space toggle",
@@ -892,60 +1076,87 @@ impl Page {
         (lines, selected)
     }
 
+    fn adapter(&self, profile: &Profile, chosen: bool) -> Vec<Span<'static>> {
+        let agents = &self.agents;
+        let dot = || Span::styled(" · ", style(MUTED));
+        let mut spans = vec![Span::styled(profile.agent.key().to_string(), style(if profile.agent == Agent::Codex { BLUE } else { TEAL }))];
+        let warned = agents.warning(profile).is_some();
+        match (&self.mode, chosen) {
+            (Mode::Edit { typed: Typed::Model, buffer }, true) => spans.extend([dot(), Span::styled(format!("{buffer}▏"), bold(TEXT))]),
+            _ => {
+                if let Some(model) = agents.model(profile) {
+                    spans.extend([dot(), Span::styled(model, style(if warned { RED } else if agents.own_model(profile).is_some() { TEXT } else { MUTED }))]);
+                }
+                if warned {
+                    spans.push(Span::styled(" ⚠", style(RED)));
+                }
+            }
+        }
+        if let Some(effort) = &profile.effort {
+            spans.extend([dot(), Span::styled(effort.clone(), style(TEXT))]);
+        }
+        spans
+    }
+
+    fn role_spans(&self, profile: &Profile) -> Vec<Span<'static>> {
+        let own = profiles::role_name(&self.paths.profiles, profile).map(|role| Span::styled(format!("+ {role}"), style(BLUE)));
+        match (profiles::built_in(&profile.name).is_some(), own) {
+            (true, Some(own)) => vec![Span::styled(format!("{} ", profiles::kebbie_role(&profile.name).0), style(MUTED)), own],
+            (_, Some(own)) => vec![own],
+            (_, None) => vec![Span::styled(profiles::kebbie_role(&profile.name).0.to_string(), style(MUTED))],
+        }
+    }
+
     fn profile_lines(&self, width: usize) -> (Vec<Line<'static>>, usize) {
         let agents = &self.agents;
-        let name_width = agents.profiles.iter().map(|profile| profile.name.len()).max().unwrap_or(0).min(width / 4);
-        let wheres: Vec<(String, Color)> = agents.profiles.iter().map(|profile| match (&profile.file, agents.review_model.as_ref().filter(|_| profile.name == profiles::REVIEWER)) {
-            (_, Some((_, layer))) => (format!("from review.model · {}", self.layer_word(*layer).0), MUTED),
-            (None, _) => ("built in".to_string(), MUTED),
-            (Some(file), _) => (file.file_name().unwrap_or_default().to_string_lossy().to_string(), BLUE),
-        }).collect();
-        let where_width = wheres.iter().map(|(text, _)| text_width(text)).max().unwrap_or(0);
-        let lead = 1 + name_width + 3 + 7;
-        let model_width = width.saturating_sub(lead + 8 + where_width + 1).min(28);
+        let name_width = agents.profiles.iter().map(|profile| text_width(&profile.name)).max().unwrap_or(0).min(width / 4) + 2;
+        let adapters: Vec<Vec<Span<'static>>> = agents.profiles.iter().enumerate().map(|(at, profile)| self.adapter(profile, at == self.row)).collect();
+        let adapter_width = adapters.iter().map(|spans| spans.iter().map(Span::width).sum::<usize>()).max().unwrap_or(0) + 3;
         let (mut lines, mut selected) = (Vec::new(), 0);
+        let heading = |lines: &mut Vec<Line<'static>>, title: &str, about: String| {
+            lines.push(Line::from(Span::styled(format!(" {title}"), bold(TEAL))));
+            lines.push(Line::from(Span::styled(format!("  {about}"), style(MUTED))));
+        };
+        heading(&mut lines, "FROM KEBBIE", "follow kebbie's updates; your settings on them are kept".to_string());
+        let mut yours = false;
         for (at, profile) in agents.profiles.iter().enumerate() {
+            if !yours && profiles::built_in(&profile.name).is_none() {
+                yours = true;
+                lines.push(Line::default());
+                heading(&mut lines, "YOURS", format!("{} · an update never writes here", home_relative(&self.paths.profiles)));
+            }
             let chosen = at == self.row;
-            let (agent, agent_color) = (profile.agent.key(), if profile.agent == Agent::Codex { BLUE } else { TEAL });
-            let warned = agents.warning(profile).is_some();
-            let model = match (&self.mode, chosen) {
-                (Mode::Edit { typed: Typed::Model, buffer }, true) => Span::styled(format!("{buffer}▏"), bold(TEXT)),
-                _ => {
-                    let text = agents.model(profile).unwrap_or_else(|| "default".to_string());
-                    let text = if warned { format!("{}  ⚠", cut(&text, model_width.saturating_sub(3))) } else { cut(&text, model_width) };
-                    Span::styled(text, style(if warned { RED } else if agents.own_model(profile).is_some() { TEXT } else { MUTED }))
-                }
-            };
-            let used = text_width(&model.content);
-            let effort = profile.effort.clone().unwrap_or_else(|| "—".to_string());
-            let (place, place_color) = wheres[at].clone();
-            let fill = width.saturating_sub(lead + model_width.max(used) + 8).max(1);
-            let line = Line::from(vec![
+            let used: usize = adapters[at].iter().map(Span::width).sum();
+            let mut spans = vec![
                 if chosen { Span::styled("▌", style(MAUVE)) } else { Span::raw(" ") },
-                Span::styled(format!(" {:<name_width$}  ", cut(&profile.name, name_width)), if chosen { bold(TEXT) } else { style(TEXT) }),
-                Span::styled(format!("{agent:<7}"), style(agent_color)),
-                model,
-                Span::raw(" ".repeat(model_width.saturating_sub(used))),
-                Span::styled(format!("{effort:<8}"), style(TEXT)),
-                Span::styled(format!("{place:>fill$}"), style(place_color)),
-            ]);
+                Span::styled(format!(" {:<name_width$}", cut(&profile.name, name_width - 2)), if chosen { bold(TEXT) } else { style(TEXT) }),
+            ];
+            spans.extend(adapters[at].clone());
+            spans.push(Span::raw(" ".repeat(adapter_width.saturating_sub(used))));
+            spans.extend(self.role_spans(profile));
+            let line = Line::from(spans);
             if !chosen {
                 lines.push(line);
                 continue;
             }
             selected = lines.len();
             lines.push(line.style(Style::new().bg(SURFACE)));
-            if !profile.about.is_empty() {
-                for (number, text) in wrap(&profile.about, width.saturating_sub(12), 6).into_iter().enumerate() {
-                    lines.push(Line::from(Span::styled(format!("{}{text}", if number == 0 { "    about: " } else { "           " }), style(SUBTEXT))));
-                }
+            let kebbies = profiles::kebbie_role(&profile.name).0;
+            lines.push(Line::from(vec![Span::styled("    role:  ", style(SUBTEXT)), Span::styled(format!("{kebbies}, from kebbie {}, updates with kebbie", agents.version), style(SUBTEXT))]));
+            if let Some(role) = profiles::role_name(&self.paths.profiles, profile) {
+                lines.push(Line::from(vec![Span::raw("         "), Span::styled(format!("+ {role}"), style(BLUE)), Span::styled(", yours: read after kebbie's role", style(SUBTEXT))]));
             }
             let mut keys = vec![Span::raw("    ")];
-            for (number, (key, word)) in [("m", "model"), ("e", "effort"), ("⏎", "open the file"), ("d", "back to the default")].into_iter().enumerate() {
-                keys.extend([Span::raw(if number == 0 { "" } else { "   " }), Span::styled(key, style(MAUVE)), Span::styled(format!(" {word}"), style(SUBTEXT))]);
+            for (number, (key, word)) in [("m", "model"), ("e", "effort"), ("r", "role"), ("⏎", "open file"), ("d", "default")].into_iter().enumerate() {
+                keys.extend([Span::raw(if number == 0 { "" } else { "  " }), Span::styled(key, style(MAUVE)), Span::styled(format!(" {word}"), style(SUBTEXT))]);
             }
             lines.push(Line::from(keys));
             lines.push(Line::default());
+        }
+        if !yours {
+            lines.push(Line::default());
+            heading(&mut lines, "YOURS", format!("{} · an update never writes here", home_relative(&self.paths.profiles)));
+            lines.push(Line::from(Span::styled("  none yet", style(MUTED))));
         }
         for error in &agents.ignored {
             let error = error.replace(&self.paths.profiles.display().to_string(), "profiles");
@@ -999,10 +1210,10 @@ impl Page {
         let under = match &self.mode {
             Mode::Filter { buffer } => Some((format!("/ {buffer}▏  · ⏎ keep · esc clear"), TEXT)),
             Mode::Edit { typed, .. } => Some((match typed { Typed::SkillName => "type a skill: <skill> or <plugin>:<skill>", Typed::SkillFile => "type the path of a .md file, starting with / or ~/", Typed::Model => "type the model's id, as the agent takes it", Typed::Value => "editing in place" }.to_string() + " · ⏎ save · esc cancel", SUBTEXT)),
-            Mode::Normal if self.said.is_none() && self.on_profiles() => {
-                let warned = self.profile().and_then(|profile| self.agents.warning(&profile)).or_else(|| self.agents.profiles.iter().find_map(|profile| self.agents.warning(profile)));
-                warned.map(|text| (text, YELLOW))
-            }
+            Mode::Normal if self.said.is_none() && self.on_profiles() => self.profile().map(|profile| match self.agents.warning(&profile) {
+                Some(warning) => (warning, YELLOW),
+                None => (self.summary(&profile), SUBTEXT),
+            }),
             _ => self.said.clone(),
         };
         if let Some((text, color)) = under {
@@ -1015,6 +1226,15 @@ impl Page {
                 let width = POPUP.min(frame.area().width.saturating_sub(8) as usize);
                 let (lines, spots) = chooser.view(width);
                 self.hits = modal_spots(frame, chooser.title.clone(), lines, spots, width).1;
+            }
+            Mode::Menu { name, index } => {
+                let intro = wrap(&format!("{name} is kebbie's: its role comes with kebbie and an update replaces it, so it is not edited here."), 56, 3);
+                let mut lines: Vec<Line> = intro.into_iter().map(|text| Line::from(Span::styled(text, style(TEXT)))).collect();
+                lines.push(Line::default());
+                let choices = self.menu_choices(name);
+                let spots = (0..choices.len()).flat_map(|at| [(lines.len() + 2 * at, Spot::Choice(at)), (lines.len() + 2 * at + 1, Spot::Choice(at))]).collect();
+                lines.extend(options_lines(choices, *index, 56));
+                self.hits = modal_spots(frame, format!("role · {name}"), lines, spots, 58).1;
             }
             Mode::Team { key, .. } => {
                 let target = std::fs::canonicalize(self.file()).map(|path| home_relative(&path)).unwrap_or_default();
@@ -1047,6 +1267,11 @@ pub fn open_in_editor(file: &Path) -> Result<bool> {
     std::process::Command::new("sh").args(["-c", "${VISUAL:-${EDITOR:-vi}} \"$1\"", "sh"]).arg(file).status().map(|status| status.success()).map_err(|error| error.to_string())
 }
 
+// kebbie's own files are shown, never edited: an update would replace the change.
+pub fn show_in_pager(file: &Path) -> Result<bool> {
+    std::process::Command::new("sh").args(["-c", "${PAGER:-less} \"$1\"", "sh"]).arg(file).status().map(|status| status.success()).map_err(|error| error.to_string())
+}
+
 pub fn edit(cwd: &Path, repo: Option<&str>) -> Result<String> {
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
@@ -1077,6 +1302,10 @@ pub fn edit(cwd: &Path, repo: Option<&str>) -> Result<String> {
                         Effect::Open(file) => {
                             let status = crate::board::terminal::outside(&mut terminal, || open_in_editor(&file));
                             page.opened(&file, status);
+                        }
+                        Effect::Show(file) => {
+                            let status = crate::board::terminal::outside(&mut terminal, || show_in_pager(&file));
+                            page.shown(status);
                         }
                         Effect::Handled => {}
                     }
@@ -1396,7 +1625,7 @@ mod tests {
         assert_eq!(file(&fixture, "config.toml"), "[task]\nsandbox = \"yes\"\n");
     }
 
-    const CODEX_BUILD: &str = "# for small builds\nabout = \"Codex, building: a small, well-defined task done by another model family\"\nagent = \"codex\" # not Claude\nmodel = \"gpt-6.1-sol\"\neffort = \"medium\"\n";
+    const CODEX_BUILD: &str = "# for small builds\nabout = \"Codex, building: a small, well-defined task done by another model family\"\nagent = \"codex\" # not Claude\nmodel = \"gpt-6.1-sol\"\neffort = \"medium\"\nrole = \"codex.md\"\n";
 
     fn agents_fixture(name: &str) -> Fixture {
         let fixture = fixture(name, "", None);
@@ -1404,7 +1633,15 @@ mod tests {
         for folder in ["profiles", "codex", "claude"] {
             std::fs::create_dir_all(dir.join(folder)).unwrap();
         }
-        std::fs::write(dir.join("profiles/codex.toml"), "about = \"Codex on its own config\"\nagent = \"codex\"\neffort = \"medium\"\n").unwrap();
+        std::fs::write(dir.join("profiles/codex.toml"), "about = \"Codex on its own config\"\nagent = \"codex\"\neffort = \"medium\"\nrole = \"codex.md\"\n").unwrap();
+        std::fs::write(dir.join("profiles/codex.md"), "Run the tests before each commit.\n").unwrap();
+        std::fs::write(dir.join("profiles/designer.toml"), "about = \"UI work: mockup first\"\nmodel = \"opus\"\neffort = \"high\"\nrole = \"designer.md\"\n").unwrap();
+        std::fs::write(dir.join("profiles/designer.md"), "Measure in the browser.\n").unwrap();
+        std::fs::write(dir.join("kebbie/Cargo.toml"), "[package]\nname = \"kebbie\"\nversion = \"0.30.0\"\n").unwrap();
+        for role in ["roles/task.md", "skills/review/SKILL.md"] {
+            std::fs::create_dir_all(dir.join("kebbie").join(role).parent().unwrap()).unwrap();
+            std::fs::write(dir.join("kebbie").join(role), "kebbie's own role\n").unwrap();
+        }
         std::fs::write(dir.join("profiles/codex-build.toml"), CODEX_BUILD).unwrap();
         std::fs::write(dir.join("profiles/reviewer.toml"), "model = \"opus\"\neffort = \"max\"\n").unwrap();
         std::fs::write(dir.join("codex/config.toml"), "model = \"gpt-5.1-codex-max\"\n").unwrap();
@@ -1436,31 +1673,124 @@ mod tests {
         buffer[(x as u16, y as u16)].fg.into()
     }
 
+    fn line_of<'a>(shown: &'a str, text: &str) -> &'a str {
+        shown.lines().find(|line| line.contains(text)).unwrap_or_else(|| panic!("{text}: {shown}"))
+    }
+
     #[test]
-    fn the_profiles_section_lists_each_profile_with_its_agent_model_effort_and_file() {
+    fn the_profiles_section_keeps_kebbies_profiles_apart_from_yours_with_each_roles_two_layers() {
         let mut fixture = agents_fixture("settings-profiles");
         let names: Vec<String> = fixture.page.sections().into_iter().map(|(name, _)| name).collect();
         let at = names.iter().position(|name| name == PROFILES).unwrap();
         assert_eq!((names[at - 1].as_str(), names[at + 1].as_str()), ("Review & docs", "Updates"));
-        go_to_profile(&mut fixture.page, "codex-build");
+        go_to_profile(&mut fixture.page, "designer");
         let (shown, buffer) = screen_at(&mut fixture.page, 100, 30);
-        assert!(shown.contains("▸ Profiles 5"), "{shown}");
+        assert!(shown.contains("▸ Profiles 6"), "{shown}");
         assert!(screen_at(&mut fixture.page, 300, 30).0.contains(&format!("writes {}", fixture.dir.join("profiles/<name>.toml").display())));
-        let row = |name: &str| shown.lines().find(|line| line.contains(&format!(" {name} "))).unwrap_or_else(|| panic!("{name}: {shown}")).to_string();
-        assert!(row("task").contains("claude opus") && row("task").contains("—") && row("task").ends_with("built in"), "{}", row("task"));
-        assert!(row("reviewer").contains("opus") && row("reviewer").contains("max") && row("reviewer").ends_with(" reviewer.toml"), "{}", row("reviewer"));
-        assert!(row("codex").contains("codex  gpt-5.1-codex-max  ⚠") && row("codex").contains("medium") && row("codex").ends_with("codex.toml"), "{}", row("codex"));
-        assert!(row("codex-build").contains("▌ codex-build  codex  gpt-6.1-sol") && row("codex-build").ends_with("codex-build.toml"), "{}", row("codex-build"));
-        assert!(shown.contains("about: Codex, building: a small, well-defined task done by another") && shown.contains("m model   e effort   ⏎ open the file   d back to the default"), "{shown}");
-        assert!(shown.contains("dim = the agent's own default:") && shown.contains("Claude's from "), "{shown}");
-        assert!(screen_at(&mut fixture.page, 400, 30).0.contains(&format!("Claude's from {}, Codex's from {}", fixture.dir.join("claude/settings.json").display(), fixture.dir.join("codex/config.toml").display())));
-        assert!(shown.contains("⚠ codex runs gpt-5.1-codex-max from Codex's config.toml, which Codex does not offer") && shown.contains("account; pick a model for it with m."), "{shown}");
-        assert!(shown.lines().any(|line| line.trim_start().starts_with("↑ ↓ profile · m model · e effort · ⏎ open file · d default · ← → section · esc quit")), "{shown}");
+        let at = |text: &str| shown.find(text).unwrap_or_else(|| panic!("{text}: {shown}"));
+        assert!(at(" FROM KEBBIE") < at(" task ") && at(" ops ") < at(" YOURS") && at(" YOURS") < at(" codex "), "kebbie's three, then the user's: {shown}");
+        assert!(line_of(&shown, "FROM KEBBIE").len() < line_of(&shown, "follow kebbie's updates; your settings on them are kept").len(), "{shown}");
+        assert!(screen_at(&mut fixture.page, 300, 30).0.contains(&format!("{} · an update never writes here", fixture.dir.join("profiles").display())));
+        assert!(line_of(&shown, " task ").ends_with("task         claude · opus                          kebbie's task role"), "{shown}");
+        assert!(line_of(&shown, " reviewer ").ends_with("reviewer     claude · opus · max                    kebbie's review role"), "{shown}");
+        assert!(line_of(&shown, " codex ").ends_with("codex        codex · gpt-5.1-codex-max ⚠ · medium   + codex.md"), "{shown}");
+        assert!(line_of(&shown, " codex-build ").ends_with("codex-build  codex · gpt-6.1-sol · medium           + codex.md"), "a shared role shows on both: {shown}");
+        assert!(line_of(&shown, " designer ").ends_with("▌ designer     claude · opus · high                   + designer.md"), "{shown}");
+        assert!(line_of(&shown, "role:  ").ends_with("    role:  kebbie's task role, from kebbie 0.30.0, updates with kebbie") && line_of(&shown, "+ designer.md, ").ends_with("         + designer.md, yours: read after kebbie's role"), "{shown}");
+        assert!(shown.contains("    m model  e effort  r role  ⏎ open file  d default"), "{shown}");
+        assert!(shown.contains("  designer: claude, opus, high · role designer.md"), "the line under the page sums the selected profile up: {shown}");
+        assert!(shown.lines().any(|line| line.trim_start().starts_with("↑ ↓ profile · m model · e effort · r role · ⏎ open · d default · esc quit")), "{shown}");
         assert_eq!(color_of(&buffer, " task ", "opus"), Some(MUTED), "the agent's own default shows dim");
         assert_eq!(color_of(&buffer, " reviewer ", "opus"), Some(TEXT), "the profile's own model does not");
         assert_eq!(color_of(&buffer, " codex  ", "gpt-5.1-codex-max"), Some(RED));
+        assert!(shown.contains("dim = the agent's own default:") && shown.contains("Claude's from "), "{shown}");
+        go_to_profile(&mut fixture.page, "codex");
+        let (shown, _) = screen_at(&mut fixture.page, 100, 30);
+        assert!(shown.contains("⚠ codex runs gpt-5.1-codex-max from Codex's config.toml, which Codex does not offer") && shown.contains("account; pick a model for it with m."), "the selected profile's ⚠ comes first: {shown}");
+        go_to_profile(&mut fixture.page, "task");
+        let (shown, _) = screen_at(&mut fixture.page, 100, 30);
+        assert!(line_of(&shown, "role:  ").ends_with("kebbie's task role, from kebbie 0.30.0, updates with kebbie") && !shown.contains("yours: read after") && shown.contains("  task: claude, opus by Claude's default"), "kebbie's role alone: {shown}");
         press(&mut fixture.page, &[KeyCode::Tab]);
         assert!(!fixture.page.sections().iter().any(|(name, _)| name == PROFILES), "profiles are this machine's, never a repo's");
+    }
+
+    #[test]
+    fn r_on_one_of_your_profiles_picks_a_role_file_with_who_shares_it_or_makes_one_that_overwrites_none() {
+        let mut fixture = agents_fixture("settings-role-pick");
+        let read = |name: &str| std::fs::read_to_string(fixture.dir.join("profiles").join(name)).unwrap_or_default();
+        go_to_profile(&mut fixture.page, "designer");
+        press(&mut fixture.page, &[KeyCode::Char('r')]);
+        let (shown, _) = screen_at(&mut fixture.page, 100, 30);
+        assert!(shown.contains("╭ role · designer ") && shown.contains("│ Which role?") && shown.contains("│ Your lines, read after kebbie's task role."), "{shown}");
+        assert!(shown.contains("│ ▌designer.md         now · only designer") && shown.contains("│  codex.md            shared with codex, codex-build"), "{shown}");
+        assert!(shown.contains("│  New role            an empty file, named after the profile") && shown.contains("│  Copy of designer.md to change it for this profile alone") && shown.contains("│  None                kebbie's role alone"), "{shown}");
+        assert!(shown.contains("│ A shared file changes for every profile that uses it.") && shown.contains("│ ↑ ↓ choose · ⏎ set · o open the file · esc close"), "{shown}");
+        assert!(matches!(fixture.page.handle(KeyEvent::from(KeyCode::Char('o'))), Effect::Open(file) if file == fixture.dir.join("profiles/designer.md")), "o opens the selected file");
+        press(&mut fixture.page, &[KeyCode::Char('r'), KeyCode::Down, KeyCode::Enter]);
+        assert_eq!(read("designer.toml"), "about = \"UI work: mockup first\"\nmodel = \"opus\"\neffort = \"high\"\nrole = \"codex.md\"\n", "only the role line changes");
+        assert_eq!(read("designer.md"), "Measure in the browser.\n", "the file it left stays");
+        assert!(said(&fixture.page).starts_with("✓ wrote role = \"codex.md\" to profiles/designer.toml"), "{}", said(&fixture.page));
+        press(&mut fixture.page, &[KeyCode::Char('r')]);
+        let (shown, _) = screen_at(&mut fixture.page, 100, 30);
+        assert!(shown.contains("│ ▌codex.md            now · shared with codex, codex-build,") && shown.contains("│                      designer  ") && shown.contains("│  designer.md         used by none") && shown.contains("Copy of codex.md"), "{shown}");
+        let Mode::Choose(chooser) = &fixture.page.mode else { panic!("a pick") };
+        let copy = chooser.choices.iter().position(|choice| choice.label == "Copy of codex.md").unwrap();
+        press(&mut fixture.page, &vec![KeyCode::Down; copy]);
+        assert!(matches!(fixture.page.handle(KeyEvent::from(KeyCode::Enter)), Effect::Open(file) if file == fixture.dir.join("profiles/designer-2.md")), "a copy opens to be changed");
+        assert_eq!((read("designer-2.md"), read("designer.md")), ("Run the tests before each commit.\n".to_string(), "Measure in the browser.\n".to_string()), "named after the profile, beside the file that has its name");
+        assert!(read("designer.toml").contains("role = \"designer-2.md\"\n"));
+        fixture.page.opened(&fixture.dir.join("profiles/designer-2.md"), Ok(true));
+        assert_eq!(said(&fixture.page), "profiles/designer-2.md: read after kebbie's role by designer");
+        press(&mut fixture.page, &[KeyCode::Char('r')]);
+        let Mode::Choose(chooser) = &fixture.page.mode else { panic!("a pick") };
+        let new = chooser.choices.iter().position(|choice| choice.label == "New role").unwrap();
+        press(&mut fixture.page, &vec![KeyCode::Down; new]);
+        press(&mut fixture.page, &[KeyCode::Char('o')]);
+        assert!(said(&fixture.page).contains("o opens a role file; this one has none yet") && matches!(fixture.page.mode, Mode::Choose(_)), "{}", said(&fixture.page));
+        assert!(matches!(fixture.page.handle(KeyEvent::from(KeyCode::Enter)), Effect::Open(file) if file == fixture.dir.join("profiles/designer-3.md")));
+        assert_eq!(read("designer-3.md"), "", "a new role is an empty file");
+        press(&mut fixture.page, &[KeyCode::Char('r')]);
+        press(&mut fixture.page, &[KeyCode::Down; 9]);
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        assert!(!read("designer.toml").contains("role"), "None, the last, removes the key: {}", read("designer.toml"));
+        assert!(fixture.dir.join("profiles/designer-3.md").exists(), "and leaves every file");
+    }
+
+    #[test]
+    fn r_on_a_kebbie_profile_is_a_menu_that_shows_kebbies_role_and_adds_your_lines_in_your_own_folder() {
+        let mut fixture = agents_fixture("settings-role-menu");
+        go_to_profile(&mut fixture.page, "task");
+        press(&mut fixture.page, &[KeyCode::Char('r')]);
+        let (shown, _) = screen_at(&mut fixture.page, 100, 30);
+        assert!(shown.contains("╭ role · task ") && shown.contains("│ task is kebbie's: its role comes with kebbie and an        │") && shown.contains("│ update replaces it, so it is not edited here."), "{shown}");
+        assert!(shown.contains("│ ▸ Show kebbie's role ") && shown.contains("│   roles/task.md, read-only") && shown.contains("│   Add your lines ") && shown.contains("│   profiles/task.md, read after kebbie's role by every task"), "{shown}");
+        assert!(line_of(&shown, "▸ Show kebbie's role").contains(" s   │") && line_of(&shown, "  Add your lines").contains(" a   │") && shown.contains("│ ↑ ↓ choose · ⏎ run · esc close"), "the menu's keys, as the task menu shows them: {shown}");
+        assert!(matches!(fixture.page.handle(KeyEvent::from(KeyCode::Enter)), Effect::Show(file) if file == fixture.dir.join("kebbie/roles/task.md")), "kebbie's role is shown, never edited");
+        press(&mut fixture.page, &[KeyCode::Char('r')]);
+        assert!(matches!(fixture.page.handle(KeyEvent::from(KeyCode::Char('a'))), Effect::Open(file) if file == fixture.dir.join("profiles/task.md")));
+        assert_eq!(file(&fixture, "profiles/task.toml"), "role = \"task.md\"\n", "the role goes in the user's own file for task");
+        assert_eq!((file(&fixture, "profiles/task.md"), file(&fixture, "kebbie/roles/task.md")), (String::new(), "kebbie's own role\n".to_string()));
+        fixture.page.said = None;
+        let (shown, _) = screen_at(&mut fixture.page, 120, 30);
+        assert!(line_of(&shown, " task ").ends_with("kebbie's task role + task.md") && shown.contains("         + task.md, yours: read after kebbie's role"), "{shown}");
+        assert!(shown.contains("task: claude, opus by Claude's default · role task.md · your settings in profiles/task.toml"), "{shown}");
+        press(&mut fixture.page, &[KeyCode::Char('r')]);
+        assert!(matches!(fixture.page.handle(KeyEvent::from(KeyCode::Char('a'))), Effect::Open(file) if file == fixture.dir.join("profiles/task.md")), "a second a opens the same lines");
+        std::fs::write(fixture.dir.join("profiles/ops.md"), "Mine.\n").unwrap();
+        go_to_profile(&mut fixture.page, "ops");
+        press(&mut fixture.page, &[KeyCode::Char('r'), KeyCode::Char('a')]);
+        assert_eq!((file(&fixture, "profiles/ops.toml"), file(&fixture, "profiles/ops.md")), ("role = \"ops.md\"\n".to_string(), "Mine.\n".to_string()), "a file already there is the user's and stays");
+        go_to_profile(&mut fixture.page, "reviewer");
+        press(&mut fixture.page, &[KeyCode::Char('r')]);
+        let (shown, _) = screen_at(&mut fixture.page, 100, 30);
+        assert!(shown.contains("│   skills/review/SKILL.md, read-only") && shown.contains("profiles/reviewer.md, read after kebbie's role by every") && shown.contains("│ review  "), "{shown}");
+        click(&mut fixture.page, &shown, "Add your lines");
+        assert!(matches!(fixture.page.mode, Mode::Menu { index: 1, .. }), "a click selects");
+        let (shown, _) = screen_at(&mut fixture.page, 100, 30);
+        click(&mut fixture.page, &shown, "skills/review/SKILL.md, read-only");
+        assert!(matches!(fixture.page.mode, Mode::Menu { index: 0, .. }), "its second line too");
+        let (shown, _) = screen_at(&mut fixture.page, 100, 30);
+        assert!(matches!(click(&mut fixture.page, &shown, "Show kebbie's role"), Effect::Show(file) if file == fixture.dir.join("kebbie/skills/review/SKILL.md")), "a click on the selected one runs it");
     }
 
     #[test]
@@ -1483,7 +1813,7 @@ mod tests {
         type_text(&mut fixture.page, "gpt-7-preview");
         press(&mut fixture.page, &[KeyCode::Enter]);
         assert!(file(&fixture, "profiles/codex-build.toml").contains("\nmodel = \"gpt-7-preview\"\n"), "any id is taken");
-        assert!(screen_at(&mut fixture.page, 100, 30).0.contains("gpt-7-preview  ⚠"), "an id Codex does not list is warned about");
+        assert!(screen_at(&mut fixture.page, 100, 30).0.contains("gpt-7-preview ⚠"), "an id Codex does not list is warned about");
         press(&mut fixture.page, &[KeyCode::Char('m'), KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
         assert!(!file(&fixture, "profiles/codex-build.toml").contains("model ="), "Codex's default removes the key");
         assert!(said(&fixture.page).starts_with("✓ removed model from profiles/codex-build.toml · codex-build runs codex on gpt-5.1-codex-max by Codex's default"), "{}", said(&fixture.page));
@@ -1536,7 +1866,7 @@ mod tests {
         let mut fixture = agents_fixture("settings-claude-model");
         go_to_profile(&mut fixture.page, "task");
         assert!(matches!(fixture.page.handle(KeyEvent::from(KeyCode::Enter)), Effect::Handled));
-        assert!(said(&fixture.page).contains("task is built in and has no file until a value is set"), "{}", said(&fixture.page));
+        assert!(said(&fixture.page).contains("task is kebbie's and has no file of yours until you set something: m, e or r writes profiles/task.toml"), "{}", said(&fixture.page));
         press(&mut fixture.page, &[KeyCode::Char('m')]);
         let (shown, _) = screen_at(&mut fixture.page, 100, 30);
         assert!(shown.contains("╭ model · task ") && shown.contains("│ Claude Code's model names."), "{shown}");
@@ -1545,7 +1875,10 @@ mod tests {
         assert!(shown.contains("│ task is kebbie's: a model you set goes in profiles/task.toml,") && shown.contains("│ which an update never writes, and kebbie's role and rules stay") && shown.contains("│ as they ship. d on the row removes that file again.") && shown.contains("│ A task already running keeps its model; the next start takes it."), "{shown}");
         press(&mut fixture.page, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
         assert_eq!(file(&fixture, "profiles/task.toml"), "model = \"sonnet\"\n");
-        assert!(screen_at(&mut fixture.page, 100, 30).0.lines().any(|line| line.contains(" task ") && line.contains("sonnet") && line.ends_with(" task.toml")));
+        let (shown, _) = screen_at(&mut fixture.page, 100, 30);
+        assert!(line_of(&shown, " task ").contains("claude · sonnet"), "{shown}");
+        fixture.page.said = None;
+        assert!(screen_at(&mut fixture.page, 100, 30).0.contains("  task: claude, sonnet · your settings in profiles/task.toml"), "{shown}");
         press(&mut fixture.page, &[KeyCode::Char('e')]);
         let (shown, _) = screen_at(&mut fixture.page, 100, 30);
         assert!(shown.contains("╭ effort · task ") && shown.contains("Claude Code's effort levels, for sonnet.") && !shown.contains("ultra") && shown.contains("leave it to Claude"), "{shown}");
@@ -1564,7 +1897,7 @@ mod tests {
         assert!(said(&fixture.page).starts_with("task has no model or effort of its own"), "{}", said(&fixture.page));
         go_to_profile(&mut fixture.page, "codex-build");
         press(&mut fixture.page, &[KeyCode::Char('d')]);
-        assert_eq!(file(&fixture, "profiles/codex-build.toml"), "# for small builds\nabout = \"Codex, building: a small, well-defined task done by another model family\"\nagent = \"codex\" # not Claude\n", "a file profile keeps everything but the two keys");
+        assert_eq!(file(&fixture, "profiles/codex-build.toml"), "# for small builds\nabout = \"Codex, building: a small, well-defined task done by another model family\"\nagent = \"codex\" # not Claude\nrole = \"codex.md\"\n", "a file profile keeps everything but the two keys");
     }
 
     #[test]
@@ -1588,8 +1921,8 @@ mod tests {
         fixture.page.load();
         go_to_profile(&mut fixture.page, "reviewer");
         let (shown, _) = screen_at(&mut fixture.page, 100, 30);
-        let row = shown.lines().find(|line| line.contains(" reviewer ")).unwrap().to_string();
-        assert!(row.contains("claude sonnet") && row.contains("max") && row.ends_with("from review.model · machine"), "the model kebbie review runs, and where it comes from: {row}");
+        assert!(line_of(&shown, " reviewer ").contains("claude · sonnet · max"), "the model kebbie review runs: {shown}");
+        assert!(shown.contains("  reviewer: claude, sonnet from review.model (machine), max · your settings in\n  profiles/reviewer.toml"), "and where it comes from: {shown}");
         press(&mut fixture.page, &[KeyCode::Char('m')]);
         let (shown, _) = screen_at(&mut fixture.page, 100, 30);
         assert!(shown.contains("Claude Code's model names; this sets review.model") && shown.contains("│  The profile's       opus, from reviewer.toml") && shown.contains("│ ▌sonnet              the newest Sonnet · now"), "{shown}");
@@ -1601,7 +1934,7 @@ mod tests {
         press(&mut fixture.page, &[KeyCode::Char('m'), KeyCode::Up, KeyCode::Up, KeyCode::Up, KeyCode::Enter]);
         assert!(!file(&fixture, "config.toml").contains("model ="), "the default removes review.model: {}", file(&fixture, "config.toml"));
         let (shown, _) = screen_at(&mut fixture.page, 100, 30);
-        assert!(shown.lines().any(|line| line.contains(" reviewer ") && line.contains("claude opus") && line.ends_with(" reviewer.toml")), "{shown}");
+        assert!(line_of(&shown, " reviewer ").contains("claude · opus · max") && said(&fixture.page).starts_with("✓ removed review.model"), "{shown}");
         press(&mut fixture.page, &[KeyCode::Char('e'), KeyCode::Up, KeyCode::Enter]);
         assert_eq!(file(&fixture, "profiles/reviewer.toml"), "model = \"opus\"\neffort = \"xhigh\"\n", "e keeps editing the profile's effort");
         assert!(!file(&fixture, "config.toml").contains("effort"));

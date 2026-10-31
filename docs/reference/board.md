@@ -707,18 +707,27 @@ Press `,` to open it, or run `kebbie config edit` for the same page on its own. 
 
 ### Profiles
 
-The Profiles section, on the This machine tab, lists every [profile](configuration.md#profiles) `kebbie profiles` lists: its name, agent, model, effort and where it comes from, `built in` or its file in `~/.config/kebbie/profiles`. A model shown dim is the agent's own default, Claude's from `~/.claude/settings.json` and Codex's from `~/.codex/config.toml`. A `⚠` marks a Codex profile whose model Codex's own list for your account does not offer, and the line under the page names it.
+The Profiles section, on the This machine tab, lists every [profile](configuration.md#profiles) `kebbie profiles` lists, in two groups:
+
+- **FROM KEBBIE**: `task`, `reviewer` and `ops`. They come with kebbie and follow its updates. A model, effort or role you set on one goes in your own `~/.config/kebbie/profiles/<name>.toml`, which an update never writes.
+- **YOURS**: every other file in `~/.config/kebbie/profiles`. An update never writes there.
+
+Each row shows the profile's name, its agent, model and effort, and its role. A model shown dim is the agent's own default, Claude's from `~/.claude/settings.json` and Codex's from `~/.codex/config.toml`. A `⚠` marks a Codex profile whose model Codex's own list for your account does not offer, and the line under the page names it when that profile is selected; otherwise that line sums the profile up, its role and the file your settings on it are in.
+
+The selected row shows its role in its two layers: kebbie's own role, from the installed kebbie, which an update replaces, and the profile's role file, which is yours and is read after kebbie's. A role file can be shared: several profiles may name the same one.
 
 | Key | Action |
 | --- | --- |
 | `m` | Pick the profile's model. For Codex, from Codex's own list for your account, `~/.codex/models_cache.json`, the list Codex's `/model` shows; for Claude, `opus`, `sonnet`, `haiku` or `fable`. Either way also the agent's default, or a model id you type. |
 | `e` | Pick its effort: the levels Codex lists for the profile's model, or Claude Code's five, or the agent's default. |
+| `r` | On one of yours, pick its role: the one it has, any other role file in the folder with the profiles that share it, a new empty file named after the profile, a copy of its role to change for it alone, or none. `o` opens the selected file. On one of kebbie's, a menu: `s` shows kebbie's role read-only in `$PAGER` (`less` without one), `a` adds your lines in `~/.config/kebbie/profiles/<name>.md` and opens them. |
 | `⏎` | Open the profile's file in `$VISUAL` or `$EDITOR`. |
 | `d` | Remove `model` and `effort` from the profile, so the agent's defaults apply. |
 
-- A pick writes only `model` or `effort` in the profile's file, keeping its other lines and comments, and a value the profile would not load with writes nothing.
-- On a built-in profile, `task`, `reviewer` or `ops`, a pick writes `~/.config/kebbie/profiles/<name>.toml` with that key alone, and the built-in's role and rules stay. `d` removes that file again when nothing else is in it.
-- The `reviewer` row shows the model `kebbie review` runs: [`review.model`](configuration.md) when it is set, with its layer, ahead of the reviewer profile's own. `m` on it writes `review.model` in the tab's file, and its default removes the key; `e` sets the reviewer profile's effort.
+- A pick writes only `model`, `effort` or `role` in the profile's file, keeping its other lines and comments, and a value the profile would not load with writes nothing.
+- A new role file or a copy takes a name no file has, as `designer.md` or `designer-2.md`, so it never overwrites one, and opens in your editor. Leaving a role file, or picking none, keeps the file.
+- On a profile from kebbie, a pick writes `~/.config/kebbie/profiles/<name>.toml` with that key alone, and kebbie's role and rules stay as they ship. `d` removes that file again when nothing else is in it.
+- The `reviewer` row shows the model `kebbie review` runs: [`review.model`](configuration.md) when it is set, with its layer, ahead of the reviewer profile's own. `m` on it writes `review.model` in the tab's file, and its default removes the key; `e` sets the reviewer profile's effort. Its kebbie role is the review skill, `skills/review/SKILL.md`.
 - A task already running keeps its model and effort; the next start takes the new ones.
 - Codex's list is read, never written. Without it, `m` offers Codex's default and a model you type.
 - A change to a key from a `team link` asks first: `t` changes the team's file for everyone who links it, `o` makes the link a file of this machine's own with the change.

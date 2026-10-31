@@ -329,6 +329,34 @@ pub fn list_in(dir: &Path) -> (Vec<Profile>, Vec<String>) {
     (found, errors)
 }
 
+// kebbie's own role a profile's lines are read after, in kebbie's install, which an update replaces.
+pub fn kebbie_role(name: &str) -> (&'static str, &'static str) {
+    if name == REVIEWER { ("kebbie's review role", "skills/review/SKILL.md") } else { ("kebbie's task role", "roles/task.md") }
+}
+
+pub fn role_name(dir: &Path, profile: &Profile) -> Option<String> {
+    let role = profile.role.as_ref()?;
+    Some(role.strip_prefix(dir).unwrap_or(role).to_string_lossy().to_string())
+}
+
+pub fn role_files(dir: &Path, profiles: &[Profile]) -> Vec<(String, Vec<String>)> {
+    let mut files: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter_map(|entry| entry.file_name().to_str().filter(|name| name.ends_with(".md")).map(str::to_string)).collect();
+    files.extend(profiles.iter().filter_map(|profile| role_name(dir, profile)).filter(|name| !files.contains(name)).collect::<Vec<_>>());
+    files.sort();
+    files.dedup();
+    files.into_iter().map(|file| {
+        let users = profiles.iter().filter(|profile| role_name(dir, profile).as_deref() == Some(file.as_str())).map(|profile| profile.name.clone()).collect();
+        (file, users)
+    }).collect()
+}
+
+// A role file named after the profile that no file holds yet, so a new role never overwrites one.
+pub fn free_role(dir: &Path, name: &str) -> String {
+    (1..).map(|number| if number == 1 { format!("{name}.md") } else { format!("{name}-{number}.md") }).find(|file| !dir.join(file).exists()).unwrap_or_default()
+}
+
 // What the task's role says of its profile, after kebbie's own role; the built-in task adds nothing.
 pub fn role_section(profile: &Profile) -> Result<String> {
     let mut parts = Vec::new();
@@ -628,6 +656,22 @@ mod tests {
         assert_eq!(read("ops.toml"), "# mine\nfor = \"the homelab\"\n", "a file that holds something else stays");
         assert!(edit_in(&dir, "missing", &[("model", Some("opus"))]).unwrap_err().contains("No profile \"missing\""));
         assert!(!dir.join("missing.toml").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn role_files_lists_each_md_file_with_the_profiles_that_read_it_and_a_new_one_takes_a_free_name() {
+        let dir = folder("profile-roles", &[("codex.md", "x"), ("spare.md", ""), ("a.toml", "role = \"codex.md\"\n"), ("b.toml", "role = \"codex.md\"\n"), ("notes.txt", "")]);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/deep.md"), "").unwrap();
+        std::fs::write(dir.join("c.toml"), "role = \"sub/deep.md\"\n").unwrap();
+        let (profiles, _) = list_in(&dir);
+        assert_eq!(role_files(&dir, &profiles), [("codex.md".to_string(), vec!["a".to_string(), "b".to_string()]), ("spare.md".to_string(), vec![]), ("sub/deep.md".to_string(), vec!["c".to_string()])]);
+        assert_eq!(role_name(&dir, &load_in(&dir, "c").unwrap()).as_deref(), Some("sub/deep.md"));
+        assert_eq!((free_role(&dir, "fresh"), free_role(&dir, "codex")), ("fresh.md".to_string(), "codex-2.md".to_string()));
+        for name in [TASK, OPS, REVIEWER] {
+            assert!(Path::new(env!("CARGO_MANIFEST_DIR")).join(kebbie_role(name).1).is_file(), "kebbie's own role for {name} ships in its install");
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

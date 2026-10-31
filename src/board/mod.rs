@@ -380,6 +380,13 @@ impl App {
                 }
                 None => self.settings.opened(&file, Err("no terminal to open it in".to_string())),
             },
+            settings_page::Effect::Show(file) => match terminal {
+                Some(terminal) => {
+                    let status = crate::board::terminal::outside(terminal, || settings_page::show_in_pager(&file));
+                    self.settings.shown(status);
+                }
+                None => self.settings.shown(Err("no terminal to show it in".to_string())),
+            },
             settings_page::Effect::Handled => {}
         }
     }

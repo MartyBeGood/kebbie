@@ -35,7 +35,17 @@ Use a profile when a kind of work needs more than kebbie's task role: UI work th
 
 [`examples/profiles/`](../../examples/profiles) has a `designer` and a `careful` profile, each with its role file, to copy. [Profiles](../reference/configuration.md#profiles) lists every key.
 
-To change only a profile's model or effort, open the board's Settings page with `,`, go to Profiles and press `m` or `e`. See [Settings page](../reference/board.md#profiles).
+To change only a profile's model, effort or role, open the board's Settings page with `,`, go to Profiles and press `m`, `e` or `r`. See [Settings page](../reference/board.md#profiles).
+
+## Add your lines to kebbie's task role
+
+kebbie's own `task`, `reviewer` and `ops` profiles take a role file of yours too, read after kebbie's role, which comes with kebbie and changes with each update.
+
+1. Open the board's Settings page with `,` and go to Profiles.
+2. Select `task` under FROM KEBBIE and press `r`, then `a`.
+3. Write your lines in the file that opens, `~/.config/kebbie/profiles/task.md`.
+
+kebbie writes `role = "task.md"` in `~/.config/kebbie/profiles/task.toml`. Both files are yours, and an update never writes them. `s` in the same menu shows kebbie's own role, read-only.
 
 If you want the task to run in Codex, give the profile `agent = "codex"`. See [Run a task with Codex](run-a-task-with-codex.md).
 
