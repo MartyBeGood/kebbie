@@ -50,6 +50,26 @@ impl Channel {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum AgentUpdates {
+    #[default]
+    Ask,
+    Auto,
+    Notify,
+}
+
+impl AgentUpdates {
+    pub const ALL: [AgentUpdates; 3] = [AgentUpdates::Ask, AgentUpdates::Auto, AgentUpdates::Notify];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            AgentUpdates::Ask => "ask",
+            AgentUpdates::Auto => "auto",
+            AgentUpdates::Notify => "notify",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum AlsoNoticed {
     #[default]
     Backlog,
@@ -164,6 +184,7 @@ pub struct Machine {
     pub groups: Option<Vec<Group>>,
     pub ongoing: Option<OngoingAt>,
     pub channel: Option<Channel>,
+    pub agent_updates: Option<AgentUpdates>,
     pub restart: Restart,
     pub keeper: Option<bool>,
     pub recover: Option<bool>,
@@ -316,6 +337,7 @@ pub struct Settings {
     pub server_name: Setting<String>,
     pub worker_name: Setting<String>,
     pub channel: Setting<Channel>,
+    pub agent_updates: Setting<AgentUpdates>,
     pub idle_minutes: Setting<u64>,
     pub auto_restart: Setting<bool>,
     pub ci_watch: Setting<bool>,
@@ -423,7 +445,7 @@ const REPO_KEYS: [&str; 8] = ["actions", "worktree", "task", "review", "ci", "co
 const SECTION_KEYS: [(&str, &[&str]); 18] = [
     ("board", &["groups", "backlog"]),
     ("board.backlog", &["sources", "ongoing"]),
-    ("update", &["channel"]),
+    ("update", &["channel", "agents"]),
     ("restart", &["idle_minutes", "auto"]),
     ("keeper", &["enabled"]),
     ("recover", &["enabled"]),
@@ -638,6 +660,14 @@ fn update(table: &Table) -> Result<Option<Channel>> {
         Some("main") => Ok(Some(Channel::Main)),
         Some("release") => Ok(Some(Channel::Release)),
         Some(other) => Err(format!("update.channel: \"{other}\" is not a channel; use \"main\" or \"release\"")),
+    }
+}
+
+fn agent_updates(table: &Table) -> Result<Option<AgentUpdates>> {
+    let Some(update) = subtable(table, "update", "update")? else { return Ok(None) };
+    match text(update, "agents", "update.agents")?.as_deref() {
+        None => Ok(None),
+        Some(given) => AgentUpdates::ALL.into_iter().find(|mode| mode.key() == given).map(Some).ok_or_else(|| format!("update.agents: \"{given}\" is not a choice; use \"ask\", \"auto\" or \"notify\"")),
     }
 }
 
@@ -860,7 +890,7 @@ pub fn parse_machine(text: &str, source: &str) -> Result<Machine> {
     }
     crate::routines::parse_list(&table, None, source).map_err(fail)?;
     let Board { sources, groups, ongoing } = board(&table).map_err(fail)?;
-    Ok(Machine { keys: keys(&table).map_err(fail)?, sources, groups, ongoing, channel: update(&table).map_err(fail)?, restart: restart(&table).map_err(fail)?, keeper: enabled_in(&table, "keeper").map_err(fail)?, recover: enabled_in(&table, "recover").map_err(fail)?, machine_name: machine_name(&table).map_err(fail)?, hub_url: hub_url(&table).map_err(fail)?, report: report(&table).map_err(fail)?, propose_issues: propose_issues(&table).map_err(fail)?, worktree })
+    Ok(Machine { keys: keys(&table).map_err(fail)?, sources, groups, ongoing, channel: update(&table).map_err(fail)?, agent_updates: agent_updates(&table).map_err(fail)?, restart: restart(&table).map_err(fail)?, keeper: enabled_in(&table, "keeper").map_err(fail)?, recover: enabled_in(&table, "recover").map_err(fail)?, machine_name: machine_name(&table).map_err(fail)?, hub_url: hub_url(&table).map_err(fail)?, report: report(&table).map_err(fail)?, propose_issues: propose_issues(&table).map_err(fail)?, worktree })
 }
 
 const MACHINE_WIDE: &str = "applies to every repo, so it lives in config.toml";
@@ -869,7 +899,7 @@ const MACHINE_WIDE: &str = "applies to every repo, so it lives in config.toml";
 pub fn parse_repo(text: &str, source: &str) -> Result<Worktree> {
     let table = table(text, source)?;
     let fail = |error: String| format!("{source}: {error}");
-    for (key, setting) in [("board", "[board] groups and [board.backlog] sources and ongoing"), ("notify", "[notify] command"), ("update", "[update] channel"), ("vault", "[vault] command"), ("restart", "[restart] idle_minutes and auto"), ("keeper", "[keeper] enabled"), ("recover", "[recover] enabled"), ("machine", "[machine] name"), ("hub", "[hub] url"), ("keys", "[keys]"), ("report", "[report] signals, text and inbox_token"), ("issues", "[issues] propose")] {
+    for (key, setting) in [("board", "[board] groups and [board.backlog] sources and ongoing"), ("notify", "[notify] command"), ("update", "[update] channel and agents"), ("vault", "[vault] command"), ("restart", "[restart] idle_minutes and auto"), ("keeper", "[keeper] enabled"), ("recover", "[recover] enabled"), ("machine", "[machine] name"), ("hub", "[hub] url"), ("keys", "[keys]"), ("report", "[report] signals, text and inbox_token"), ("issues", "[issues] propose")] {
         if table.contains_key(key) {
             return Err(fail(format!("{key}: {MACHINE_WIDE}; set {setting} in {}", path().display())));
         }
@@ -923,6 +953,7 @@ pub fn settings(repo: &Worktree, machine: &Machine) -> Settings {
         server_name: or_default(pick(None, machine.worktree.server_name.as_ref()), DEFAULT_SERVER_NAME.to_string()),
         worker_name: or_default(pick(None, machine.worktree.worker_name.as_ref()), DEFAULT_WORKER_NAME.to_string()),
         channel: or_default(pick(None, machine.channel.as_ref()), Channel::default()),
+        agent_updates: or_default(pick(None, machine.agent_updates.as_ref()), AgentUpdates::default()),
         idle_minutes: or_default(pick(None, machine.restart.idle_minutes.as_ref()), DEFAULT_IDLE_MINUTES),
         auto_restart: or_default(pick(None, machine.restart.auto.as_ref()), true),
         ci_watch: or_default(pick(repo.ci_watch.as_ref(), machine.worktree.ci_watch.as_ref()), true),
@@ -1014,7 +1045,7 @@ fn quoted(items: &[&str]) -> String {
 
 // The one list of keys: kebbie config prints it and the Settings page edits it.
 pub fn entries(loaded: &Loaded) -> Vec<Entry> {
-    let Settings { sources, groups, ongoing, setup_skill, setup_command, dev_server, dev_worker, dev_url, dev_route, stage_on_main, rules_skill, test_commands, also_noticed, permission_mode, profile, sandbox, steps, review_model, review_auto, notify_command, vault_command, server_name, worker_name, channel, idle_minutes, auto_restart, ci_watch, comments_watch, comments_days, clean_on_release, docs_required, keeper, recover, machine_name, hub_url, report_signals, report_text, report_inbox, propose_issues } = &loaded.settings;
+    let Settings { sources, groups, ongoing, setup_skill, setup_command, dev_server, dev_worker, dev_url, dev_route, stage_on_main, rules_skill, test_commands, also_noticed, permission_mode, profile, sandbox, steps, review_model, review_auto, notify_command, vault_command, server_name, worker_name, channel, agent_updates, idle_minutes, auto_restart, ci_watch, comments_watch, comments_days, clean_on_release, docs_required, keeper, recover, machine_name, hub_url, report_signals, report_text, report_inbox, propose_issues } = &loaded.settings;
     let names: Vec<&str> = sources.value.iter().map(|source| source.key()).collect();
     let (board_keys, _) = crate::keys::Keys::with(&load_machine(&loaded.machine).map(|machine| machine.keys).unwrap_or_default());
     let (server_key, worker_key) = (board_keys.char(crate::keys::Act::Server), board_keys.char(crate::keys::Act::Worker));
@@ -1083,6 +1114,8 @@ pub fn entries(loaded: &Loaded) -> Vec<Entry> {
         "Whether this repo's docs must keep in step with its code: a task's Claude updates the README and docs/ when its change alters what a user sees or does, by the skill kebbie:keep-docs, and the reviewer fails a branch that changes such behaviour and leaves it undescribed in the README or docs/. Off unless the repo turns it on; repo config only. kebbie doctor suggests it for a public GitHub repo.");
     key("update.channel", format!("{:?}", channel.value.key()), channel.layer, Kind::Choice(vec![Channel::Release.key(), Channel::Main.key()]), Scope::Machine,
         "What kebbie update installs on this machine: \"release\", the highest vX.Y.Z tag on origin whose release binary is published; \"main\", origin's default branch as it is pushed. kebbie update --from <branch or path> runs other code until kebbie update --stable; config.toml only.");
+    key("update.agents", format!("{:?}", agent_updates.value.key()), agent_updates.layer, Kind::Choice(AgentUpdates::ALL.map(AgentUpdates::key).to_vec()), Scope::Machine,
+        "What happens when an agent that does not update itself, Codex, has a newer version, which kebbie checks once a day: \"ask\" offers it in a window after U on the board, and nothing installs without your yes; \"auto\" has U install it with the agent's own installer; \"notify\" only puts a notice on the board and a line in kebbie doctor. Either way kebbie restarts the agent's tasks on the new version once they are idle; Claude Code updates itself. config.toml only.");
     key("restart.auto", auto_restart.value.to_string(), auto_restart.layer, Kind::Bool, Scope::Machine,
         "Whether kebbie restarts the Claude sessions and Codex tasks that run older code than is installed, after kebbie updates or a new Claude Code, Codex, plugin or MCP config is installed; no other session is ever restarted. Each resumes its conversation with claude --resume or codex resume in its own pane, keeping its flags, and kebbie update restarts the idle ones at once. false restarts nothing on its own: the board still marks those sessions, and kebbie restart restarts them when you want; config.toml only.");
     key("restart.idle_minutes", idle_minutes.value.to_string(), idle_minutes.layer, Kind::Number, Scope::Machine,
@@ -1650,6 +1683,21 @@ mod tests {
     }
 
     #[test]
+    fn agent_updates_ask_unless_the_machine_config_says_auto_or_notify_and_a_bad_value_never_stops_kebbie_update() {
+        assert_eq!(settings(&Worktree::default(), &Machine::default()).agent_updates, Setting { value: AgentUpdates::Ask, layer: Layer::Default });
+        assert_eq!(settings(&Worktree::default(), &machine("[update]\nagents = \"notify\"\n")).agent_updates, Setting { value: AgentUpdates::Notify, layer: Layer::Machine });
+        assert_eq!(machine("[update]\nchannel = \"main\"\nagents = \"auto\"\n").agent_updates, Some(AgentUpdates::Auto));
+        assert!(parse_machine("[update]\nagents = \"always\"\n", "config.toml").unwrap_err().contains("update.agents: \"always\" is not a choice; use \"ask\", \"auto\" or \"notify\""));
+        let dir = scratch("agents-update");
+        let config = dir.join("config.toml");
+        std::fs::write(&config, "[update]\nchannel = \"main\"\nagents = \"always\"\n").unwrap();
+        assert_eq!(channel_in(&config).unwrap(), Channel::Main, "kebbie update reads its channel past a bad update.agents");
+        let shown = describe(&Loaded { machine: config, repo: None, settings: settings(&Worktree::default(), &Machine::default()) });
+        assert!(shown.contains("update.agents = \"ask\"  (default)\n  What happens when an agent that does not update itself"), "{shown}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn reports_go_to_the_issues_endpoint_and_the_inbox_token_is_never_shown() {
         let defaults = settings(&Worktree::default(), &Machine::default());
         assert_eq!((defaults.report_signals.value, defaults.report_text.value, defaults.report_inbox.value), (true, ReportText::Ask, false));
@@ -1740,7 +1788,7 @@ mod tests {
     fn each_keys_scope_is_the_files_that_take_it_and_what_its_text_says() {
         let loaded = Loaded { machine: PathBuf::from("/nowhere/config.toml"), repo: None, settings: settings(&Worktree::default(), &Machine::default()) };
         let all = entries(&loaded);
-        assert_eq!(all.len(), 39);
+        assert_eq!(all.len(), 40);
         for entry in all {
             let (section, field) = entry.key.rsplit_once('.').unwrap();
             let text = format!("[{section}]\n{field} = {}\n", sample(&entry));
