@@ -145,7 +145,6 @@ fn wanted_lines(wanted: &str, color: Color, highlighted: bool, width: usize) -> 
     }).collect()
 }
 
-// How the task is done, under its row: its recipe, whole with its why on the open task, and whether the assessor says its work needs a review.
 pub(super) fn how_lines(item: &Item, highlighted: bool, width: usize) -> Vec<Line<'static>> {
     let recipe = item.recipe.as_ref().map(|recipe| if highlighted { format!("{}, because {}", recipe.shown(), recipe.why) } else { recipe.shown() });
     let parts: Vec<String> = recipe.into_iter().chain(review_part(item)).collect();

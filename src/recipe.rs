@@ -6,7 +6,6 @@ use serde_json::{Value, json};
 use crate::permit::Caller;
 use crate::sh::Result;
 
-// The playbook's recipes, as the lead names them and as the board shows them.
 pub const RECIPES: [(&str, &str); 9] = [
     ("small-fix", "small fix"),
     ("feature-with-ui", "feature with UI"),
@@ -113,7 +112,6 @@ pub fn decision_line(recipe: &Recipe) -> String {
 
 const USAGE: &str = "kebbie recipe lists the recipes; kebbie recipe <task> shows the task's; kebbie recipe <task> \"<recipe>: <why>\" sets it";
 
-// kebbie recipe: the recipes, a task's, or a new one for it; a task names only its own.
 pub fn command(cwd: &Path, words: &[String]) -> Result<String> {
     command_as(&crate::lead::state_dir()?, &crate::permit::caller(), cwd, words, crate::messages::now(), |address, text| {
         let sessions = crate::peers::sessions()?;

@@ -119,7 +119,6 @@ pub fn pushed_in(state: &Path, address: &str) -> Vec<String> {
     fs::read_to_string(marked(state, address, "pushed")).unwrap_or_default().lines().map(str::trim).filter(|sha| !sha.is_empty()).map(str::to_string).collect()
 }
 
-// The pushed steps as `git log --format=%h %s` lists them, for a brief.
 pub fn pushed_log(state: &Path, address: &str, worktree: &Path) -> String {
     pushed_in(state, address).iter().filter_map(|sha| git(worktree, &["log", "-1", "--format=%h %s", sha]).ok()).collect::<Vec<_>>().join("\n")
 }
@@ -235,7 +234,6 @@ pub fn holds_push(state: &Path, address: &str) -> Option<&'static str> {
     (mode_of(&QUEUE.asked(state, address)?.payload) == ReviewAuto::Require).then_some("its need for a review is being assessed")
 }
 
-// The ready report's sentence on it, for the task's Claude.
 pub fn on_ready(cwd: &Path) -> String {
     let asked = (|| {
         let repo = main_checkout(cwd)?;
