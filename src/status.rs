@@ -225,6 +225,7 @@ impl Item {
             Some(verdict) if verdict.ok => "reviewed".to_string(),
             Some(verdict) if self.turn_under_way() || !shown.held => format!("review: {}", verdict.summary()),
             Some(verdict) => format!("review: {} · withdraw with v to push without a pass", verdict.summary()),
+            None if shown.held => "review gave no verdict · withdraw with v to push without a pass".to_string(),
             None => return None,
         })
     }

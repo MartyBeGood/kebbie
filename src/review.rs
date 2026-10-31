@@ -115,7 +115,7 @@ pub fn shown_in(state: &Path, address: &str, current: impl Fn(&str) -> bool) -> 
     let file = verdict_file(state, address);
     let verdict = fs::read_to_string(&file).ok().and_then(|text| parse_verdict(&text));
     let running = running_in(state, address) || marked(state, address, "wanted").exists();
-    if verdict.is_none() && !running {
+    if verdict.is_none() && !running && !required_in(state, address) {
         return None;
     }
     let stale = verdict.as_ref().is_some_and(|verdict| !current(&verdict.sha));
@@ -131,7 +131,8 @@ pub fn gate(shown: Option<&Shown>, covered: impl Fn(&str) -> bool) -> std::resul
     match &shown.verdict {
         Some(verdict) if verdict.ok && covered(&verdict.sha) => Ok(()),
         Some(verdict) if !verdict.ok && !shown.stale => Err(format!("its review asks for changes ({})", verdict.summary())),
-        _ => Err("its review read older code; send it to review again".to_string()),
+        Some(_) => Err("its review read older code; send it to review again".to_string()),
+        None => Err("its review gave no verdict; send it to review again".to_string()),
     }
 }
 
@@ -207,7 +208,7 @@ pub fn forget(task: &str, repo: &Path) {
 // A reviewer still running is stopped first, so no verdict lands for a task that is gone.
 pub fn forget_in(state: &Path, address: &str) {
     QUEUE.forget(state, address);
-    for file in [verdict_file(state, address), log_file(state, address), marked(state, address, "withdrawn"), marked(state, address, "advised")] {
+    for file in [verdict_file(state, address), log_file(state, address), marked(state, address, "withdrawn"), marked(state, address, "advised"), marked(state, address, "required")] {
         let _ = fs::remove_file(file);
     }
 }
@@ -290,7 +291,17 @@ fn start_reviewer(state: &Path, address: &str, kebbie: &Path, worktree: &Path, e
 
 // Sent to review, by you, the lead or review.auto, with no verdict given up since.
 pub fn in_review(state: &Path, address: &str) -> bool {
-    verdict_file(state, address).exists() || running_in(state, address) || marked(state, address, "wanted").exists()
+    verdict_file(state, address).exists() || running_in(state, address) || marked(state, address, "wanted").exists() || required_in(state, address)
+}
+
+// review.auto = "require" sent it: its push waits for a pass, through a review that fails or gives no verdict, until you withdraw it.
+pub fn require(state: &Path, address: &str, worktree: &Path) -> Result<()> {
+    crate::state::write(&marked(state, address, "required"), "")?;
+    want(state, address, worktree)
+}
+
+fn required_in(state: &Path, address: &str) -> bool {
+    marked(state, address, "required").exists()
 }
 
 // You took it out of review, so the assessor leaves it out until you send it again.
@@ -333,14 +344,18 @@ pub fn run(cwd: &Path) -> Result<String> {
     let address = peers::address(tasks::task_of(&slot), &name_of(&repo));
     let state = state_dir()?;
     if QUEUE.take(&state, &address, &presented, &crate::permit::caller()).is_none() {
-        return Err(format!("This review of {address} was not started by kebbie review or the keeper, so it gives no verdict."));
+        let refused = format!("A review of {address} was not started by kebbie review or the keeper, so it gives no verdict.");
+        if let Err(error) = messages::to_lead(messages::ToLead::Findings, &format!("{refused} Send it again with kebbie review if it should be reviewed.")) {
+            eprintln!("Could not tell the lead: {error}");
+        }
+        return Err(refused);
     }
     let result = review(&repo, &slot, &address, &state);
     QUEUE.done(&state, &address);
     let (what, notice) = match &result {
         Ok((text, true)) => (messages::ToLead::ReviewPassed, text.clone()),
         Ok((text, false)) => (messages::ToLead::Findings, text.clone()),
-        Err(error) => (messages::ToLead::Findings, format!("The review of {address} failed: {error} (output in {})", log_file(&state, &address).display())),
+        Err(error) => (messages::ToLead::Findings, format!("The review of {address} failed: {error} (output in {}).{}", log_file(&state, &address).display(), if required_in(&state, &address) { " Its push stays held until a review passes: send it again with kebbie review." } else { "" })),
     };
     if let Err(error) = messages::to_lead(what, &notice) {
         eprintln!("Could not tell the lead: {error}");
@@ -795,6 +810,22 @@ mod tests {
         assert!(gate(Some(&shown_as(Some(false), false, false)), everything).unwrap_err().contains("asks for changes (2 findings)"));
         assert!(gate(Some(&shown_as(Some(false), true, false)), nothing).unwrap_err().contains("send it to review again"));
         assert!(gate(Some(&shown_as(Some(true), true, false)), |sha| sha == "abc").is_ok(), "the commits up to the reviewed code push while later ones wait");
+    }
+
+    #[test]
+    fn under_require_a_review_that_gives_no_verdict_keeps_the_push_held_until_withdrawn() {
+        let state = crate::sh::test_dir("review-required");
+        require(&state, "billing@app", Path::new("/wt")).unwrap();
+        QUEUE.unwant(&state, "billing@app");
+        let shown = shown_in(&state, "billing@app", |_| true);
+        assert!(in_review(&state, "billing@app") && shown.as_ref().is_some_and(|shown| shown.held && !shown.running), "{shown:?}");
+        assert_eq!(gate(shown.as_ref(), |_| true).unwrap_err(), "its review gave no verdict; send it to review again");
+        want(&state, "advised@app", Path::new("/wt")).unwrap();
+        QUEUE.unwant(&state, "advised@app");
+        assert_eq!(gate(shown_in(&state, "advised@app", |_| true).as_ref(), |_| false), Ok(()), "a review you or the lead asked for holds nothing once it gave none");
+        assert!(withdraw_in(&state, "billing@app"));
+        assert_eq!(gate(shown_in(&state, "billing@app", |_| true).as_ref(), |_| false), Ok(()), "withdrawn, it pushes");
+        fs::remove_dir_all(state).unwrap();
     }
 
     #[test]

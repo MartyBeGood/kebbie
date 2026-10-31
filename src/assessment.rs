@@ -319,7 +319,7 @@ fn settle(state: &Path, address: &str, worktree: &Path, auto: ReviewAuto, assess
     }
     let started = match (assessment, auto) {
         (Some(Assessment { needed: true, .. }), ReviewAuto::Run) => crate::review::advise(state, address, worktree).map(|_| " The reviewer reads it now; its push is not held."),
-        (Some(Assessment { needed: true, .. }), ReviewAuto::Require) => crate::review::want(state, address, worktree).map(|_| " The reviewer reads it now, and its push waits for the pass."),
+        (Some(Assessment { needed: true, .. }), ReviewAuto::Require) => crate::review::require(state, address, worktree).map(|_| " The reviewer reads it now, and its push waits for the pass."),
         (Some(Assessment { needed: true, .. }), ReviewAuto::Suggest) | (None, _) => Ok(" Send it to review with kebbie review when the user wants one."),
         _ => Ok(""),
     };
