@@ -116,6 +116,9 @@ Every command Codex runs gets kebbie's push block in its environment and `KEBBIE
 
 Codex has no inbox kebbie can write to, so kebbie types a message into the task's composer, only when it is empty. It counts the message as taken once the composer lets it go or the session's rollout file shows it as a user turn.
 
+- Empty means the composer shows nothing or Codex's own placeholder, `Ask Codex to do anything`. Any other text there, faint or not, keeps kebbie from typing, so nothing is glued onto it.
+- The task's first prompt waits the same way: when the new Codex's composer already holds text, the start says so, and kebbie types the prompt in once the composer is empty, while the keeper or an open board runs.
+
 ## Compressed sessions
 
 Codex can compress a session file it hasn't written to for a week to `.jsonl.zst`. kebbie still finds such a session and resumes it, but can't read it. So it doesn't send the task's first prompt again and can't tell from it whether a typed message arrived.

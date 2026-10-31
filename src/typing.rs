@@ -491,6 +491,19 @@ pub fn check() {
     }
 }
 
+// A new Codex's composer can already hold text, and what kebbie pastes would join it, so a start types into Codex only when its composer is empty: Some says why it typed nothing.
+pub fn prompt_into_empty(target: &str, text: &str, label: &str) -> Result<Option<String>> {
+    let Place { pane, agent, .. } = place(target);
+    if agent == Agent::Codex {
+        match draft_in(&pane, agent) {
+            Draft::Empty => {}
+            Draft::Typed(held) => return Ok(Some(format!("already holds \"{}\"", held.lines().next().unwrap_or_default().chars().take(60).collect::<String>()))),
+            Draft::Unreadable => return Ok(Some("is not one kebbie can read as empty".to_string())),
+        }
+    }
+    prompt_confirmed(target, text, label).map(|()| None)
+}
+
 pub fn prompt_confirmed(target: &str, text: &str, label: &str) -> Result<()> {
     let mut typed = type_text(target, text, place(target).agent)?;
     typed.label = label.to_string();

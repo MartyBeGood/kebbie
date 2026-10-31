@@ -354,7 +354,7 @@ fn launch_new(repo: &Path, task: &str, slot: &Slot, address: &str, place: Launch
     let configured = profile.permission_mode.clone().or(configured);
     let (agent_name, started) = launch(&Launch { note: note.as_deref(), mode: chosen_mode(mode, None, configured.as_deref()), ..place }, &agent_pane, Session::New(new_session_id()?))?;
     let prompted = match &started {
-        Ok(started) => send_prompt(profile.agent.name(), started, prompt, |text| crate::typing::prompt_confirmed(&agent_name, text, address), |text| messages::hold_prompt(address, text))
+        Ok(started) => send_prompt(profile.agent.name(), started, prompt, |text| crate::typing::prompt_into_empty(&agent_name, text, address), |text| messages::hold_prompt(address, text))
             .map_err(|error| unprompted(profile.agent.name(), "Started", task, &slot.path, &error)),
         Err(_) => Ok(Asks::default()),
     };
@@ -557,7 +557,7 @@ fn restart(place: &Launch, slot: &Slot, focus: bool, given: Option<&str>) -> Res
     let (agent_name, started) = launch(&place, &pane, session)?;
     let address = peers::address(task, &name_of(place.repo));
     let prompted = match &started {
-        Ok(started) => send_prompt(agent.name(), started, prompt.as_deref(), |text| crate::typing::prompt_confirmed(&agent_name, text, &address), |text| messages::hold_prompt(&address, text))
+        Ok(started) => send_prompt(agent.name(), started, prompt.as_deref(), |text| crate::typing::prompt_into_empty(&agent_name, text, &address), |text| messages::hold_prompt(&address, text))
             .map_err(|error| unprompted(agent.name(), "Restarted", task, &slot.path, &error)),
         Err(_) => Ok(Asks::default()),
     };
@@ -614,8 +614,8 @@ impl Asks {
     }
 }
 
-// The prompt goes in as a paste: as an argument, herdr would have to quote it for the shell.
-fn send_prompt(name: &str, started: &Started, prompt: Option<&str>, type_now: impl FnOnce(&str) -> Result<()>, hold: impl FnOnce(&str) -> Result<()>) -> Result<Asks> {
+// The prompt goes in as a paste: as an argument, herdr would have to quote it for the shell; type_now says why it typed nothing when the input box is not empty.
+fn send_prompt(name: &str, started: &Started, prompt: Option<&str>, type_now: impl FnOnce(&str) -> Result<Option<String>>, hold: impl FnOnce(&str) -> Result<()>) -> Result<Asks> {
     let asks = match started {
         Started::AwaitsTrust => format!("Answer {name}'s question in its Space: whether you trust the repo's folder."),
         Started::AwaitsBypass => format!("Answer {name}'s question in its Space: whether to accept bypass permissions mode."),
@@ -624,8 +624,13 @@ fn send_prompt(name: &str, started: &Started, prompt: Option<&str>, type_now: im
         Started::AwaitsModel => format!("Answer {name}'s question in its Space: which model to use, after its notice of a new one."),
         Started::AwaitsUpdate => format!("Answer {name}'s question in its Space: whether to update it first, on its update screen."),
         Started::Ready | Started::BypassDisabled => {
-            if let Some(prompt) = prompt {
-                type_now(prompt)?;
+            if let Some(prompt) = prompt
+                && let Some(busy) = type_now(prompt)?
+            {
+                return Ok(match hold(prompt) {
+                    Ok(()) => Asks { next: Some(format!("{name}'s input box {busy}, so kebbie holds the task's prompt and types it in once the box is empty, while the keeper or an open board runs.")), ..Asks::default() },
+                    Err(error) => Asks { you: Some(format!("Paste the task's prompt into its {name}: its input box {busy}, and kebbie could not keep the prompt ({error}).")), ..Asks::default() },
+                });
             }
             let disabled = "Claude's managed settings disable bypass permissions mode (permissions.disableBypassPermissionsMode), so it runs with permission prompts";
             return Ok(Asks { detail: (*started == Started::BypassDisabled).then(|| disabled.to_string()), ..Asks::default() });
@@ -722,7 +727,7 @@ mod tests {
     fn a_prompt_is_typed_at_once_into_a_ready_claude_and_held_while_the_user_owes_the_trust_answer() {
         let sent = |started: Started, prompt: Option<&str>, keeps: bool| {
             let (typed, held) = (std::cell::RefCell::new(Vec::new()), std::cell::RefCell::new(Vec::new()));
-            let said = send_prompt("Claude", &started, prompt, |text| { typed.borrow_mut().push(text.to_string()); Ok(()) }, |text| { held.borrow_mut().push(text.to_string()); if keeps { Ok(()) } else { Err("Another kebbie is holding the message log; try again".to_string()) } });
+            let said = send_prompt("Claude", &started, prompt, |text| { typed.borrow_mut().push(text.to_string()); Ok(None) }, |text| { held.borrow_mut().push(text.to_string()); if keeps { Ok(()) } else { Err("Another kebbie is holding the message log; try again".to_string()) } });
             (said, typed.into_inner(), held.into_inner())
         };
         assert_eq!(sent(Started::Ready, Some("Fix the flaky test"), true), (Ok(Asks::default()), vec!["Fix the flaky test".to_string()], Vec::new()));
@@ -732,6 +737,10 @@ mod tests {
         let (said, _, _) = sent(Started::AwaitsTrust, Some("Fix the flaky test"), false);
         assert!(said.unwrap().you.unwrap().contains("paste the task's prompt there yourself"), "a prompt kebbie could not keep is the user's to paste, and the start still stands");
         assert_eq!(sent(Started::AwaitsTrust, None, true).0.unwrap().you.as_deref(), Some("Answer Claude's question in its Space: whether you trust the repo's folder."));
+        let held = std::cell::RefCell::new(Vec::new());
+        let busy = send_prompt("Codex", &Started::Ready, Some("Fix the flaky test"), |_| Ok(Some("already holds \"check the deploy\"".to_string())), |text| { held.borrow_mut().push(text.to_string()); Ok(()) }).unwrap();
+        assert_eq!(held.into_inner(), ["Fix the flaky test"], "a composer that holds text gets the prompt once it is empty, never glued onto it");
+        assert_eq!(busy.next.as_deref(), Some("Codex's input box already holds \"check the deploy\", so kebbie holds the task's prompt and types it in once the box is empty, while the keeper or an open board runs."));
         let source = include_str!("launch.rs");
         let launch = &source[source.find("\nfn launch(").unwrap()..];
         let launch = &launch[..launch.find("\n}\n").unwrap()];
@@ -969,7 +978,7 @@ mod tests {
     #[test]
     fn a_policy_that_disables_bypass_is_said_and_the_prompt_still_goes_in() {
         let typed = std::cell::RefCell::new(Vec::new());
-        let said = send_prompt("Claude", &Started::BypassDisabled, Some("Fix the flaky test"), |text| { typed.borrow_mut().push(text.to_string()); Ok(()) }, |_| panic!("nothing is held for a running Claude")).unwrap();
+        let said = send_prompt("Claude", &Started::BypassDisabled, Some("Fix the flaky test"), |text| { typed.borrow_mut().push(text.to_string()); Ok(None) }, |_| panic!("nothing is held for a running Claude")).unwrap();
         assert_eq!(typed.into_inner(), ["Fix the flaky test"]);
         let detail = said.detail.unwrap();
         assert!(detail.contains("disable bypass permissions mode") && detail.contains("permissions.disableBypassPermissionsMode"), "{detail}");

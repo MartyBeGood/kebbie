@@ -455,7 +455,10 @@ pub fn user_messages_at(transcript: &str) -> Vec<(Option<u64>, String)> {
         .collect()
 }
 
-// Codex's composer is the last line that opens with its › prompt; what it shows faint is its placeholder, never a draft.
+// What Codex 0.163 draws in an empty composer (tui/src/chatwidget.rs); other faint text there is none kebbie can place, so it never counts as empty.
+const PLACEHOLDERS: [&str; 2] = ["Ask Codex to do anything", "Ask a follow-up question"];
+
+// Codex's composer is the last line that opens with its › prompt.
 pub fn draft(screen: &str) -> Draft {
     let styled: Vec<crate::typing::Styled> = screen.lines().map(crate::typing::styled).collect();
     let Some(prompt) = styled.iter().rposition(|line| line.text.trim_start().starts_with('›')) else { return Draft::Unreadable };
@@ -463,10 +466,14 @@ pub fn draft(screen: &str) -> Draft {
     let lines = &styled[prompt..end];
     let first = lines[0].text.trim_start().trim_start_matches('›').trim().to_string();
     let text: Vec<String> = std::iter::once(first).chain(lines[1..].iter().map(|line| line.text.trim().to_string())).filter(|line| !line.is_empty()).collect();
-    if text.is_empty() || crate::typing::suggested(lines, &['›']) {
+    let joined = text.join("\n");
+    if text.is_empty() || PLACEHOLDERS.contains(&joined.as_str()) {
         return Draft::Empty;
     }
-    Draft::Typed(text.join("\n"))
+    if crate::typing::suggested(lines, &['›']) {
+        return Draft::Unreadable;
+    }
+    Draft::Typed(joined)
 }
 
 // Codex's own record of the folders the user trusted, in its config.toml's [projects] table; read, never written.
@@ -860,6 +867,9 @@ mod tests {
         assert_eq!(draft("› [Pasted Content 1005 chars]\n\n  100% context left"), Draft::Typed("[Pasted Content 1005 chars]".to_string()));
         assert_eq!(draft("› \n\n  100% context left"), Draft::Empty);
         assert_eq!(draft("Working (12s · esc to interrupt)"), Draft::Unreadable);
+        assert_eq!(draft("› Ask Codex to do anything\n\n  100% context left"), Draft::Empty, "the placeholder read without its styling");
+        assert_eq!(draft("\x1b[2m›\x1b[22m \x1b[2mInput disabled.\x1b[22m\n\n  100% context left"), Draft::Unreadable, "a disabled composer takes nothing");
+        assert_eq!(draft("\x1b[1m›\x1b[22m \x1b[2mcheck instead what is wrong with latest deployment\x1b[22m\n\n  100% context left"), Draft::Unreadable, "faint text that is not Codex's placeholder is never taken for an empty box, so a prompt is never glued onto it");
     }
 
     #[test]
