@@ -195,7 +195,7 @@ The status line shows `↻ N stale` while sessions wait. With `restart.auto = fa
 
 - A session mid-turn, or the pane you are in, is never restarted on its own, as what you type would land in a pane being ended.
 - A session with background work running, such as a background shell, an agent or a monitor, is not cut off. The board asks you once, as a question. kebbie reads this from Claude's transcript, so it does not apply to a Codex task.
-- A Codex task on one of Codex's start-up questions, such as its trust or hooks question, waits until you have answered it, even for `kebbie restart`.
+- A Codex task on one of Codex's start-up questions, such as its trust or hooks question, or on a view titled Action Required, such as an approval, waits until you have answered it, even for `kebbie restart`.
 - A session with text in its input box that you have not sent, or whose box kebbie cannot read, waits until the box is empty, so a restart never loses a draft. A restart you ask for refuses typed text too, but goes ahead when the box cannot be read.
 
 ## Sessions kebbie cannot restart safely are skipped

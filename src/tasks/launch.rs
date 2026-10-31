@@ -112,6 +112,7 @@ pub(crate) struct Record {
     pub mode: Option<String>,
     pub profile: Option<String>,
     pub agent: Option<String>,
+    pub awaits_prompt: bool,
 }
 
 impl Record {
@@ -124,14 +125,14 @@ impl Record {
 pub(crate) fn parse_record(text: &str) -> Record {
     if let Ok(value) = serde_json::from_str::<Value>(text) && value.is_object() {
         let field = |key: &str| value[key].as_str().map(str::trim).filter(|text| !text.is_empty()).map(str::to_string);
-        return Record { session: field("session"), mode: field("mode"), profile: field("profile"), agent: field("agent") };
+        return Record { session: field("session"), mode: field("mode"), profile: field("profile"), agent: field("agent"), awaits_prompt: value["awaits_prompt"] == true };
     }
     let mut lines = text.lines().map(str::trim).map(|line| (!line.is_empty()).then(|| line.to_string()));
-    Record { session: lines.next().flatten(), mode: lines.next().flatten(), profile: Some(profiles::TASK.to_string()), agent: Some(Agent::Claude.key().to_string()) }
+    Record { session: lines.next().flatten(), mode: lines.next().flatten(), profile: Some(profiles::TASK.to_string()), agent: Some(Agent::Claude.key().to_string()), awaits_prompt: false }
 }
 
 pub(crate) fn record_text(record: &Record) -> String {
-    json!({ "session": record.session, "mode": record.mode, "profile": record.profile, "agent": record.agent }).to_string()
+    json!({ "session": record.session, "mode": record.mode, "profile": record.profile, "agent": record.agent, "awaits_prompt": record.awaits_prompt }).to_string()
 }
 
 pub(crate) fn codex_restart_refusal(task: &str, repo: &Path) -> Option<String> {
@@ -223,13 +224,28 @@ fn record_session_in(state: &Path, address: &str, session: &str) -> Result<()> {
     let file = session_file_in(state, address);
     let Ok(text) = std::fs::read_to_string(&file) else { return Ok(()) };
     let record = parse_record(&text);
-    if record.agent() != Agent::Codex || record.session.as_deref() == Some(session) {
+    if record.agent() != Agent::Codex || (record.session.as_deref() == Some(session) && !record.awaits_prompt) {
         return Ok(());
     }
-    crate::state::write(&file, record_text(&Record { session: Some(session.to_string()), ..record }))
+    crate::state::write(&file, record_text(&Record { session: Some(session.to_string()), awaits_prompt: false, ..record }))
 }
 
-// Codex 0.163 runs its SessionStart hooks, kebbie's among them, only as its first turn begins (core/src/session/turn.rs), so a Codex task whose record names no session yet has taken no prompt.
+// A Codex task kebbie starts again in place shows its start-up screens before its first turn, as a new one does.
+pub(crate) fn mark_awaits_prompt(address: &str) -> Result<()> {
+    mark_awaits_prompt_in(&crate::lead::state_location()?, address)
+}
+
+fn mark_awaits_prompt_in(state: &Path, address: &str) -> Result<()> {
+    let file = session_file_in(state, address);
+    let Ok(text) = std::fs::read_to_string(&file) else { return Ok(()) };
+    let record = parse_record(&text);
+    if record.agent() != Agent::Codex || record.awaits_prompt {
+        return Ok(());
+    }
+    crate::state::write(&file, record_text(&Record { awaits_prompt: true, ..record }))
+}
+
+// Codex 0.163 runs its SessionStart hooks, kebbie's among them, only as the first turn of a start or a resume begins (core/src/session/turn.rs), so a Codex task whose record names no session yet, or that kebbie started again since the hook last ran, has taken no prompt since it started.
 pub(crate) fn awaits_first_prompt(address: &str) -> bool {
     crate::lead::state_location().is_ok_and(|state| awaits_first_prompt_in(&state, address))
 }
@@ -237,7 +253,7 @@ pub(crate) fn awaits_first_prompt(address: &str) -> bool {
 fn awaits_first_prompt_in(state: &Path, address: &str) -> bool {
     std::fs::read_to_string(session_file_in(state, address)).is_ok_and(|text| {
         let record = parse_record(&text);
-        record.agent() == Agent::Codex && record.session.is_none()
+        record.agent() == Agent::Codex && (record.session.is_none() || record.awaits_prompt)
     })
 }
 
@@ -517,7 +533,7 @@ fn launch(place: &Launch, pane: &str, session: Session) -> Result<(String, Resul
     if let Ok(started) = &started {
         let id = started_session(agent, &session);
         let mode = if *started == Started::BypassDisabled { None } else { mode.map(str::to_string) };
-        let record = Record { session: id, mode, profile: Some(profile.name.clone()), agent: Some(agent.key().to_string()) };
+        let record = Record { session: id, mode, profile: Some(profile.name.clone()), agent: Some(agent.key().to_string()), awaits_prompt: agent == Agent::Codex };
         crate::state::write(&session_file(task, repo)?, record_text(&record))?;
     }
     Ok((agent_name, started))
@@ -920,18 +936,28 @@ mod tests {
     #[test]
     fn the_session_codex_picked_is_written_into_a_codex_tasks_record_and_never_a_claude_tasks() {
         let state = crate::sh::test_dir("codex-record");
-        let codex = Record { session: None, mode: Some("acceptEdits".to_string()), profile: Some("coder".to_string()), agent: Some("codex".to_string()) };
+        let codex = Record { session: None, mode: Some("acceptEdits".to_string()), profile: Some("coder".to_string()), agent: Some("codex".to_string()), awaits_prompt: true };
         crate::state::write(&session_file_in(&state, "billing@app"), record_text(&codex)).unwrap();
         assert!(awaits_first_prompt_in(&state, "billing@app"), "a new Codex start records no session, so its screen is read for start-up questions");
         record_session_in(&state, "billing@app", "019b3136-fdf0").unwrap();
         assert!(!awaits_first_prompt_in(&state, "billing@app"), "its SessionStart hook ran with its first turn, so its screen is no longer read for them");
-        assert_eq!(parse_record(&std::fs::read_to_string(session_file_in(&state, "billing@app")).unwrap()), Record { session: Some("019b3136-fdf0".to_string()), ..codex }, "the mode and profile stay");
+        assert_eq!(parse_record(&std::fs::read_to_string(session_file_in(&state, "billing@app")).unwrap()), Record { session: Some("019b3136-fdf0".to_string()), awaits_prompt: false, ..codex.clone() }, "the mode and profile stay");
+        let resumed = Record { session: Some("019b3136-fdf0".to_string()), awaits_prompt: true, ..codex };
+        crate::state::write(&session_file_in(&state, "billing@app"), record_text(&resumed)).unwrap();
+        assert!(awaits_first_prompt_in(&state, "billing@app"), "a resumed or restarted Codex can land on a start-up question too, so its screen is read until its first turn");
+        record_session_in(&state, "billing@app", "019b3136-fdf0").unwrap();
+        assert!(!awaits_first_prompt_in(&state, "billing@app"), "the SessionStart hook of its first turn clears the mark, its session the same");
+        mark_awaits_prompt_in(&state, "billing@app").unwrap();
+        assert!(awaits_first_prompt_in(&state, "billing@app"), "a restart in place marks it again");
+        record_session_in(&state, "billing@app", "019b3136-fdf0").unwrap();
         let claude = Record { session: Some("kebbies-own-id".to_string()), agent: Some("claude".to_string()), ..Record::default() };
         crate::state::write(&session_file_in(&state, "search@app"), record_text(&claude)).unwrap();
         record_session_in(&state, "search@app", "other").unwrap();
         assert_eq!(parse_record(&std::fs::read_to_string(session_file_in(&state, "search@app")).unwrap()).session.as_deref(), Some("kebbies-own-id"));
         record_session_in(&state, "nobody@app", "x").unwrap();
         assert!(!session_file_in(&state, "nobody@app").exists(), "a session outside kebbie's tasks writes no record");
+        mark_awaits_prompt_in(&state, "search@app").unwrap();
+        mark_awaits_prompt_in(&state, "nobody@app").unwrap();
         assert!(!awaits_first_prompt_in(&state, "search@app") && !awaits_first_prompt_in(&state, "nobody@app"), "a Claude task and a session outside kebbie's tasks are never read for Codex's questions");
         std::fs::remove_dir_all(state).unwrap();
     }
@@ -1042,9 +1068,9 @@ mod tests {
 
     #[test]
     fn a_tasks_session_record_keeps_its_profile_and_an_old_two_line_record_reads_as_task_on_claude() {
-        let designer = Record { session: Some("1f0c".to_string()), mode: Some(BYPASS.to_string()), profile: Some("designer".to_string()), agent: Some("claude".to_string()) };
+        let designer = Record { session: Some("1f0c".to_string()), mode: Some(BYPASS.to_string()), profile: Some("designer".to_string()), agent: Some("claude".to_string()), awaits_prompt: false };
         assert_eq!(parse_record(&record_text(&designer)), designer);
-        let old = |session: &str, mode: Option<&str>| Record { session: Some(session.to_string()), mode: mode.map(str::to_string), profile: Some("task".to_string()), agent: Some("claude".to_string()) };
+        let old = |session: &str, mode: Option<&str>| Record { session: Some(session.to_string()), mode: mode.map(str::to_string), profile: Some("task".to_string()), agent: Some("claude".to_string()), awaits_prompt: false };
         assert_eq!(parse_record("1f0c\nacceptEdits\n"), old("1f0c", Some("acceptEdits")));
         assert_eq!(parse_record("1f0c\n\n"), old("1f0c", None));
         assert_eq!(parse_record("1f0c\n"), old("1f0c", None));

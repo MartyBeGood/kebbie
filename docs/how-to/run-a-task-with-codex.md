@@ -101,7 +101,7 @@ The lead can choose the profile too, by its `for`.
   | `Hooks need review`, for hooks of your own that are new or changed | `whether to trust the hooks it found new or changed` |
 
 - If you already trust the folder in Codex, that question is answered for you.
-- If Codex asks one of these after the start, as the trust question after you sign in, the task waits under Needs you with what Codex asks, and the lead hears it too. kebbie looks for these questions only until Codex has taken its first prompt, so a task that later shows the same words, in code or a diff, stays where it is.
+- If Codex asks one of these after the start, as the trust question after you sign in, the task waits under Needs you with what Codex asks, and the lead hears it too. kebbie looks for these questions only until Codex has taken its first prompt since it started, so a task that later shows the same words, in code or a diff, stays where it is. A Codex task kebbie resumes or restarts is read for them again until its first turn.
 
 ## How the sandbox and the permission mode map
 
