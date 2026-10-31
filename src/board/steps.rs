@@ -22,7 +22,7 @@ pub(super) fn accepted_run(item: &Item) -> usize {
 }
 
 pub(super) fn to_accept_note(item: &Item) -> Option<String> {
-    let count = to_accept(item);
+    let count = item.to_accept.as_ref().map_or_else(|| to_accept(item), |waits| waits.count);
     (count > 0).then(|| format!("{count} to accept"))
 }
 
@@ -229,6 +229,25 @@ pub(crate) mod tests {
         let (rows, _) = render(&mut app, 120, 30);
         let screen = rows.join("\n");
         assert!(!screen.contains("to accept") && !screen.contains("accept 2") && screen.contains("2 commits"), "nothing to accept, the row counts its commits as it does without steps: {screen}");
+    }
+
+    #[test]
+    fn a_ready_task_with_a_step_to_accept_waits_under_needs_you_only_while_accepting_is_required() {
+        let mut item = stepped(stripe());
+        crate::status::tests::in_phase(&mut item, Phase::Ready { head: None });
+        let mut app = test_app(vec![item.clone()]);
+        app.work_selected = 9;
+        let (rows, _) = render(&mut app, 120, 30);
+        let screen = rows.join("\n");
+        assert!(screen.contains("READY TO PUSH") && !screen.contains("NEEDS YOU") && screen.contains("accept 2 · r review"), "accepting is optional without task.require_accept: {screen}");
+        item.to_accept = Some(crate::status::tests::waiting_to_accept(2, 1));
+        let mut app = test_app(vec![item]);
+        app.work_selected = 9;
+        let (rows, _) = render(&mut app, 120, 30);
+        let screen = rows.join("\n");
+        let at = find(&rows, "Switch the payment provider to Stripe")[0].1;
+        assert!(find(&rows, "NEEDS YOU")[0].1 < at && !screen.contains("READY TO PUSH"), "{screen}");
+        assert!(rows[at].trim_end().ends_with(" 1 to accept") && screen.contains("accept step 2 · r review"), "{screen}");
     }
 
     #[test]

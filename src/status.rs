@@ -136,6 +136,7 @@ pub struct Item {
     pub push_left: Option<String>,
     pub staged: bool,
     pub steps: tasks::Steps,
+    pub to_accept: Option<tasks::Unaccepted>,
     pub parked: Option<tasks::Parked>,
     pub assessment: Option<crate::assessment::Word>,
     pub recipe: Option<crate::recipe::Recipe>,
@@ -182,7 +183,7 @@ impl Item {
             name: wait.task.clone(), title, place: name_of(&wait.repo), repo: Some(wait.repo.clone()), path: None, workspace: None, agent: None, git: None,
             report: None, question: None, ci: None, recover: None, routine: None, push_waits: None,
             queued: Some(Queued { after, blocked: wait.blocked.clone(), waiting, names, base, at, backlog: wait.backlog.is_some() }),
-            held_by_draft: None, phase: None, landed: None, ci_outside: None, ci_dismissed: Vec::new(), unrecorded: None, push_left: None, staged: false, steps: tasks::Steps::default(), parked: None, assessment: None, recipe: None, built: Built::default(),
+            held_by_draft: None, phase: None, landed: None, ci_outside: None, ci_dismissed: Vec::new(), unrecorded: None, push_left: None, staged: false, steps: tasks::Steps::default(), to_accept: None, parked: None, assessment: None, recipe: None, built: Built::default(),
         }
     }
 
@@ -344,6 +345,7 @@ impl Item {
             Phase::Idle => Group::Idle,
             Phase::NeedsYou(_) | Phase::CiRed { .. } => Group::NeedsYou,
             Phase::Ready { .. } if self.awaiting_review() => Group::InReview,
+            Phase::Ready { .. } | Phase::Staged { .. } if self.to_accept.is_some() => Group::NeedsYou,
             Phase::Ready { .. } | Phase::Staged { .. } | Phase::Pushing { .. } => Group::ReadyToPush,
             Phase::CiRunning { .. } => Group::CiRunning,
         }
@@ -413,6 +415,9 @@ impl Item {
         if let Some(held) = &self.held_by_draft {
             return Some(held);
         }
+        if let Some(waits) = self.accept_waits() {
+            return Some(&waits.next);
+        }
         self.report.as_ref()?.next_for_you()
     }
 
@@ -442,7 +447,15 @@ impl Item {
         if let Some(question) = self.question.as_ref().and_then(|message| message.question.as_ref()) {
             return Some(if question.plan.is_some() { "approve the plan".to_string() } else { format!("answer a question · {}", plural(question.options.len(), "option")) });
         }
+        if let Some(waits) = self.accept_waits() {
+            return Some(format!("{} · {} review", waits.next, crate::keys::key(crate::keys::Act::Review)));
+        }
         self.report.as_ref()?.next_for_you().map(str::to_string)
+    }
+
+    // With task.require_accept on, a ready task waits on you to accept its next step before it can be pushed.
+    pub fn accept_waits(&self) -> Option<&tasks::Unaccepted> {
+        self.to_accept.as_ref().filter(|_| matches!(self.phase(), Some(Phase::Ready { .. } | Phase::Staged { .. })))
     }
 
     fn left_note(&self) -> String {
@@ -525,6 +538,9 @@ impl Item {
         let mut parts: Vec<String> = self.staged.then(|| STAGED.to_string()).into_iter().chain(self.phase_note()).chain(self.ci_note()).chain(self.recover_note()).chain(self.push_note()).chain(self.landed.filter(|why| !why.waits_for_you()).and(self.landed_note())).collect();
         if git.ahead > 0 {
             parts.push(plural(git.ahead, "commit"));
+        }
+        if let Some(waits) = self.accept_waits() {
+            parts.push(format!("{} to accept", waits.count));
         }
         if git.uncommitted > 0 {
             parts.push(plural(git.uncommitted, "uncommitted file"));
@@ -860,6 +876,7 @@ pub fn gather() -> Result<Vec<Item>> {
         };
         let steps_on = crate::config::resolve(Some(repo)).is_ok_and(|config| config.settings.steps.value);
         let upstream_sha = steps_on.then(|| crate::repo::git(repo, &["rev-parse", &upstream]).ok()).flatten();
+        let accept_required = tasks::accept_required(repo);
         for slot in pool {
             let Some(task) = slot.task else { continue };
             let workspace = workspace_at(&slot.path);
@@ -917,6 +934,7 @@ pub fn gather() -> Result<Vec<Item>> {
                 push_left: state.as_deref().and_then(|state| tasks::push_left(state, &address)),
                 staged: state.as_deref().is_some_and(|state| tasks::staged(state, repo, &address)),
                 steps,
+                to_accept: state.as_deref().filter(|_| accept_required && ahead > 0).and_then(|state| tasks::unaccepted_at(state, &address, &slot.path, &upstream)),
                 parked: state.as_deref().and_then(|state| tasks::park_of(state, &address, began)),
                 assessment: state.as_deref().and_then(|state| crate::assessment::word_in(state, &address)),
                 recipe: state.as_deref().and_then(|state| crate::recipe::load(state, &address)),
@@ -985,6 +1003,7 @@ pub fn gather() -> Result<Vec<Item>> {
             push_left: None,
             staged: false,
             steps: tasks::Steps::default(),
+            to_accept: None,
             parked: None,
             assessment: None,
             recipe: None,
@@ -1057,6 +1076,7 @@ pub(crate) mod tests {
             push_left: None,
             staged: false,
             steps: tasks::Steps::default(),
+            to_accept: None,
             parked: None,
             assessment: None,
             recipe: None,
@@ -1384,6 +1404,29 @@ pub(crate) mod tests {
         moved(&mut item, &Event::Reported { state: "ready", head: None, committed: false, pushing: false });
         assert_eq!(at(&mut item, Some("idle")), Group::Working, "the note written, it waits for kebbie to close it");
         assert!(item.summary().starts_with("pushed · kebbie closes it"), "{}", item.summary());
+    }
+
+    pub(crate) fn waiting_to_accept(step: usize, count: usize) -> tasks::Unaccepted {
+        tasks::Unaccepted { count, step, sha: "abc1234".to_string(), next: format!("accept step {step}") }
+    }
+
+    #[test]
+    fn a_ready_task_with_a_step_to_accept_under_require_waits_on_you_and_says_which_step() {
+        let mut item = task(Some("idle"), Some("ready"), 3);
+        in_phase(&mut item, Phase::Ready { head: Some("abc".to_string()) });
+        let before = (item.group(), item.next_for_you().map(str::to_string), item.wanted("enter"), item.summary());
+        assert_eq!(before.0, Group::ReadyToPush, "without task.require_accept nothing waits on accepting");
+        item.to_accept = Some(waiting_to_accept(2, 2));
+        assert_eq!((item.group(), item.next_for_you(), item.urgency()), (Group::NeedsYou, Some("accept step 2"), 1));
+        assert_eq!(item.wanted("enter"), Some(format!("accept step 2 · {} review", crate::keys::key(crate::keys::Act::Review))));
+        assert!(item.summary().contains("3 commits · 2 to accept"), "{}", item.summary());
+        in_phase(&mut item, Phase::Pushing { ahead: 0 });
+        assert_eq!((item.group(), item.next_for_you()), (Group::ReadyToPush, None), "a push already in line keeps its place");
+        in_phase(&mut item, Phase::Working);
+        assert_eq!(item.group(), Group::Working, "a working task's steps wait for it to be ready");
+        item.to_accept = None;
+        in_phase(&mut item, Phase::Ready { head: Some("abc".to_string()) });
+        assert_eq!((item.group(), item.next_for_you().map(str::to_string), item.wanted("enter"), item.summary()), before, "every step accepted, it is ready to push as before");
     }
 
     #[test]

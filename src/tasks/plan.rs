@@ -194,6 +194,11 @@ pub fn read_at(state: &Path, path: &Path, address: &str, tips: &Tips, working: b
     current_at(state, path, address, &plan, tips, working).map(|(steps, _)| steps).unwrap_or_default()
 }
 
+// The steps of the task in path as they stand, noting nothing; empty without a plan.
+pub(super) fn read_now(state: &Path, path: &Path, upstream: &str, address: &str) -> Steps {
+    tips_of(&Task { path, upstream, address }).map(|tips| read_at(state, path, address, &tips, false)).unwrap_or_default()
+}
+
 // Records what each step's commit is now, so a step still counts once its commit reaches the default branch by any road.
 fn listed_in(state: &Path, task: &Task, working: bool) -> Result<Steps> {
     let Some(mut plan) = load(state, task.address) else { return Ok(Steps::default()) };

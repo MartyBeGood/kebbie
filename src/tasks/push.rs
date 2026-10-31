@@ -288,7 +288,12 @@ pub(super) fn pushed_fingerprint(path: &Path, upstream: &str, through: Through) 
 }
 
 fn authorize(caller: &Caller, repo: &Path, slot: &Slot, upstream: &str, through: Through) -> Result<&'static str> {
-    authorize_as(caller, repo, slot, upstream, through, "Not pushed")
+    let pusher = authorize_as(caller, repo, slot, upstream, through, "Not pushed")?;
+    if super::accept::accept_required(repo) {
+        let take = match through { Through::All => None, Through::First { count, .. } => Some(count) };
+        super::accept::refuse_unaccepted(&state_dir()?, &peers::address(task_of(slot), &name_of(repo)), task_of(slot), &slot.path, upstream, take, "Not pushed")?;
+    }
+    Ok(pusher)
 }
 
 pub(super) fn authorize_as(caller: &Caller, repo: &Path, slot: &Slot, upstream: &str, through: Through, refused: &str) -> Result<&'static str> {
@@ -1349,6 +1354,64 @@ mod tests {
         let refused = authorize(&Caller::User, &dir, &slot, &upstream, Through::All).unwrap_err();
         assert!(refused.contains("is being assessed") && refused.contains("stays under Ready to push while the assessor reads it") && !refused.contains("In review"), "{refused}");
         crate::assessment::forget_in(&state, &address);
+        cleanup(dir, origin, &slot);
+    }
+
+    fn require_accept(dir: &std::path::Path, text: &str) {
+        let file = crate::config::repo_file(dir);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+
+    fn accept_commit(state: &std::path::Path, address: &str, slot: &Slot, upstream: &str, sha: &str) {
+        let key = crate::tasks::open_commits(&slot.path, upstream).unwrap().into_iter().find(|open| open.sha == sha).unwrap().key;
+        crate::tasks::accept::set_in(state, address, &key, true).unwrap();
+    }
+
+    #[test]
+    fn with_accepting_required_a_push_waits_for_every_commit_it_takes_and_goes_once_they_are_accepted() {
+        use crate::permit::Caller;
+        let (dir, origin, slot, upstream) = task_with_a_commit("billing");
+        let fourth = git(&slot.path, &["rev-parse", "HEAD"]).unwrap();
+        let fifth = commit(&slot.path, "e", "fifth");
+        let state = state_dir().unwrap();
+        let address = crate::peers::address("billing", &name_of(&dir));
+        assert!(authorize(&Caller::User, &dir, &slot, &upstream, Through::All).is_ok(), "accepting is optional by default");
+        require_accept(&dir, "[task]\nsteps = false\nrequire_accept = true\n");
+        assert!(!crate::tasks::accept_required(&dir) && authorize(&Caller::User, &dir, &slot, &upstream, Through::All).is_ok(), "with task.steps off it has no effect");
+        require_accept(&dir, "[task]\nrequire_accept = true\n");
+        assert!(crate::tasks::accept_required(&dir));
+        let refused = authorize(&Caller::User, &dir, &slot, &upstream, Through::All).unwrap_err();
+        let notice = crate::notice::Notice::parse(&refused).unwrap();
+        assert_eq!(notice.headline, "Not pushed: step 1 is not accepted", "{refused}");
+        assert!(refused.contains(&format!("kebbie accept billing {}", &fourth[..7])), "it says how to accept it: {refused}");
+        accept_commit(&state, &address, &slot, &upstream, &fourth);
+        assert!(authorize(&Caller::User, &dir, &slot, &upstream, Through::First { count: 1, of: 2 }).is_ok(), "push --through an accepted step goes");
+        let refused = authorize(&Caller::User, &dir, &slot, &upstream, Through::All).unwrap_err();
+        assert!(refused.contains("step 2 is not accepted") && refused.contains(&fifth[..7]), "{refused}");
+        accept_commit(&state, &address, &slot, &upstream, &fifth);
+        assert!(authorize(&Caller::User, &dir, &slot, &upstream, Through::All).is_ok(), "every commit accepted, it goes");
+        crate::tasks::accept::forget("billing", &dir);
+        std::fs::remove_file(crate::config::repo_file(&dir)).unwrap();
+        cleanup(dir, origin, &slot);
+    }
+
+    #[test]
+    fn push_in_order_stops_at_a_task_with_a_commit_not_accepted() {
+        use crate::permit::Caller;
+        let (dir, origin, slot, upstream) = task_with_a_commit("billing");
+        require_accept(&dir, "[task]\nrequire_accept = true\n");
+        let mut tried = Vec::new();
+        let order = [("billing".to_string(), slot.path.clone()), ("pricing".to_string(), dir.join("elsewhere"))];
+        let outcome = crate::next::push_in_order(&order, |path| {
+            tried.push(path.to_path_buf());
+            authorize(&Caller::User, &dir, &crate::tasks::find_task(&dir, None, path)?, &upstream, Through::All).map(str::to_string)
+        }).unwrap_err();
+        let notice = crate::notice::Notice::parse(&outcome).unwrap();
+        assert_eq!(notice.headline, "billing did not push, so the rest wait");
+        assert!(outcome.contains("step 1 is not accepted") && outcome.contains("pricing"), "{outcome}");
+        assert_eq!(tried, std::slice::from_ref(&slot.path), "the rest are not tried");
+        std::fs::remove_file(crate::config::repo_file(&dir)).unwrap();
         cleanup(dir, origin, &slot);
     }
 

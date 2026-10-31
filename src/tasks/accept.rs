@@ -148,6 +148,43 @@ fn task_at(cwd: &Path, name: Option<&str>) -> Result<Task> {
     Ok(Task { upstream: default_branch(&repo)?, address: peers::address(task_of(&slot), &name_of(&repo)), path: slot.path })
 }
 
+// task.require_accept, which holds only while task.steps is on.
+pub fn accept_required(repo: &Path) -> bool {
+    crate::config::resolve(Some(repo)).is_ok_and(|config| config.settings.steps.value && config.settings.require_accept.value)
+}
+
+// The first commit not accepted among the first `take` unpushed ones, as the step it is, and how many of all of them are not accepted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Unaccepted {
+    pub count: usize,
+    pub step: usize,
+    pub sha: String,
+    pub next: String,
+}
+
+pub fn unaccepted(commits: &[(String, bool)], take: usize, steps: &super::plan::Steps) -> Option<Unaccepted> {
+    let (at, (sha, _)) = commits.iter().take(take).enumerate().find(|(_, (_, accepted))| !accepted)?;
+    let listed = steps.items.iter().find(|step| matches!(&step.state, super::plan::State::Committed { sha: committed, .. } if committed == sha)).map(|step| step.index + 1);
+    let step = listed.unwrap_or(steps.pushed + at + 1);
+    Some(Unaccepted { count: commits.iter().filter(|(_, accepted)| !accepted).count(), step, sha: sha.clone(), next: format!("accept step {step}") })
+}
+
+// The task's unaccepted commits as the board shows them; None when every one is accepted.
+pub fn unaccepted_at(state: &Path, address: &str, path: &Path, upstream: &str) -> Option<Unaccepted> {
+    let commits = accepted_at(state, address, path, upstream).ok()?;
+    unaccepted(&commits, commits.len(), &super::plan::read_now(state, path, upstream, address))
+}
+
+// With task.require_accept on, a push takes only accepted commits; the first that is not is named with how to accept it.
+pub(super) fn refuse_unaccepted(state: &Path, address: &str, task: &str, path: &Path, upstream: &str, take: Option<usize>, refused: &str) -> Result<()> {
+    let commits = accepted_at(state, address, path, upstream)?;
+    let Some(first) = unaccepted(&commits, take.unwrap_or(commits.len()), &super::plan::read_now(state, path, upstream, address)) else { return Ok(()) };
+    let short = &first.sha[..7.min(first.sha.len())];
+    Notice::new(Tone::You, format!("{refused}: step {} is not accepted", first.step))
+        .you(format!("Accept it with kebbie accept {task} {short}, or with a in its review ({} on the board); task.require_accept holds every commit until it is accepted.", crate::keys::key(crate::keys::Act::Review)))
+        .detail("task", task).detail("commit", short).err()
+}
+
 // What the push window preselects: None when the first unpushed commit is not accepted, or the task has none.
 pub fn last_accepted(path: &Path) -> Option<String> {
     let task = task_at(path, None).ok()?;
@@ -287,6 +324,19 @@ mod tests {
         assert!(accept_in(&state, &task(&slot, &upstream), &upstream, true).unwrap_err().contains("not one of the task's commits"), "a commit on the default branch is not the task's");
         assert!(accept_in(&state, &task(&slot, &upstream), "no-such-ref", true).unwrap_err().contains("not a commit"));
         cleanup(dir, origin, &slot);
+    }
+
+    #[test]
+    fn the_first_commit_not_accepted_is_named_by_its_step_within_what_a_push_takes() {
+        use super::super::plan::{State, Step, Steps};
+        let commits = |marks: &[bool]| marks.iter().enumerate().map(|(at, accepted)| (format!("c{at}"), *accepted)).collect::<Vec<_>>();
+        let none = Steps::default();
+        assert_eq!(unaccepted(&commits(&[true, false, false]), 3, &none).map(|first| (first.step, first.count, first.sha, first.next)), Some((2, 2, "c1".to_string(), "accept step 2".to_string())));
+        assert_eq!(unaccepted(&commits(&[true, false]), 1, &none), None, "a push of the first commit takes only accepted ones");
+        assert_eq!(unaccepted(&commits(&[true, true]), 2, &none), None);
+        let listed = Steps { pushed: 1, items: vec![Step { index: 1, title: "Command".to_string(), state: State::Committed { sha: "c0".to_string(), subject: String::new(), accepted: false }, extra: false }] };
+        assert_eq!(unaccepted(&commits(&[false]), 1, &listed).map(|first| first.step), Some(2), "a listed step keeps its number after the pushed ones");
+        assert_eq!(unaccepted(&commits(&[true, false]), 2, &Steps { pushed: 1, items: Vec::new() }).map(|first| first.step), Some(3), "an unlisted commit counts on from the pushed steps");
     }
 
     #[test]

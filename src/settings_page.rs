@@ -1737,6 +1737,19 @@ mod tests {
     }
 
     #[test]
+    fn space_turns_accepting_every_commit_on_for_one_repo_under_tasks() {
+        let mut fixture = fixture("settings-require-accept", "", None);
+        go_to(&mut fixture.page, "task.require_accept");
+        let shown = screen(&mut fixture.page);
+        assert!(shown.lines().any(|line| line.contains("task.require_accept") && line.contains("○ off") && line.ends_with("default")), "off by default: {shown}");
+        press(&mut fixture.page, &[KeyCode::Tab]);
+        go_to(&mut fixture.page, "task.require_accept");
+        press(&mut fixture.page, &[KeyCode::Char(' ')]);
+        assert_eq!(file(&fixture, "repos/app.toml"), "[task]\nrequire_accept = true\n");
+        assert_eq!(fixture.page.current().unwrap().layer, Layer::Repo);
+    }
+
+    #[test]
     fn space_toggles_a_boolean_in_the_file_of_the_tab_keeping_its_comments() {
         let mut fixture = fixture("settings-bool", "# mine\n[task]\nsandbox = true # build box\n", None);
         go_to(&mut fixture.page, "task.sandbox");
