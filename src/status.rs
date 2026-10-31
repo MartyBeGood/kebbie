@@ -607,7 +607,14 @@ fn review_progress(path: &Path, upstream: &str) -> Option<(usize, usize)> {
 const TITLES: &str = "titles";
 
 pub(crate) fn kept_title(state: &Path, address: &str) -> Option<String> {
-    fs::read_to_string(state.join(TITLES).join(address)).ok().map(|kept| kept.trim().to_string()).filter(|kept| !kept.is_empty())
+    fs::read_to_string(state.join(TITLES).join(address)).ok().map(|kept| kept.trim().to_string()).filter(|kept| !kept.is_empty() && !command_line(kept))
+}
+
+// The shell titles the terminal with the command it runs, so until the agent names its session the title is its own command line.
+fn command_line(title: &str) -> bool {
+    let mut words = title.split_whitespace();
+    let first = words.next().unwrap_or_default();
+    crate::agent::Agent::ALL.iter().any(|agent| first.eq_ignore_ascii_case(agent.key())) && words.next().is_some_and(|word| word.starts_with('-') || word == "resume")
 }
 
 // A task as the board shows it, with the name or address kebbie knows it by: "Title (name)", or the name alone while it has no title.
@@ -694,7 +701,7 @@ pub(crate) fn forget_title(state: &Path, address: &str) {
 // Claude names its session after the first prompt; kept per task so the title outlives the session. A default title, or none yet, shows the task's name.
 pub(crate) fn title_of(state: &Path, address: &str, seen: Option<&str>, repo: &str, task: &str, folder: &str) -> Option<String> {
     let file = state.join(TITLES).join(address);
-    let seen = seen.map(|title| readable(title, repo)).filter(|title| !title.is_empty() && !["Claude", "Claude Code", task, folder].iter().any(|default| title.eq_ignore_ascii_case(default)));
+    let seen = seen.filter(|title| !command_line(title)).map(|title| readable(title, repo)).filter(|title| !title.is_empty() && !["Claude", "Claude Code", "Codex", task, folder].iter().any(|default| title.eq_ignore_ascii_case(default)));
     let kept = kept_title(state, address);
     if let Some(seen) = seen {
         if kept.as_deref() != Some(seen.as_str()) {
@@ -1790,6 +1797,12 @@ pub(crate) mod tests {
         assert_eq!(title_of(&state, "rows@kebbie", Some("wt4.kebbie"), "kebbie", "rows", "wt4.kebbie"), None, "the terminal's folder is no title");
         assert_eq!(title_of(&state, "rows@kebbie", Some("Kebbie board task rows"), "kebbie", "rows", "wt4.kebbie").as_deref(), Some("Board task rows"));
         assert_eq!(title_of(&state, "rows@kebbie", None, "kebbie", "rows", "wt4.kebbie").as_deref(), Some("Board task rows"), "kept for when its Claude is not running");
+        assert_eq!(title_of(&state, "rows@kebbie", Some("codex -c 'model_reasoning_effort=\"medium\"' -c  -c  -c"), "kebbie", "rows", "wt4.kebbie").as_deref(), Some("Board task rows"), "the shell's title for the command it runs is no title");
+        assert_eq!(title_of(&state, "rows@kebbie", Some("Codex"), "kebbie", "rows", "wt4.kebbie").as_deref(), Some("Board task rows"));
+        keep_title(&state, "cmd@kebbie", "Codex -c 'model_reasoning_effort=\"medium\"' -c  -c  -c");
+        assert_eq!(kept_title(&state, "cmd@kebbie"), None, "a command line an older kebbie kept shows the task's name");
+        assert_eq!(named(&state, "cmd@kebbie"), "cmd@kebbie", "the start's task line too");
+        assert!(!command_line("Codex review of the billing page") && !command_line("Claude Code") && command_line("claude --resume 1234"));
         let mut item = task(Some("idle"), None, 0);
         assert_eq!(item.titled(), "billing");
         item.title = Some("Refund mails".to_string());
