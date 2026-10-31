@@ -94,6 +94,13 @@ fn choice(label: &str, about: &str, then: Then, now: bool) -> Choice {
     Answer::new(label, about, then).now(now)
 }
 
+// A value in effect that no answer offers becomes one, before the last `behind` answers, so ⏎ keeps it rather than writing the first.
+fn keep_current(choices: &mut Vec<Choice>, behind: usize, current: Option<&str>, make: impl FnOnce(&str) -> Choice) {
+    if let Some(current) = current && !choices.iter().any(|choice| choice.now) {
+        choices.insert(choices.len().saturating_sub(behind), make(current).now(true));
+    }
+}
+
 struct Chooser {
     title: String,
     question: String,
@@ -416,6 +423,7 @@ impl Page {
                     let about = if profile.fits.is_empty() { "(for not said)" } else { profile.fits.as_str() };
                     choice(&format!("{:?}", profile.name), about, Then::Write(Change::Set(Set::Text(profile.name.clone()))), set.as_deref() == Some(profile.name.as_str()))
                 }));
+                keep_current(&mut choices, 0, set.as_deref(), |name| choice(&format!("{name:?}"), "no profile loads by this name", Then::Write(Change::Set(Set::Text(name.to_string()))), true));
                 ("Which profile?", choices)
             }
             Kind::Skill => {
@@ -786,6 +794,7 @@ impl Page {
                 };
                 choices.push(choice("Codex's default", &default, Then::Field(Field::Model, None), current.is_none()));
                 choices.push(choice("Type a model…", "any id Codex accepts", Then::TypeModel, false));
+                keep_current(&mut choices, 2, current, |model| choice(model, if agents.offered(model) == Some(false) { "not offered to you ⚠" } else { "not in Codex's list" }, Then::Field(Field::Model, Some(model.to_string())), true));
                 (explain, choices)
             }
             Agent::Claude => {
@@ -801,6 +810,7 @@ impl Page {
                 let mut choices = vec![choice(&label, &default, Then::Field(Field::Model, None), current.is_none())];
                 choices.extend(CLAUDE_MODELS.iter().map(|(name, about)| choice(name, about, Then::Field(Field::Model, Some(name.to_string())), current == Some(*name))));
                 choices.push(choice("Type a model…", "a full id, as claude-opus-5-5", Then::TypeModel, false));
+                keep_current(&mut choices, 1, current, |model| choice(model, "a model id of its own", Then::Field(Field::Model, Some(model.to_string())), true));
                 let explain = if reviewer.is_some() { "Claude Code's model names; this sets review.model, which kebbie review runs.".to_string() } else { "Claude Code's model names.".to_string() };
                 (explain, choices)
             }
@@ -825,6 +835,7 @@ impl Page {
             _ => format!("leave it to {}", agent.name()),
         };
         choices.push(choice("Default", &leave, Then::Field(Field::Effort, None), current.is_none()));
+        keep_current(&mut choices, 1, current, |level| choice(level, "not a level this model lists", Then::Field(Field::Effort, Some(level.to_string())), true));
         (explain, choices)
     }
 
@@ -2267,7 +2278,11 @@ mod tests {
         press(&mut fixture.page, &[KeyCode::Enter]);
         assert!(file(&fixture, "profiles/codex-build.toml").contains("\nmodel = \"gpt-7-preview\"\n"), "any id is taken");
         assert!(screen_at(&mut fixture.page, 100, 30).0.contains("gpt-7-preview ⚠"), "an id Codex does not list is warned about");
-        press(&mut fixture.page, &[KeyCode::Char('m'), KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
+        press(&mut fixture.page, &[KeyCode::Char('m')]);
+        assert!(screen_at(&mut fixture.page, 100, 30).0.contains("│ ▌gpt-7-preview       not offered to you ⚠ · now"), "the model in effect is an answer of its own: {}", screen_at(&mut fixture.page, 100, 30).0);
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        assert!(file(&fixture, "profiles/codex-build.toml").contains("\nmodel = \"gpt-7-preview\"\n") && said(&fixture.page).starts_with("codex-build has that model already"), "⏎ keeps it: {}", said(&fixture.page));
+        press(&mut fixture.page, &[KeyCode::Char('m'), KeyCode::Down, KeyCode::Enter]);
         assert!(!file(&fixture, "profiles/codex-build.toml").contains("model ="), "Codex's default removes the key");
         assert!(said(&fixture.page).starts_with("✓ removed model from profiles/codex-build.toml · codex-build runs codex on gpt-5.1-codex-max by Codex's default"), "{}", said(&fixture.page));
         std::fs::remove_file(fixture.dir.join("codex/models_cache.json")).unwrap();
@@ -2396,6 +2411,37 @@ mod tests {
         press(&mut fixture.page, &[KeyCode::Char('d')]);
         assert_eq!((file(&fixture, "config.toml"), fixture.dir.join("profiles/reviewer.toml").exists()), ("[review]\n".to_string(), false), "d takes the reviewer back to its defaults, review.model with them");
         assert!(said(&fixture.page).starts_with("✓ removed review.model from config.toml") && said(&fixture.page).contains("✓ removed profiles/reviewer.toml"), "{}", said(&fixture.page));
+    }
+
+    #[test]
+    fn a_value_in_effect_that_no_answer_offers_is_one_of_its_own_and_enter_keeps_it() {
+        let mut fixture = agents_fixture("settings-keep-current");
+        let profiles = fixture.dir.join("profiles");
+        std::fs::write(profiles.join("codex-build.toml"), CODEX_BUILD.replace("effort = \"medium\"", "effort = \"persistent\"")).unwrap();
+        fixture.page.load();
+        go_to_profile(&mut fixture.page, "codex-build");
+        press(&mut fixture.page, &[KeyCode::Char('e')]);
+        let (shown, _) = screen_at(&mut fixture.page, 100, 30);
+        assert!(shown.contains("│ ▌persistent          not a level this model lists · now"), "{shown}");
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        assert!(file(&fixture, "profiles/codex-build.toml").contains("effort = \"persistent\"") && said(&fixture.page).starts_with("codex-build has that effort already"), "⏎ never rewrites it to the first level: {}", said(&fixture.page));
+        std::fs::write(profiles.join("broken.toml"), "agent = \"gemini\"\n").unwrap();
+        std::fs::write(fixture.dir.join("config.toml"), "[task]\nprofile = \"broken\"\n").unwrap();
+        fixture.page.load();
+        go_to(&mut fixture.page, "task.profile");
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        assert!(screen(&mut fixture.page).contains("│ ▌\"broken\"            no profile loads by this name · now"), "{}", screen(&mut fixture.page));
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        assert_eq!(file(&fixture, "config.toml"), "[task]\nprofile = \"broken\"\n", "⏎ keeps the name, never none");
+        std::fs::write(profiles.join("odd.toml"), "agent = \"codex\"\nmodel = \"gpt-7-preview\"\neffort = \"persistent\"\n").unwrap();
+        fixture.page.load();
+        go_to_profile(&mut fixture.page, "odd");
+        press(&mut fixture.page, &[KeyCode::Char('n')]);
+        type_text(&mut fixture.page, "odd-copy");
+        press(&mut fixture.page, &[KeyCode::Enter; 3]);
+        assert!(screen_at(&mut fixture.page, 100, 34).0.contains("│ ▌gpt-7-preview       not offered to you ⚠"), "the start's model is offered as it is: {}", screen_at(&mut fixture.page, 100, 34).0);
+        press(&mut fixture.page, &[KeyCode::Enter, KeyCode::Enter]);
+        assert_eq!((wizard(&fixture.page).model().as_deref(), wizard(&fixture.page).effort().as_deref()), (Some("gpt-7-preview"), Some("persistent")), "the wizard keeps the start's model and effort on ⏎");
     }
 
     #[test]
