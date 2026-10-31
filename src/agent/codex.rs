@@ -628,6 +628,32 @@ pub(crate) fn startup_question(screen: &str) -> Option<Started> {
 
 pub const ASKS_KEY: &str = "kebbie_asks";
 
+// Codex 0.163 titles its terminal "<prefix> | <thread title> | <project>" while a view waits on the user, blinking between these two prefixes (tui/src/chatwidget/status_surfaces.rs).
+const ACTION_REQUIRED: [&str; 2] = ["[ ! ] Action Required", "[ . ] Action Required"];
+const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const MICROPHONE: char = '●';
+
+fn after_action_prefix(title: &str) -> Option<&str> {
+    let title = title.trim_start().trim_start_matches(MICROPHONE).trim_start();
+    ACTION_REQUIRED.iter().find_map(|prefix| title.strip_prefix(prefix)).map(|rest| rest.trim_start().trim_start_matches('|'))
+}
+
+// Codex's default title items are activity, thread-name and project-name, joined by " | " and a spinner by a space (tui/src/bottom_pane/title_setup.rs), so the thread title is all but the last part, spinners trimmed.
+pub fn thread_title(title: &str) -> Option<String> {
+    let rest = after_action_prefix(title).unwrap_or(title);
+    let mut parts: Vec<&str> = rest.split(" | ").collect();
+    parts.pop();
+    let thread = parts.join(" | ");
+    let thread = thread.trim_matches(|character: char| character.is_whitespace() || character == MICROPHONE || SPINNER.contains(&character));
+    (!thread.is_empty()).then(|| thread.to_string())
+}
+
+// A title kept from an action-required screen reads "Action Required | <thread> | <project>", readable having trimmed its "[ ! ] "; any other kept title is None, so a Claude title that opens with the same words stays whole.
+pub fn kept_thread_title(kept: &str) -> Option<Option<String>> {
+    let rest = kept.strip_prefix("Action Required |")?;
+    Some(thread_title(&format!("{} |{rest}", ACTION_REQUIRED[0])))
+}
+
 // herdr calls a Codex on a start-up question idle, so a waiting Codex that has taken no prompt yet has its screen read and counts as blocked when it asks; past its first prompt the same words on screen, as in code or a diff, are no question.
 pub fn with_question(mut agent: Value, unprompted: impl FnOnce() -> bool, read: impl FnOnce(&str) -> Option<String>) -> Value {
     let waiting = !matches!(agent["agent_status"].as_str(), Some("working" | "blocked"));
@@ -1070,6 +1096,28 @@ mod tests {
     fn a_codex_past_its_first_prompt_is_never_read_for_start_up_questions_whatever_its_screen_shows() {
         let past = with_question(json!({ "agent": "codex", "pane_id": "w1:p1", "agent_status": "idle" }), || false, |_| panic!("a Codex past its first prompt has no screen read for start-up questions"));
         assert_eq!((past["agent_status"].as_str(), past.get(ASKS_KEY)), (Some("idle"), None), "a task working in kebbie's own repo shows these words in codex.rs or a diff, which is no question of Codex's");
+    }
+
+    #[test]
+    fn codexs_terminal_title_gives_the_task_its_thread_title_alone() {
+        for (title, thread) in [
+            ("[ ! ] Action Required | Fix the flaky checkout test | wt1.app", Some("Fix the flaky checkout test")),
+            ("[ . ] Action Required | Fix the flaky checkout test | wt1.app", Some("Fix the flaky checkout test")),
+            ("⠋ Fix the flaky checkout test | wt1.app", Some("Fix the flaky checkout test")),
+            ("Fix the flaky checkout test ⠙ | wt1.app", Some("Fix the flaky checkout test")),
+            ("Fix the flaky checkout test | wt1.app", Some("Fix the flaky checkout test")),
+            ("Rows | columns | wt1.app", Some("Rows | columns")),
+            ("[ ! ] Action Required | wt1.app", None),
+            ("⠋ wt1.app", None),
+            ("⠋ ⠙ | wt1.app", None),
+            ("wt1.app", None),
+        ] {
+            assert_eq!(thread_title(title).as_deref(), thread, "{title}: the default items are activity, thread-name and project-name (tui/src/chatwidget/status_surfaces.rs)");
+        }
+        assert_eq!(kept_thread_title("Action Required | Fix the flaky checkout test | wt1.app"), Some(Some("Fix the flaky checkout test".to_string())), "a kept title loses its [ ! ] to readable()");
+        assert_eq!(kept_thread_title("Action Required | wt1.app"), Some(None));
+        assert_eq!(kept_thread_title("Fix the flaky checkout test"), None, "any other kept title stays as it is");
+        assert_eq!(kept_thread_title("Action Required banner on settings page"), None, "a Claude title that opens with the same words is no Codex title");
     }
 
     #[test]

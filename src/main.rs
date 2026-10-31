@@ -68,6 +68,7 @@ mod task_note;
 mod tasks;
 #[cfg(test)]
 mod test_seal;
+mod title;
 mod trusted_spawn;
 mod typing;
 mod update;

@@ -596,7 +596,7 @@ pub(crate) fn queue_in(state: &Path, caller: &Caller, repos: &[PathBuf], asked: 
         let wait = Wait { task: task.clone(), repo: repo.clone(), after, prompt: asked.prompt.to_string(), mode: asked.mode.map(str::to_string), profile: asked.profile.map(str::to_string), backlog: asked.backlog.map(str::to_string), by, at: now, blocked: None, gone_since: None, why: asked.why.map(str::to_string), starts_at: asked.starts_at };
         save(state, &wait)?;
         if let Some(title) = asked.title.map(str::to_string).or_else(|| prompt_title(asked.prompt)) {
-            crate::status::keep_title(state, &wait.address(), &crate::status::readable(&title, &name_of(repo)));
+            crate::status::keep_title(state, &wait.address(), &crate::title::readable(&title, &name_of(repo)));
         }
         said.push(format!("Queued {}: it starts from the default branch {}, with no worktree, Space or Claude until then.", wait.address(), starts_when(&wait, now)));
     }
@@ -970,7 +970,7 @@ mod tests {
         assert_eq!(prompt_title("Fix the login redirect. It loops on Safari.").as_deref(), Some("Fix the login redirect"));
         assert_eq!(prompt_title("\n  Bring the Queued row in line with the other rows of the board, title and all\nmore").as_deref(), Some("Bring the Queued row in line"), "a title cut to its words does not end on a dangling one");
         assert_eq!(prompt_title("   "), None);
-        assert_eq!(crate::status::readable("kebbie — Queued row says what it waits for", "kebbie"), "Queued row says what it waits for", "a vault note's title drops its repo");
+        assert_eq!(crate::title::readable("kebbie — Queued row says what it waits for", "kebbie"), "Queued row says what it waits for", "a vault note's title drops its repo");
         let state = crate::sh::test_dir("after-title");
         let known = known(&["billing@api"], Vec::new(), &[]);
         let asked = |title| Asked { name: "web-billing", prompt: "use the rounding field. Then bill.", after: &["billing@api"], mode: None, profile: None, backlog: None, title, why: Some("it needs the rounding field"), starts_at: None };

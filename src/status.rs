@@ -609,14 +609,7 @@ fn review_progress(path: &Path, upstream: &str) -> Option<(usize, usize)> {
 const TITLES: &str = "titles";
 
 pub(crate) fn kept_title(state: &Path, address: &str) -> Option<String> {
-    fs::read_to_string(state.join(TITLES).join(address)).ok().map(|kept| kept.trim().to_string()).filter(|kept| !kept.is_empty() && !command_line(kept))
-}
-
-// The shell titles the terminal with the command it runs, so until the agent names its session the title is its own command line.
-fn command_line(title: &str) -> bool {
-    let mut words = title.split_whitespace();
-    let first = words.next().unwrap_or_default();
-    crate::agent::Agent::ALL.iter().any(|agent| first.eq_ignore_ascii_case(agent.key())) && words.next().is_some_and(|word| word.starts_with('-') || word == "resume")
+    crate::title::clean(None, fs::read_to_string(state.join(TITLES).join(address)).ok()?.trim(), "")
 }
 
 // A task as the board shows it, with the name or address kebbie knows it by: "Title (name)", or the name alone while it has no title.
@@ -703,7 +696,7 @@ pub(crate) fn forget_title(state: &Path, address: &str) {
 // Claude names its session after the first prompt; kept per task so the title outlives the session. A default title, or none yet, shows the task's name.
 pub(crate) fn title_of(state: &Path, address: &str, seen: Option<&str>, repo: &str, task: &str, folder: &str) -> Option<String> {
     let file = state.join(TITLES).join(address);
-    let seen = seen.filter(|title| !command_line(title)).map(|title| readable(title, repo)).filter(|title| !title.is_empty() && !["Claude", "Claude Code", "Codex", task, folder].iter().any(|default| title.eq_ignore_ascii_case(default)));
+    let seen = seen.and_then(|title| crate::title::clean(None, title, repo)).filter(|title| !["Claude", "Claude Code", "Codex", task, folder].iter().any(|default| title.eq_ignore_ascii_case(default)));
     let kept = kept_title(state, address);
     if let Some(seen) = seen {
         if kept.as_deref() != Some(seen.as_str()) {
@@ -712,16 +705,6 @@ pub(crate) fn title_of(state: &Path, address: &str, seen: Option<&str>, repo: &s
         return Some(seen);
     }
     kept
-}
-
-// Every task in a repo is about that repo, so a title that opens with its name drops it.
-pub fn readable(title: &str, repo: &str) -> String {
-    let title = title.trim_start_matches(|character: char| !character.is_alphanumeric()).trim();
-    let rest = title.split_once(char::is_whitespace)
-        .filter(|(first, _)| first.trim_end_matches([':', ',']).eq_ignore_ascii_case(repo))
-        .map_or(title, |(_, rest)| rest.trim_start_matches(['-', '—', '–', ':', '·', ' ']));
-    let mut characters = rest.chars();
-    characters.next().map(|first| first.to_uppercase().chain(characters).collect()).unwrap_or_default()
 }
 
 // The task's own commits start where it left the default branch, local or remote, whichever is newer; local commits not pushed yet are not the task's.
@@ -751,14 +734,13 @@ fn plural(count: usize, noun: &str) -> String {
 }
 
 fn agent_from(value: &Value) -> Agent {
-    let title = value["display_agent"].as_str().or(value["terminal_title_stripped"].as_str()).unwrap_or("Claude");
-    Agent {
-        pane: value["pane_id"].as_str().unwrap_or_default().to_string(),
-        status: value["agent_status"].as_str().unwrap_or("unknown").to_string(),
-        title: title.to_string(),
-        context: value["tokens"]["ctx"].as_str().map(str::to_string),
-        answer: value[crate::agent::codex::ASKS_KEY].as_str().map(|asks| format!("answer Codex in its Space: it asks {asks}")),
-    }
+    let shown = value["display_agent"].as_str().or(value["terminal_title_stripped"].as_str());
+    let codex = crate::agent::Agent::of(value) == Some(crate::agent::Agent::Codex);
+    let kind = crate::agent::Agent::of(value).unwrap_or(crate::agent::Agent::Claude);
+    let title = shown.and_then(|shown| crate::title::clean(Some(kind), shown, "")).unwrap_or_else(|| kind.name().to_string());
+    let status = value["agent_status"].as_str().unwrap_or("unknown").to_string();
+    let answer = value[crate::agent::codex::ASKS_KEY].as_str().map(|asks| format!("answer Codex in its Space: it asks {asks}"));
+    Agent { pane: value["pane_id"].as_str().unwrap_or_default().to_string(), status, title, context: value["tokens"]["ctx"].as_str().map(str::to_string), answer }
 }
 
 pub struct Checkout {
@@ -1665,11 +1647,13 @@ pub(crate) mod tests {
     #[test]
     fn an_agent_is_read_from_herdrs_record_with_defaults_for_what_is_missing() {
         let full = agent_from(&json!({ "pane_id": "p_1", "agent_status": "working", "display_agent": "✻ refunds", "terminal_title_stripped": "claude", "tokens": { "ctx": "41k" } }));
-        assert_eq!((full.pane.as_str(), full.status.as_str(), full.title.as_str(), full.context.as_deref()), ("p_1", "working", "✻ refunds", Some("41k")));
+        assert_eq!((full.pane.as_str(), full.status.as_str(), full.title.as_str(), full.context.as_deref()), ("p_1", "working", "Refunds", Some("41k")));
         let bare = agent_from(&json!({}));
         assert_eq!((bare.pane.as_str(), bare.status.as_str(), bare.title.as_str(), bare.context), ("", "unknown", "Claude", None));
         let titled = agent_from(&json!({ "terminal_title_stripped": "wt1.app" }));
-        assert_eq!(titled.title, "wt1.app");
+        assert_eq!(titled.title, "Wt1.app", "the board shows every title as title::clean reads it");
+        let codex = agent_from(&json!({ "agent": "codex", "terminal_title_stripped": "wt1.app" }));
+        assert_eq!((codex.title.as_str(), codex.answer), ("Codex", None), "a Codex titled with its project alone has named no thread yet");
     }
 
     #[test]
@@ -1802,9 +1786,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_task_shows_claudes_session_title_without_the_repo_word_and_keeps_it_when_claude_is_gone() {
-        assert_eq!(readable("Kebbie board task rows", "kebbie"), "Board task rows");
-        assert_eq!(readable("✳ kebbie: wrapped CI links", "kebbie"), "Wrapped CI links");
-        assert_eq!(readable("Kebbies everywhere", "kebbie"), "Kebbies everywhere");
         let state = crate::sh::test_dir("titles");
         assert_eq!(title_of(&state, "rows@kebbie", Some("Claude Code"), "kebbie", "rows", "wt4.kebbie"), None, "Claude has not named the session yet");
         assert_eq!(title_of(&state, "rows@kebbie", Some("wt4.kebbie"), "kebbie", "rows", "wt4.kebbie"), None, "the terminal's folder is no title");
@@ -1815,7 +1796,15 @@ pub(crate) mod tests {
         keep_title(&state, "cmd@kebbie", "Codex -c 'model_reasoning_effort=\"medium\"' -c  -c  -c");
         assert_eq!(kept_title(&state, "cmd@kebbie"), None, "a command line an older kebbie kept shows the task's name");
         assert_eq!(named(&state, "cmd@kebbie"), "cmd@kebbie", "the start's task line too");
-        assert!(!command_line("Codex review of the billing page") && !command_line("Claude Code") && command_line("claude --resume 1234"));
+        keep_title(&state, "flaky@app", "Action Required | Fix the flaky checkout test | wt1.app");
+        assert_eq!(kept_title(&state, "flaky@app").as_deref(), Some("Fix the flaky checkout test"), "a Codex title kept from an approval keeps its thread title alone");
+        keep_title(&state, "flaky@app", "Action Required | wt1.app");
+        assert_eq!(kept_title(&state, "flaky@app"), None, "an approval before Codex named its thread is no title");
+        keep_title(&state, "banner@app", "Action Required banner on settings page");
+        assert_eq!(kept_title(&state, "banner@app").as_deref(), Some("Action Required banner on settings page"), "a Claude title that opens with the same words stays whole");
+        let asking = agent_from(&json!({ "agent": "codex", "pane_id": "w1:p1", "agent_status": "idle", "terminal_title_stripped": "[ ! ] Action Required | Fix the flaky checkout test | wt1.app" }));
+        assert_eq!(title_of(&state, "flaky@app", Some(&asking.title), "app", "flaky", "wt1.app").as_deref(), Some("Fix the flaky checkout test"));
+        assert_eq!(std::fs::read_to_string(state.join(TITLES).join("flaky@app")).unwrap(), "Fix the flaky checkout test", "never an Action Required title on disk");
         let mut item = task(Some("idle"), None, 0);
         assert_eq!(item.titled(), "billing");
         item.title = Some("Refund mails".to_string());
