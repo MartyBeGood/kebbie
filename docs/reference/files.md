@@ -39,7 +39,7 @@ The folder is `0700` and its files `0600`. Each file is replaced whole on write.
 | `recover/` | One file per task an API error stopped, `<task>@<repo>.json`. |
 | `started/` | Per task half, the vault note it was started from or opened. |
 | `recipes/` | Per task, `<task>@<repo>.json`: its [recipe](commands.md#kebbie-recipe-task-recipe-why), its why and who chose it. |
-| `notes/` | Per task without a vault note, `<task>@<repo>.md`: its note, a Decisions section with one dated line per decision, such as its recipe and the assessor's word on its review. Kept after the task ends. |
+| `notes/` | Per task without a vault note, `<task>@<repo>.md`: its note, a Decisions section with one dated line per decision, such as its recipe and the assessor's word on its review. When the task ends its note moves to `notes/ended/<task>@<repo>.<time>.md`, so a later task by the same name starts its own. |
 | `vault-gate/` | Per task, the mark that its note's Problem is written, so its edits go through. |
 | `halves/` | Per task, every worktree it has across repos, so each half's file tools take the others' worktrees as the task's own. |
 | `landed/` | Per task: why the keeper leaves a landed task open, at which head and since when, and the mark of a task pushed to keep open. |

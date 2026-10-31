@@ -48,6 +48,17 @@ fn append(file: &Path, address: &str, line: &str) -> Result<()> {
     writeln!(opened, "{line}").map_err(|error| format!("{}: {error}", file.display()))
 }
 
+// A task that ends takes its note to notes/ended/, so a later task by the same name starts a note of its own.
+pub fn archive(state: &Path, address: &str, now: u64) {
+    let file = local_file(state, address);
+    if file.exists() {
+        let ended = state.join("notes/ended").join(format!("{address}.{now}.md"));
+        if let Err(error) = crate::state::private_dir(&state.join("notes/ended")).and_then(|_| fs::rename(&file, &ended).map_err(|error| error.to_string())) {
+            eprintln!("kebbie: {address}'s note stays in {}: {error}", file.display());
+        }
+    }
+}
+
 // What the task's agent is told when the decision belongs in its vault note and the task writes it.
 pub fn for_the_task(note: &Note, line: &str) -> Option<String> {
     match note {
@@ -68,6 +79,19 @@ mod tests {
         write(&state, "billing@app", "review suggested: changes how VAT is rounded", 1_792_670_400).unwrap();
         assert_eq!(fs::read_to_string(state.join("notes/billing@app.md")).unwrap(), "# billing@app\n\n## Decisions\n\n- 2026-10-22: recipe: small fix, because one function and its test (the lead)\n- 2026-10-22: review suggested: changes how VAT is rounded\n");
         assert_eq!(for_the_task(&note, "x"), None, "kebbie wrote it itself");
+        let _ = fs::remove_dir_all(state);
+    }
+
+    #[test]
+    fn a_task_that_ends_leaves_its_note_behind_and_a_later_one_by_its_name_starts_its_own() {
+        let state = crate::sh::test_dir("decisions-ended");
+        write(&state, "billing@app", "recipe: small fix, because the old one (the lead)", 1_792_670_400).unwrap();
+        archive(&state, "billing@app", 1_792_670_400);
+        assert!(!local_file(&state, "billing@app").exists());
+        assert!(fs::read_to_string(state.join("notes/ended/billing@app.1792670400.md")).unwrap().contains("because the old one"));
+        write(&state, "billing@app", "recipe: research, because a new question (the lead)", 1_792_756_800).unwrap();
+        assert_eq!(fs::read_to_string(local_file(&state, "billing@app")).unwrap(), "# billing@app\n\n## Decisions\n\n- 2026-10-23: recipe: research, because a new question (the lead)\n");
+        archive(&state, "search@app", 1_792_670_400);
         let _ = fs::remove_dir_all(state);
     }
 
