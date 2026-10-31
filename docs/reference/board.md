@@ -292,6 +292,8 @@ The [bugs to send](#bugs-to-send) are folded into one row at first. While any bu
 
 `U` shows a bar while kebbie builds or downloads. `esc` hides the window while the update goes on, and `U` opens it again. Done, it shows what's new and fixed from kebbie's release notes and what restarts; `d` shows the details, any other key or a click closes it. A summary or details taller than the screen scroll with `↑` `↓`, `PgUp` `PgDn`, `Home` `End` and the mouse wheel, and `↓ more` on the keys line says there is more. See [What an update shows](../explanation/updates-and-restarts.md#what-an-update-shows).
 
+When the window closes and Codex has a newer version, the `agent updates` window asks `Which updates?`: `Codex 0.163 → 0.164` with how Codex is installed, or `Skip this time`, asked again on the next `U`. `⏎` runs Codex's own installer and shows when it is done; `esc` closes it. With `update.agents = "auto"` it installs at once and says so; with `"notify"` there is no window. Codex tasks restart on the new version once they are idle, and the board takes the new kebbie only once the window is closed. See [Codex updates](../how-to/run-a-task-with-codex.md#codex-updates).
+
 `L` opens `Restart the lead` with two rows. See [Starting the lead fresh](../explanation/lead-and-away-mode.md#starting-the-lead-fresh).
 
 - `New conversation`, selected, starts its Claude fresh from its role and the vault, the old conversation left on disk.

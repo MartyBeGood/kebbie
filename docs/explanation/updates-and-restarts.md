@@ -76,6 +76,10 @@ A marketplace added from GitHub follows GitHub's default branch instead. `kebbie
 
 kebbie starts a Codex task only on a plugin exactly as it writes it, so an update that changes the hooks would otherwise stop every Codex task. `kebbie update` rewrites kebbie's own plugin folder in Codex's cache when the plugin is installed, and installs nothing for a machine that never turned Codex on. See [`kebbie update`](../reference/commands.md#kebbie-update).
 
+## Codex itself
+
+Claude Code updates itself; Codex does not while kebbie runs it. So kebbie checks once a day for a newer Codex, and `update.agents` decides what happens: a window after `U` offers it (`"ask"`, the default), `U` installs it (`"auto"`), or a notice on the board says so and you update it yourself (`"notify"`). kebbie installs it with Codex's own installer, and the restart below moves each Codex task onto it. See [Codex updates](../how-to/run-a-task-with-codex.md#codex-updates).
+
 ## A stale session runs older code
 
 A running Claude session keeps the code it started with. kebbie calls it stale when it runs older code than it would load if it started now:

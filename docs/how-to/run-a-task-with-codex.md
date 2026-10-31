@@ -11,25 +11,59 @@ Its task role is written for Codex. Codex can't run kebbie's setup and rules ski
 - Codex CLI 0.163.0 or later on `PATH`, logged in (`codex login`). `kebbie doctor` shows its version, and its `codex login` line says whether `codex login status` reads logged in.
 - herdr starts it in the task's pane as `herdr agent start <task> --kind codex`.
 
-## Install kebbie's plugin in Codex
+## Set up Codex
 
-Codex runs kebbie's hooks from a Codex plugin.
-
-1. Install it once:
+1. Run the guide on Codex's steps:
 
    ```bash
    kebbie setup codex
    ```
 
-   It writes the plugin and prints one line, such as `kebbie's Codex plugin installed at ~/.codex/plugins/cache/kebbie-tasks/kebbie/local: .codex-plugin/plugin.json, hooks/hooks.json, bin/kebbie-hook`. With Codex not on `PATH` it stops and writes nothing.
+   It walks five steps, then shows what it would write. Nothing is written until you press ⏎ on the last one, and `esc` quits without writing.
 
-2. Check it:
+   | Step | What it does |
+   | --- | --- |
+   | Plugin | Installs kebbie's plugin in Codex's plugin cache. |
+   | Approvals | Writes `~/.codex/rules/kebbie.rules`, which lets the ten commands a task runs, `kebbie report`, `kebbie tell`, `kebbie ask` and `kebbie steps` among them, past Codex's approval question. |
+   | Vault in Codex | Shown only when kebbie's vault is on. Adds the vault plugin's server to Codex's `config.toml` as `[mcp_servers.vault]`, so a Codex task keeps its own note. |
+   | Codex updates | Sets `update.agents` in kebbie's `config.toml`: ask me after `U`, update it with `U`, or only tell me. |
+   | Review and apply | Lists each item as `to do`, `already`, `yourself` or `skipped`, and what each write does to Codex's files. |
+
+   Each step that writes one of Codex's files offers three answers: kebbie adds it, `I'll add it myself`, or `Skip`. The vault step has no `Skip`: with kebbie's vault on, every agent needs it.
+
+2. If you chose to add something yourself, the last screen shows exactly what goes where, and quitting prints all of it, the whole rules file or every line of the vault server, to the terminal.
+
+3. Check it:
 
    ```bash
    kebbie doctor
    ```
 
-   Its `codex plugin` line reads `ok`.
+   Its `codex plugin`, `codex approvals` and `codex vault` lines read `ok`.
+
+A step you skip or do yourself never stops a task. Until it is in place, `kebbie doctor` names what is missing with `kebbie setup codex` as the fix: without the rules file Codex asks before each kebbie command; without the vault server the lead keeps the task's note, and doctor fails the `codex vault` line.
+
+`kebbie setup` runs the same steps after its Agents step when you turn Codex on. `kebbie setup codex --yes`, and a run without a terminal, install or update the plugin alone, print one line such as `kebbie's Codex plugin installed at ~/.codex/plugins/cache/kebbie-tasks/kebbie/local: .codex-plugin/plugin.json, hooks/hooks.json, bin/kebbie-hook`, and then list what the guide would offer. With Codex not on `PATH` it stops and writes nothing.
+
+### The vault server
+
+The vault step adds the vault plugin's own command and arguments, with its folder or its S3 endpoint and bucket:
+
+```toml
+[mcp_servers.vault]
+command = "uvx"
+args = ["notes-vault-mcp==0.8.0"]
+env_vars = ["S3_ACCESS_KEY", "S3_SECRET_KEY"]
+[mcp_servers.vault.env]
+S3_BUCKET = "notes"
+S3_ENDPOINT = "https://s3.example.com"
+```
+
+- The keys never go in the file. `env_vars` has Codex read them from its own environment by name, and kebbie starts each Codex task in a tab whose shell has them set, from the vault plugin's settings in Claude Code. They are never typed into the pane or put on a command line, so `ps` doesn't show them.
+- The task's own commands don't get the keys: kebbie starts Codex with them excluded from its `shell_environment_policy`, next to any exclude list of your own.
+- The lines go at the end of your `config.toml`, and the rest of the file stays as it is. A vault server with other values is replaced where it stands.
+
+### kebbie's plugin
 
 The plugin goes in Codex's plugin cache, `$CODEX_HOME/plugins/cache/kebbie-tasks/kebbie/local/` (`CODEX_HOME` defaults to `~/.codex`), as the plugin `kebbie@kebbie-tasks`, and holds three hooks:
 
@@ -41,9 +75,9 @@ The plugin goes in Codex's plugin cache, `$CODEX_HOME/plugins/cache/kebbie-tasks
 
 Outside a kebbie task's worktree each hook does nothing.
 
-- `kebbie setup codex` never edits Codex's `config.toml` or `hooks.json`.
+- The plugin step never edits Codex's `config.toml` or `hooks.json`.
 - Codex loads the plugin only in the sessions kebbie starts. kebbie turns it on with `-c plugins.kebbie@kebbie-tasks.enabled=true` and trusts its three hooks by their hash with `-c hooks.state=…`, for that session alone. Your own Codex sessions don't load it.
-- kebbie also starts each Codex session with `-c check_for_update_on_startup=false`, so Codex's update screen never stands before the task's prompt. Your own Codex sessions still check, and updating Codex is yours to do.
+- kebbie also starts each Codex session with `-c check_for_update_on_startup=false`, so Codex's update screen never stands before the task's prompt. Your own Codex sessions still check. See [Codex updates](#codex-updates) for how kebbie offers a newer Codex.
 - Codex trusts the hooks by their command line, not by the launcher script they run. So kebbie starts a Codex task only when every file of the plugin is exactly what it writes, and a missing, out-of-date or changed plugin stops the start with `run kebbie setup codex`.
 - A second run that finds nothing to change writes nothing.
 - `kebbie setup codex` is yours to run: a task cannot run it.
@@ -107,7 +141,7 @@ The lead can choose the profile too, by its `for`.
 
 With `task.sandbox` on, the default, a Codex task runs in Codex's own sandbox. Codex keeps `.git` read-only there and turns the network off, so a commit or a command that needs the network asks for approval first. So do kebbie's own commands, `kebbie tell` and `kebbie report` among them, which write kebbie's state outside the worktree and reach herdr's socket. kebbie keeps its state out of the sandbox's reach on purpose, so a task can't write it directly.
 
-Each approval reaches you and the lead, as under [Approvals and choices](#approvals-and-choices). `p`, `Yes, and don't ask again for commands that start with …`, makes Codex stop asking for that kebbie command: Codex itself adds the rule to `~/.codex/rules/default.rules`, and every later Codex session, your own included, runs that command outside its sandbox without asking.
+kebbie's rules file, from the Approvals step of `kebbie setup codex`, lets kebbie's own task commands through without asking. Without it, each approval reaches you and the lead, as under [Approvals and choices](#approvals-and-choices), and the lead recommends `p`, `Yes, and don't ask again for commands that start with …`, for kebbie's commands: Codex itself adds the rule to `~/.codex/rules/default.rules`, and every later Codex session, your own included, runs that command outside its sandbox without asking. `kebbie push`, `approve` and `review` still ask, and kebbie refuses them to a task anyway.
 
 | Permission mode | Sandbox on | Sandbox off |
 | --- | --- | --- |
@@ -148,6 +182,21 @@ A Codex task keeps the role and hooks it started with until it restarts, and Cod
 - Your own Codex sessions, outside a task, are never restarted.
 - A Codex task whose profile no longer loads, or no longer runs Codex, is skipped with the profile and the error, as `skipped: its profile "coder" does not load (…)`, rather than resumed on the built-in task's Claude role. Fix the profile and the next restart takes it.
 
+## Codex updates
+
+Codex does not update itself while it runs. Once a day kebbie checks for a newer Codex, read where Codex's own update check reads it for your kind of install, and reads Codex's model list, `~/.codex/models_cache.json`.
+
+- A newer Codex, a model a profile names that Codex no longer lists or offers a newer one in place of, and a change of Codex's default model each get one notice on the board and a line in `kebbie doctor`.
+- `update.agents = "ask"`, the default: after `U` on the board updates kebbie, an `agent updates` window offers the newer Codex, `Codex 0.163 → 0.164`, beside how it is installed. ⏎ runs Codex's own installer, the command Codex's update screen runs, such as `curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh` for a standalone install. `Skip this time` asks again on the next `U`.
+- `update.agents = "auto"`: `U` installs it without asking, and the window says so.
+- `update.agents = "notify"`: no window; the notice and doctor's line, with the installer's command as the fix, are all.
+
+Once the new Codex is installed, kebbie restarts each Codex task on it when it is idle, as under [Restarts after an update](#restarts-after-an-update). Claude Code updates itself, so it is never listed.
+
+### A model that is gone
+
+A task whose profile names a model Codex no longer lists starts on the model Codex's list names in its place, else on Codex's default. The board gets a notice such as `coder: gpt-5.1-codex-max is gone; started on gpt-6-astra; pick one with m on the Settings page`, the lead is told, and the profile file stays as you wrote it. A profile without a model, and kebbie's own profiles, follow Codex's default.
+
 ## Compressed sessions
 
 Codex can compress a session file it hasn't written to for a week to `.jsonl.zst`. kebbie still finds such a session and resumes it, but can't read it. So it doesn't send the task's first prompt again and can't tell from it whether a typed message arrived.
@@ -155,7 +204,7 @@ Codex can compress a session file it hasn't written to for a week to `.jsonl.zst
 ## What a Codex task doesn't get
 
 - The record of test runs that `kebbie evidence` and the reviewer read.
-- The vault's tools. A Codex session gets no vault MCP server, so the lead keeps the task's note: the task's role has it send the lead the note's Problem before its first change, and its decisions and solution as it goes, with `kebbie tell lead`. Nothing holds its edits until the Problem is written.
+- The vault's tools, until Codex has the vault server from [Set up Codex](#set-up-codex). Without it the lead keeps the task's note: the task's role has it send the lead the note's Problem before its first change, and its decisions and solution as it goes, with `kebbie tell lead`. Nothing holds its edits until the Problem is written.
 - Resumes after an API error. An error that stops Codex's turn puts the task under Needs you with the API's message, and the lead hears it, but kebbie does not type it going again.
 
 [Profiles](../reference/configuration.md#profiles) lists every key. [`kebbie setup codex`](../reference/commands.md#setup-and-maintenance) is in the command reference.
