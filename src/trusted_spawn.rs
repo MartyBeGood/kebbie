@@ -190,6 +190,14 @@ impl Queue {
         started
     }
 
+    // The user's or the lead's own request starts its child at once, from the environment the keeper gives one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_now(&self, state: &Path, address: &str, worktree: &Path, payload: &str, kebbie: &Path, env: &[(String, String)], log: &Path) -> Result<()> {
+        let claude = claude_path(env).ok_or("kebbie found no claude on your PATH")?;
+        let ask = Ask { worktree: worktree.to_path_buf(), payload: payload.to_string(), pid: None };
+        self.begin(state, address, &ask, self.command(kebbie, worktree, env, &claude), log, launch_now)
+    }
+
     pub(crate) fn command(&self, kebbie: &Path, worktree: &Path, env: &[(String, String)], claude: &Path) -> Command {
         let place = worktree.to_string_lossy();
         let args: Vec<&str> = ["-C", place.as_ref()].into_iter().chain(self.args.iter().copied()).collect();

@@ -25,6 +25,7 @@ pub fn verdict_file(state: &Path, address: &str) -> PathBuf {
 
 pub(crate) const QUEUE: crate::trusted_spawn::Queue = crate::trusted_spawn::Queue { dir, args: &["review", "--run"], is_ours: is_reviewer };
 
+#[cfg(test)]
 fn running_file(state: &Path, address: &str) -> PathBuf {
     QUEUE.file(state, address, "running")
 }
@@ -248,6 +249,11 @@ pub(crate) fn stop_group(pid: &str) {
 
 // Starts the reviewer as a process of its own, so neither the board nor the caller waits for it.
 pub fn request(cwd: &Path, name: Option<&str>) -> Result<String> {
+    request_as(&state_dir()?, &crate::permit::caller(), cwd, name, &peers::own_exe()?, &crate::trusted_spawn::reviewer_env(std::env::vars()))
+}
+
+// Only your own or the lead's request starts the reviewer at once; anyone else's waits for the keeper, so no task's PATH or nonce reaches it.
+fn request_as(state: &Path, caller: &crate::permit::Caller, cwd: &Path, name: Option<&str>, kebbie: &Path, env: &[(String, String)]) -> Result<String> {
     let repo = main_checkout(cwd)?;
     let slot = tasks::find_task(&repo, name, cwd)?;
     let task = tasks::task_of(&slot);
@@ -256,27 +262,30 @@ pub fn request(cwd: &Path, name: Option<&str>) -> Result<String> {
         return crate::notice::Notice::new(crate::notice::Tone::NotNow, "Nothing to review: it has no commits").detail("task", task).err();
     }
     let address = peers::address(task, &name_of(&repo));
-    let state = state_dir()?;
-    fs::create_dir_all(dir(&state)).map_err(|error| error.to_string())?;
     let sha = git(&slot.path, &["rev-parse", "--short", "HEAD"])?;
-    let log = start_reviewer(&state, &address, &peers::own_exe()?, &slot.path)?;
-    let _ = fs::remove_file(marked(&state, &address, "withdrawn"));
-    let _ = fs::remove_file(marked(&state, &address, "advised"));
-    crate::notice::Notice::new(crate::notice::Tone::Moving, "Review started").next("The reviewer reads its commits in the background; the lead hears its verdict.")
-        .detail("task", &address).detail("commit", &sha).detail("verdict", verdict_file(&state, &address).display().to_string()).detail("output", log.display().to_string()).ok()
+    let now = matches!(caller, crate::permit::Caller::User | crate::permit::Caller::Lead);
+    if now {
+        start_reviewer(state, &address, kebbie, &slot.path, env)?;
+    } else if running_in(state, &address) {
+        return already_running(&address);
+    } else {
+        want(state, &address, &slot.path)?;
+    }
+    let _ = fs::remove_file(marked(state, &address, "withdrawn"));
+    let _ = fs::remove_file(marked(state, &address, "advised"));
+    let notice = if now { crate::notice::Notice::new(crate::notice::Tone::Moving, "Review started").next("The reviewer reads its commits in the background; the lead hears its verdict.") } else { crate::notice::Notice::new(crate::notice::Tone::Moving, "Review asked for").next("kebbie's keeper starts the reviewer within a minute; the lead hears its verdict.") };
+    notice.detail("task", &address).detail("commit", &sha).detail("verdict", verdict_file(state, &address).display().to_string()).detail("output", log_file(state, &address).display().to_string()).ok()
 }
 
-// The marker is written here, from the child's pid, so a second request right after the first finds it running.
-fn start_reviewer(state: &Path, address: &str, kebbie: &Path, worktree: &Path) -> Result<PathBuf> {
+fn already_running<T>(address: &str) -> Result<T> {
+    crate::notice::Notice::new(crate::notice::Tone::NotNow, "A review is already running").next("The lead hears its verdict when it is in.").detail("task", address).err()
+}
+
+fn start_reviewer(state: &Path, address: &str, kebbie: &Path, worktree: &Path, env: &[(String, String)]) -> Result<()> {
     if running_in(state, address) {
-        return crate::notice::Notice::new(crate::notice::Tone::NotNow, "A review is already running").next("The lead hears its verdict when it is in.").detail("task", address).err();
+        return already_running(address);
     }
-    let log = log_file(state, address);
-    let mut command = Command::new(kebbie);
-    command.arg("-C").arg(worktree).args(["review", "--run"]).stdin(Stdio::piped()).process_group(0);
-    let pid = crate::trusted_spawn::launch_now(command, &log, &marked(state, address, "run"), "")?;
-    crate::state::write(&running_file(state, address), pid.to_string())?;
-    Ok(log)
+    QUEUE.start_now(state, address, worktree, "", kebbie, env, &log_file(state, address))
 }
 
 // Sent to review, by you, the lead or review.auto, with no verdict given up since.
@@ -355,7 +364,7 @@ fn review(repo: &Path, slot: &Slot, address: &str, state: &Path) -> Result<(Stri
     let tests = crate::evidence::brief_for(state, address, &slot.path, &upstream, &sha);
     let docs = if settings.docs_required.value { Some(docs_brief(&slot.path, &upstream, &sha, &kebbie.join(KEEP_DOCS))?) } else { None };
     let input = brief(&Brief { address, worktree: &slot.path, upstream: &upstream, sha: &sha, commits: &commits, rules, rules_file: rules_file.as_deref(), quoted: quoted.as_deref(), said: &said, tests: &tests, also_noticed: settings.also_noticed.value, docs: docs.as_deref() });
-    let answer = ask_reviewer(&Ask { address, worktree: &slot.path, settings: &settings, rules_file: rules_file.as_deref().filter(|_| quoted.is_none()), docs: docs.is_some(), input: &input, timeout: None, role: "review", program: None, group_file: None, prompt: None })?;
+    let answer = ask_reviewer(&Ask { address, worktree: &slot.path, settings: &settings, rules_file: rules_file.as_deref().filter(|_| quoted.is_none()), docs: docs.is_some(), input: &input, timeout: None, role: "review", program: Some(&crate::trusted_spawn::claude_from_keeper()?), group_file: None, prompt: None })?;
     let recorded = record(&answer, &sha).ok_or_else(|| no_verdict(&answer))?;
     let verdict = save(state, address, &recorded, rules_file.is_some(), || tasks::fingerprint_at(&slot.path, &upstream, &sha))?;
     Ok((format!("{address} reviewed at {}: {} — {}", &sha[..7.min(sha.len())], verdict.summary(), file.display()), verdict.ok))
@@ -833,11 +842,37 @@ mod tests {
         let _ = fs::remove_dir_all(&state);
         fs::create_dir_all(dir(&state)).unwrap();
         let kebbie = fake_kebbie(&state);
-        start_reviewer(&state, "billing@app", &kebbie, Path::new("/nowhere")).unwrap();
+        let env = [("KEBBIE_CLAUDE_BIN".to_string(), "/opt/claude/bin/claude".to_string())];
+        start_reviewer(&state, "billing@app", &kebbie, &state, &env).unwrap();
         assert!(running_in(&state, "billing@app"), "the marker is there before the reviewer writes its own");
-        assert!(start_reviewer(&state, "billing@app", &kebbie, Path::new("/nowhere")).unwrap_err().contains("already running"), "v twice starts one reviewer");
+        assert!(start_reviewer(&state, "billing@app", &kebbie, &state, &env).unwrap_err().contains("already running"), "v twice starts one reviewer");
         assert!(withdraw_in(&state, "billing@app"));
         fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn a_review_a_task_asks_for_waits_for_the_keeper_and_yours_starts_at_once() {
+        use crate::permit::Caller;
+        use crate::tasks::test_support::*;
+        let (dir, origin, slot, _) = task_with_a_commit("billing");
+        let state = state_of(&dir);
+        let address = peers::address("billing", &name_of(&dir));
+        let kebbie = fake_kebbie(&state);
+        let env = [("KEBBIE_CLAUDE_BIN".to_string(), "/opt/claude/bin/claude".to_string())];
+        for caller in [Caller::Task(address.clone()), Caller::Agent, Caller::Sandboxed] {
+            let asked = request_as(&state, &caller, &slot.path, None, &kebbie, &env).unwrap();
+            assert!(asked.contains("Review asked for") && !running_in(&state, &address) && marked(&state, &address, "wanted").exists(), "{asked}");
+            assert!(!marked(&state, &address, "run").exists(), "no nonce is minted in the asking process");
+            forget_in(&state, &address);
+        }
+        assert!(request_as(&state, &Caller::User, &slot.path, None, &kebbie, &env).unwrap().contains("Review started"));
+        assert!(running_in(&state, &address) && marked(&state, &address, "run").exists());
+        assert!(withdraw_in(&state, &address));
+        let review = include_str!("review.rs");
+        let review = &review[review.find("\nfn review(").unwrap()..review.find("\n// A pass of a review that read").unwrap()];
+        assert!(review.contains("program: Some(&crate::trusted_spawn::claude_from_keeper()?)"), "the reviewer's claude is the keeper's, never one a PATH finds");
+        let _ = fs::remove_dir_all(&state);
+        cleanup(dir, origin, &slot);
     }
 
     #[test]
