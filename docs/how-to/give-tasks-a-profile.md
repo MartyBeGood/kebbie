@@ -8,7 +8,7 @@ Use a profile when a kind of work needs more than kebbie's task role: UI work th
 
 1. Open the board's Settings page with `,` and go to Profiles.
 2. Select the profile to start from and press `n`.
-3. Answer the six steps: a name, the profile to start from, the agent (Claude Code, or Codex once you have set it up), its model, its effort and its role. `←` goes back a step, `esc` cancels and writes nothing.
+3. Answer the seven steps: a name, what it is for (Tasks), the profile to start from, the agent (Claude Code, or Codex once you have set it up), its model, its effort and its role. `←` goes back a step, `esc` cancels and writes nothing.
 4. Read the check, the file and the role file kebbie will write, and press `y` to add it, or `g` to add it and open its role in your editor.
 
 The profile is `~/.config/kebbie/profiles/<name>.toml`, yours: an update never writes it. It takes the start's `about`, `for`, skills, permissions and sandbox, and a role of its own, a new empty file, a copy, or a role file other profiles already read. Edit `for` afterwards with `⏎`, as the lead chooses by it. `x` on the row deletes it again.
@@ -132,7 +132,7 @@ When the profile loads, kebbie refuses:
 
 ## Change the reviewer
 
-Both reviewers run as the built-in `reviewer` profile: the rules check that starts when a task reports ready, and the full review `kebbie review` asks for. A `~/.config/kebbie/profiles/reviewer.toml` sets its `model`, its `effort`, and a `role` that goes after the review skill:
+The rules check that starts when a task reports ready runs as the built-in `reviewer` profile, and so does the full review `kebbie review` asks for unless [`review.profile`](../reference/configuration.md#review-and-docs) names another. A `~/.config/kebbie/profiles/reviewer.toml` sets its `model`, its `effort`, and a `role` that goes after the review skill:
 
 ```toml
 model = "opus"
@@ -140,4 +140,41 @@ effort = "max"
 role = "reviewer.md"
 ```
 
-The reviewer only reads, so its file takes no permission mode, rules, skills or plugins. `review.model` in a config still sets its model, and wins over the file when both do.
+The reviewer only reads, so its file takes no permission mode, rules, skills or plugins. `review.model` in a config still sets the model of the reviewer `review.profile` names, and wins over its file when both do. The built-in `reviewer` stays on Claude.
+
+## Add a review profile
+
+A review profile is a reviewer of your own: another model, another effort, a role of its own, or Codex. It reviews when [`review.profile`](../reference/configuration.md#review-and-docs) names it, or gives a second opinion when `review.second` does.
+
+1. On the Settings page, go to Profiles and press `n`.
+2. Type its name, then answer Review to "What is it for?":
+
+   ```
+   ╭ new profile ───────────────────────────────────────────────────────╮
+   │ step 2 of 7                                                        │
+   │ What is it for?                                                    │
+   │ A review profile only reads: it gets no permissions, skills or     │
+   │ sandbox keys, and kebbie review can run it.                        │
+   │                                                                    │
+   │  Tasks               does the work in a worktree                   │
+   │ ▌Review              reads a task's commits and gives a verdict    │
+   ```
+
+3. Pick the review profile it starts from, its agent, model, effort and role, then `y`.
+
+Or write it, `~/.config/kebbie/profiles/codex-review.toml`:
+
+```toml
+kind = "review"
+about = "A second reader on GPT"
+agent = "codex"
+model = "gpt-6.1-sol"
+effort = "high"
+```
+
+- `kind = "review"` makes it a review profile. It takes `about`, `for`, `agent`, `model`, `effort` and `role` alone; any other key is refused when it loads.
+- A review profile never starts a task: `kebbie start --profile` refuses it, and `task.profile` does not offer it.
+- A Codex review profile runs in Codex's read-only sandbox without your Codex config. See [The reviewer only reads](../explanation/review-gate.md#the-reviewer-only-reads).
+- The Settings page offers a review profile only when setup chose its agent.
+
+Then pick it on the Settings page for `review.profile` or `review.second`. See [Ask for a second opinion](send-a-task-to-review.md#ask-for-a-second-opinion).

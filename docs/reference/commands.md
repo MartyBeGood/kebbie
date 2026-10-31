@@ -405,7 +405,11 @@ Send the task to the reviewer: a separate, read-only Claude reviews its commits 
 
 | Option | What it does |
 | --- | --- |
-| `--withdraw` | Take the task out of review: the reviewer stops, its verdict goes, push is offered again, the lead is told. Only you may run it. |
+| `--withdraw` | Take the task out of review: the reviewer stops, its verdict and any second opinion go, push is offered again, the lead is told. Only you may run it. |
+| `--second` | Also run the second opinion `review.second` names. It never holds the push; its points go to the lead. |
+| `--second-only` | Run the second opinion alone, leaving the task's review as it is. |
+
+The reviewer is the review profile `review.profile` names, the built-in `reviewer` by default. With `review.second = "always <profile>"`, every `kebbie review` runs the second opinion too.
 
 ### `kebbie evidence [name] [--json]`
 

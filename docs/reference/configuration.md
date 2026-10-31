@@ -117,12 +117,18 @@ The Where column says which file may set a key: `either`, `config.toml only` or 
 | Key | Default | Where | What it does |
 | --- | --- | --- | --- |
 | `docs.required` | `false` | repo config only | Whether this repo's docs keep in step with its code. |
-| `review.model` | none | either | The model the reviewer runs on. |
+| `review.profile` | `"reviewer"` | either | The review profile that reviews by default; its verdict holds the push. |
+| `review.second` | none | either | A second opinion: a review profile offered with `s` in the board's `v` menu, or `"always <profile>"` to run it with every review. It never holds the push. |
+| `review.model` | none | either | The model the reviewer `review.profile` names runs on. |
 | `review.auto` | `"suggest"` | either | What kebbie does with work the assessor says needs a review: `"suggest"`, `"run"` or `"require"`. |
 
 `docs.required`: a task's Claude updates the README and `docs/` when its change alters what a user sees or does, by the [`kebbie:keep-docs`](skills.md) skill. The reviewer, in the rules check on a ready report and in `kebbie review`, fails a branch that changes such behaviour and leaves it undescribed in the README or `docs/`. `kebbie doctor` suggests it for a repo that is public on GitHub. See [Keep docs in step with changes](../how-to/keep-docs-in-step.md).
 
-`review.model` is the `reviewer` profile's `model` by another name, and ahead of it when both are set. Unset leaves it to that profile, and then to Claude's default.
+`review.profile` names a review profile, one with `kind = "review"` in `~/.config/kebbie/profiles/`, or the built-in `reviewer`. A task's profile is refused. The Settings page picks from the review profiles whose agent you set up. See [Add a review profile](../how-to/give-tasks-a-profile.md#add-a-review-profile).
+
+`review.second` names another review profile. Its points show on the task's row and go to the lead, which passes them to the task as a review's findings; the push never waits on them. Set, `s` (review with a second opinion) and `o` (the second opinion only) join the board's `v` menu, and `kebbie review --second` and `--second-only` run it. `"always <profile>"` runs it with every review, `v` included.
+
+`review.model` is the `model` of the profile `review.profile` names, by another name, and ahead of it when both are set. Unset leaves it to that profile, and then to its agent's default.
 
 `review.auto`: on a ready report, a read-only assessor judges whether the task's work since it started, pushed steps included, needs an independent review.
 
@@ -357,7 +363,7 @@ Three are built in:
 | --- | --- |
 | `task` | kebbie's task as it is: nothing added. Tasks start with it unless `--profile` or `task.profile` names another. |
 | `ops` | kebbie's task whose `ssh`, `scp` and `rsync` run outside the sandbox, for work on other machines. An ssh session reaches this machine as you too, so kebbie says so when the task starts. |
-| `reviewer` | The read-only reviewer `kebbie review` runs. It is never a task's profile. |
+| `reviewer` | The read-only reviewer `kebbie review` runs unless `review.profile` names another review profile. It is never a task's profile. |
 
 A file named `task.toml`, `ops.toml` or `reviewer.toml` adds its keys to that built-in profile.
 
@@ -365,6 +371,7 @@ The board's [Settings page](board.md#profiles) sets a profile's `model` and `eff
 
 | Key | Default | What it does |
 | --- | --- | --- |
+| `kind` | `"task"` | `"review"` makes it a review profile, which `review.profile` and `review.second` name and no task starts with. |
 | `about` | none | One line on what the profile does. `kebbie profiles` shows it, and the task's role opens its profile section with it. |
 | `for` | none | The work it fits, in your words. The lead chooses a task's profile by it. |
 | `agent` | `"claude"` | The agent CLI the task runs: `"claude"` or `"codex"`. The built-in profiles run Claude. |
@@ -391,7 +398,7 @@ The board's [Settings page](board.md#profiles) sets a profile's `model` and `eff
 - `sandbox.excluded_commands` are in Claude Code's syntax (`docker compose *`). One that names kebbie, herdr, tmux, screen or zellij, or starts with a wildcard, is refused when the profile loads. Such a command reaches everything you can.
 - `deny`, `allow`, `claude.plugins` and every `sandbox` key but `enabled` are Claude Code's: a profile with `agent = "codex"` that sets one does not load, and the error names the key.
 
-The `reviewer` profile takes `about`, `for`, `agent`, `model`, `effort` and `role`, its `agent` only `"claude"`. The reviewer only reads, so its tools, permission mode and sandbox are kebbie's. Its sandbox follows `task.sandbox`, with no host, folder or command outside it. Its `role` goes after the review skill.
+The `reviewer` profile, and every profile with `kind = "review"`, takes `kind`, `about`, `for`, `agent`, `model`, `effort` and `role`; the built-in `reviewer`'s `agent` is only `"claude"`, as the assessor and the rules check run it too. A reviewer only reads, so its tools, permission mode and sandbox are kebbie's. A Claude reviewer's sandbox follows `task.sandbox`, with no host, folder or command outside it; a Codex reviewer runs in Codex's read-only sandbox. Its `role` goes after the review skill. A built-in profile keeps its kind: `kind` in `task.toml` or `reviewer.toml` that says otherwise does not load.
 
 When a profile does not load:
 

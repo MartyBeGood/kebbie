@@ -87,6 +87,7 @@ A task row shows its commits, uncommitted and untracked files, and how far it is
 | `recipe: small fix`, muted | Under the row: how the task is done, by the [recipe](commands.md#kebbie-recipe-task-recipe-why) the lead named; the open task adds its why. The assessor's word follows it on the same line. |
 | `review suggested: changes how VAT is rounded · v`, muted | Under the row, from the [assessor](../explanation/review-gate.md#an-assessor-judges-whether-the-work-needs-a-review) on its last ready report: the work needs a review, and `v` sends it. Under `review.auto = "run"` or `"require"` it reads `review: …`, and the reviewer is already on it. |
 | `no review: wording in two templates`, muted | Under the row: the assessor judged the work needs no review. |
+| `second opinion: 2 points · v i reads them`, muted | Under the row: the [second opinion](../how-to/send-a-task-to-review.md#ask-for-a-second-opinion) gave its points, which the lead passes to the task; the push never waits on them. `second opinion: codex-review reading…` while it reads, `(stale)` once the code changed. |
 | `review being assessed`, `review not assessed · v`, muted | The assessor is at work, or gave no answer, which counts as a suggestion. |
 
 #### A task in steps
@@ -331,7 +332,7 @@ A question that asks first, as reset, drop and done do, takes `y` to go ahead an
 | `w` | Start or stop the dev server. | `worktree.dev_server` is set. |
 | `b` | Start or stop the worker. | `worktree.dev_worker` is set. |
 | `1`–`9` | Open one of its links in the browser, listed under LINKS. | It has that link. |
-| `v` | Send to review; on a task in review, withdraw it. | It has commits and Claude is not mid-turn. |
+| `v` | The review menu: send it to review, or withdraw it while it is in review. See below. | It has commits and Claude is not mid-turn. |
 | `e` | Rebase onto the default branch now, in the background, without pushing. | It is behind the default branch and Claude is not mid-turn. |
 | `t` | Ask its Claude to tidy its commits by the rules skill. | Claude is not mid-turn. |
 | `p` | Push: open the push window. On a task already in the line, take it out again, unpushed. | Claude is not mid-turn and it is not waiting for the reviewer. |
@@ -352,6 +353,18 @@ A question that asks first, as reset, drop and done do, takes `y` to go ahead an
 - `d` also closes one under CI running or with failed CI you choose to leave. The keeper closes a landed task by itself; `d` is for the ones it leaves to you.
 - `Z` opens `Park <task> until` with four rows, each with the time it means on the right: `Tomorrow`, selected (`sat 09:00`), so `Z` then `⏎` parks it until tomorrow at 09:00; `Monday` (`mon 09:00`), the coming Monday at 09:00, which on a Monday before 09:00 is that morning; `A date…` turns the window into a field for a day as [`kebbie start --at`](commands.md#kebbie-start-name-prompt) takes it (`fri`, `24 nov`, `2026-12-01`, `tomorrow 13:00`), a day alone at 09:00, showing the time it reads as you type (`thu 5 nov 09:00`, or `?`), where `⏎` parks and `esc` goes back to the choices; `I bring it back` keeps it until you press `Z` on it. `1` to `4` pick directly, `esc` cancels. See [Parked](#parked).
 - `u`: when main moves, the keeper rebases it, never pushes it. Off by default; `done`, `drop` and `reset` switch it off. See [`kebbie follow`](commands.md#kebbie-follow-name-onoff).
+
+#### The review menu
+
+`v` opens `review · <task>`: a line with its commits since the default branch and the assessor's word, then the answers, each with what it runs. Its letter runs one, `↑` `↓` and `⏎` too, `esc` closes it and sends nothing.
+
+| Key | Action | Offered when |
+| --- | --- | --- |
+| `v` | Review: the reviewer [`review.profile`](configuration.md#review-and-docs) names reads its commits; the task waits under In review. With `review.second = "always …"` the second opinion runs beside it. | It is not in review. |
+| `v` | Withdraw from review: the reviewer stops, its verdict and any second opinion go, push is offered again. Yours alone. | It is in review. |
+| `s` | Review with a second opinion: the reviewer, and `review.second`'s profile beside it. | `review.second` names a profile, not `always`, and it is not in review. |
+| `o` | Second opinion only. The push still waits on the reviewer while the task is in review. | `review.second` names a profile. |
+| `i` | Read the second opinion's points in `$PAGER`. | A second opinion gave its points. |
 
 ### How messages reach a Claude
 
@@ -779,7 +792,7 @@ The selected row shows its role in its two layers: kebbie's own role, from the i
 | `m` | Pick the profile's model. For Codex, from Codex's own list for your account, `~/.codex/models_cache.json`, the list Codex's `/model` shows; for Claude, `opus`, `sonnet`, `haiku` or `fable`. Either way also the agent's default, or a model id you type. |
 | `e` | Pick its effort: the levels Codex lists for the profile's model, or Claude Code's five, or the agent's default. Codex's default is `model_reasoning_effort` in `~/.codex/config.toml` when it is set, otherwise the model's own. |
 | `r` | On one of yours, pick its role: the one it has, any other role file in the folder with the profiles that share it, a new empty file named after the profile, a copy of its role to change for it alone, or none. `o` opens the selected file. On one of kebbie's, a menu: `s` shows kebbie's role read-only in `$PAGER` (`less` without one), `a` adds your lines in `~/.config/kebbie/profiles/<name>.md` and opens them, naming the other profiles that read that file when one is already there. A click on a choice runs it. |
-| `n` | Add a profile, in six steps and a check: its name, the profile it starts from, its agent, model, effort and role. `y` writes it, `g` writes it and opens its role. The agent step offers the agents setup chose, Claude Code alone selected when Codex was not, and opens on the agent of the profile it starts from, and a click on an answer selects it, a second click goes on. On one of kebbie's, `n` in the `r` menu starts from it. |
+| `n` | Add a profile, in seven steps and a check: its name, what it is for (Tasks or Review), the profile it starts from, its agent, model, effort and role. `y` writes it, `g` writes it and opens its role. The agent step offers the agents setup chose, Claude Code alone selected when Codex was not, and opens on the agent of the profile it starts from, and a click on an answer selects it, a second click goes on. On one of kebbie's, `n` in the `r` menu starts from it. |
 | `⏎` | Open the profile's file in `$VISUAL` or `$EDITOR`. |
 | `d` | Remove `model` and `effort` from the profile, so the agent's defaults apply. |
 | `x` | Delete one of yours, after a `y` / `n` question: its file goes, and its role file too unless another profile reads it. |
@@ -790,7 +803,9 @@ The selected row shows its role in its two layers: kebbie's own role, from the i
 - A new profile takes the profile it starts from's `about`, `for`, `skills`, `permission_mode`, rules, plugins and `[sandbox]`, never a role: its role is a new empty file, a copy of the start's role file, a role file already there, shared with the profiles that read it, or none, and kebbie's own role comes first either way. A Codex profile leaves out what only Claude Code reads, and the check says which. Nothing is written until `y` or `g`, and a file that would not load is not written.
 - A profile whose agent setup did not choose, such as a Codex profile copied from another machine, shows ⚠ and `Codex is not set up: kebbie setup codex`. `m`, `e` and `r` still edit its file, but `n` does not offer it as a start, `task.profile` does not offer it, and `kebbie start --profile` refuses it with the same words.
 - `x` keeps kebbie's profiles, a profile an open task runs on, named with that task, one `task.profile` names in config.toml or a repo config, and one a routine starts its tasks with. A role file goes with the profile only when no other file in the folder names it, one that does not load included.
-- The `reviewer` row shows the model `kebbie review` runs: [`review.model`](configuration.md) when it is set, with its layer, ahead of the reviewer profile's own. `m` on it writes `review.model` in config.toml, and its default removes the key; `e` sets the reviewer profile's effort. Its kebbie role is the review skill, `skills/review/SKILL.md`.
+- A review profile, the `reviewer` and each of yours with `kind = "review"`, takes only an agent, a model, an effort and a role, and its kebbie role is the review skill, `skills/review/SKILL.md`. It starts from another review profile, and is never offered as a task's start or as `task.profile`.
+- The row of the profile [`review.profile`](configuration.md#review-and-docs) names shows the model `kebbie review` runs: `review.model` when it is set, with its layer, ahead of the profile's own. `m` on it writes `review.model` in config.toml, and its default removes the key; `e` sets the profile's effort.
+- `review.profile` and `review.second` under Review & docs are picks of the review profiles whose agent setup chose, each with its agent, model and effort; `review.second` adds None and Always, and leaves out the profile `review.profile` names.
 - A task already running keeps its model and effort; the next start takes the new ones.
 - Codex's list is read, never written. Without it, `m` offers Codex's default and a model you type.
 - A change to a key from a `team link` asks first: `t` changes the team's file for everyone who links it, `o` makes the link a file of this machine's own with the change.

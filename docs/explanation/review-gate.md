@@ -46,9 +46,19 @@ kebbie hands it the docs the commits change, so it judges whether they describe 
 
 ## The reviewer only reads
 
-A reviewer that can edit will fix what it finds, and then nobody has reviewed the fix. kebbie limits it to Read, Grep, Glob and the shell for `git log`, `git diff` and `git show` alone, in `dontAsk` mode, with a hook that refuses every other command.
+A reviewer that can edit will fix what it finds, and then nobody has reviewed the fix. A Claude reviewer gets Read, Grep, Glob and the shell for `git log`, `git diff` and `git show` alone, in `dontAsk` mode, with a hook that refuses every other command.
+
+A review profile that runs Codex runs `codex exec` in Codex's read-only sandbox: its commands can read but neither write nor reach the network, and it loads none of your Codex config, its MCP servers, plugins and rules included, and keeps no session file. The keeper starts it as it starts a Claude reviewer, from its own environment and with the `codex` on its own PATH.
 
 Its findings go to the lead, which passes the ones that matter back to the task. The task fixes them and reports ready again, and kebbie starts the reviewer on the changed code.
+
+## You choose the reviewer, and a second opinion holds nothing
+
+The reviewer is a profile: `review.profile` names it, the built-in `reviewer` unless you pick a review profile of your own. A review profile takes only what a reader needs, its agent, model, effort and role, so no profile can hand a reviewer write access or permission rules. Its verdict is the one the push waits on.
+
+A second reviewer, on another model or another agent, often catches what the first misses. But two verdicts that both hold the push would make every task wait on the slower one, and a disagreement between them would have no owner. So `review.second` names a second opinion that never holds the push: its points go to the lead, which weighs them and passes on the ones that matter, as it does with a review's findings. You ask for it per task with `s` or `o` in the `v` menu, or have it run with every review.
+
+The assessor, the rules check and the comment reader keep running the built-in `reviewer`, whichever profile `review.profile` names.
 
 ## A pass belongs to the code
 
@@ -94,6 +104,6 @@ Its answer is one line on the task's row, in your terms: `review suggested: chan
 
 ## Only you take a task out of review
 
-You can take a task back out with `v` again or `kebbie review --withdraw`. Only you can withdraw: neither the lead nor a task can talk its way past the gate. The assessor leaves a task you withdrew out until you send it again.
+You can take a task back out with `v` and then `v`, Withdraw from review, or `kebbie review --withdraw`. Only you can withdraw: neither the lead nor a task can talk its way past the gate. The assessor leaves a task you withdrew out until you send it again.
 
 The gate also carries push permission. On the Areas page, `a` lets the lead push every task in a repo once its reviewer has passed the current code. See [Let the lead push](../how-to/let-the-lead-push.md).
