@@ -67,6 +67,7 @@ pub struct Agent {
     pub title: String,
     pub context: Option<String>,
     pub answer: String,
+    pub kind: crate::agent::Agent,
 }
 
 #[derive(Clone)]
@@ -137,6 +138,14 @@ pub struct Item {
     pub parked: Option<tasks::Parked>,
     pub assessment: Option<crate::assessment::Word>,
     pub recipe: Option<crate::recipe::Recipe>,
+    pub built: Built,
+}
+
+// The files a task's commits change and when its first commit was made, which orders two pushes of the same files.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Built {
+    pub files: Vec<String>,
+    pub first_at: Option<u64>,
 }
 
 impl Item {
@@ -172,7 +181,7 @@ impl Item {
             name: wait.task.clone(), title, place: name_of(&wait.repo), repo: Some(wait.repo.clone()), path: None, workspace: None, agent: None, git: None,
             report: None, question: None, ci: None, recover: None, routine: None, push_waits: None,
             queued: Some(Queued { after, blocked: wait.blocked.clone(), waiting, names, base, at, backlog: wait.backlog.is_some() }),
-            held_by_draft: None, phase: None, landed: None, ci_outside: None, ci_dismissed: Vec::new(), unrecorded: None, push_left: None, staged: false, steps: tasks::Steps::default(), parked: None, assessment: None, recipe: None,
+            held_by_draft: None, phase: None, landed: None, ci_outside: None, ci_dismissed: Vec::new(), unrecorded: None, push_left: None, staged: false, steps: tasks::Steps::default(), parked: None, assessment: None, recipe: None, built: Built::default(),
         }
     }
 
@@ -307,7 +316,7 @@ impl Item {
     }
 
     // What wants the user now, whatever the phase: Claude's own prompt, a question, a draft holding messages back, or work that landed and waits for them.
-    fn wants_you_now(&self) -> bool {
+    pub(crate) fn wants_you_now(&self) -> bool {
         self.blocked_on_a_prompt() || self.question.is_some() || self.held_by_draft.is_some() || self.landed.is_some_and(tasks::LandedUnsure::waits_for_you)
     }
 
@@ -728,6 +737,13 @@ fn own_commits(path: &Path, upstream: &str) -> Result<usize> {
     Ok(open.iter().filter(|commit| own.lines().any(|sha| sha == commit.sha)).count())
 }
 
+fn built(path: &Path, upstream: &str) -> Built {
+    let Ok(base) = fork_point(path, upstream) else { return Built::default() };
+    let files = git(path, &["diff", "--name-only", &base, "HEAD"]).map(|out| out.lines().map(str::to_string).collect()).unwrap_or_default();
+    let first_at = git(path, &["log", "--reverse", "--format=%ct", &format!("{base}..HEAD")]).ok().and_then(|out| out.lines().next()?.trim().parse().ok());
+    Built { files, first_at }
+}
+
 // What a ready report stands on: commits of the task's own and no tracked file left uncommitted.
 pub(crate) fn committed_at(path: &Path) -> bool {
     let Ok(upstream) = crate::repo::main_checkout(path).and_then(|repo| default_branch(&repo)) else { return false };
@@ -744,7 +760,7 @@ fn agent_from(value: &Value) -> Agent {
     let title = shown.and_then(|shown| crate::title::clean(Some(kind), shown, "")).unwrap_or_else(|| kind.name().to_string());
     let status = value["agent_status"].as_str().unwrap_or("unknown").to_string();
     let answer = value[crate::agent::codex::ASKS_KEY].as_str().map_or_else(|| answer_in_space(kind), |asks| format!("answer {} in its Space: it asks {asks}", kind.name()));
-    Agent { pane: value["pane_id"].as_str().unwrap_or_default().to_string(), status, title, context: value["tokens"]["ctx"].as_str().map(str::to_string), answer }
+    Agent { pane: value["pane_id"].as_str().unwrap_or_default().to_string(), status, title, context: value["tokens"]["ctx"].as_str().map(str::to_string), answer, kind }
 }
 
 pub struct Checkout {
@@ -901,6 +917,7 @@ pub fn gather() -> Result<Vec<Item>> {
                 parked: state.as_deref().and_then(|state| tasks::park_of(state, &address, began)),
                 assessment: state.as_deref().and_then(|state| crate::assessment::word_in(state, &address)),
                 recipe: state.as_deref().and_then(|state| crate::recipe::load(state, &address)),
+                built: if ahead > 0 { built(&slot.path, &upstream) } else { Built::default() },
                 phase: None,
                 title: state.as_deref().and_then(|state| title_of(state, &address, agent_title.as_deref(), &name_of(repo), &task, &name_of(&slot.path))),
                 name: task,
@@ -967,6 +984,7 @@ pub fn gather() -> Result<Vec<Item>> {
             parked: None,
             assessment: None,
             recipe: None,
+            built: Built::default(),
         });
     }
     // A task's halves in different repos sit together within a group, after what needs you most.
@@ -1014,7 +1032,7 @@ pub(crate) mod tests {
     pub(crate) fn task(status: Option<&str>, report: Option<&str>, ahead: usize) -> Item {
         let mut item = Item {
             review: None, verdict: None, rules: None, permit: None, follows: false, bypass: false, profile: Some(crate::profiles::TASK.to_string()), server: false, worker: false, url: None, name: "billing".to_string(), title: None, place: "web".to_string(), repo: None, path: None, workspace: None,
-            agent: status.map(|status| Agent { pane: "w1:p1".to_string(), status: status.to_string(), title: String::new(), context: None, answer: answer_in_space(crate::agent::Agent::Claude) }),
+            agent: status.map(|status| Agent { pane: "w1:p1".to_string(), status: status.to_string(), title: String::new(), context: None, answer: answer_in_space(crate::agent::Agent::Claude), kind: crate::agent::Agent::Claude }),
             git: Some(Git { upstream: "origin/main".to_string(), ahead, behind: 0, changed: 0, uncommitted: 0, approved: true, head: None }),
             report: report.map(|state| Message {
                 id: "1".to_string(), at: 0, from: "billing@web".to_string(), to: LEAD_LABEL.to_string(), text: "plan written".to_string(), held: false,
@@ -1038,6 +1056,7 @@ pub(crate) mod tests {
             parked: None,
             assessment: None,
             recipe: None,
+            built: Built::default(),
         };
         rederive(&mut item);
         item
@@ -1259,7 +1278,7 @@ pub(crate) mod tests {
     }
 
     fn at(item: &mut Item, status: Option<&str>) -> Group {
-        item.agent = status.map(|status| Agent { pane: "w1:p1".to_string(), status: status.to_string(), title: String::new(), context: None, answer: answer_in_space(crate::agent::Agent::Claude) });
+        item.agent = status.map(|status| Agent { pane: "w1:p1".to_string(), status: status.to_string(), title: String::new(), context: None, answer: answer_in_space(crate::agent::Agent::Claude), kind: crate::agent::Agent::Claude });
         item.group()
     }
 

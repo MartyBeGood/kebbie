@@ -34,6 +34,7 @@ mod lead_restart;
 mod login_env;
 mod menu;
 mod messages;
+mod next;
 mod notice;
 mod notify;
 mod peers;
@@ -115,6 +116,8 @@ const USAGE: &str = "kebbie: herding coding agents in herdr
                                   worktree.dev_route (opt-in per repo); --plain-http serves each as http://<host> for
                                   a proxy in front that ends TLS; writes nothing
   kebbie status [--json]          every task and Claude session, grouped by what it needs from you
+  kebbie next                     what needs you, in the order to do it: what is stopped on you, what to push in
+                                  which order, what to read
   kebbie board [--overlay]        the board: tasks and sessions, with keys to act on them
   kebbie areas                    the vault's areas with their repo: main against origin, last release, notes, actions
   kebbie lead                     go to the lead Space (creating it), or back to where you were
@@ -584,6 +587,7 @@ fn run(arguments: &Arguments) -> Result<String> {
             serde_json::to_string_pretty(&serde_json::json!({ "away_since": permit::away_since(), "items": items, "checkouts": checkouts, "comments": comments })).map_err(|error| error.to_string())
         }
         Some("status") => status_text(),
+        Some("next") => next::print(),
         Some("board") => setup_guide::board(arguments.flag("--overlay")),
         Some("areas") => areas::print(),
         Some("routes") => Ok(routes::print(arguments.flag("--plain-http"))),

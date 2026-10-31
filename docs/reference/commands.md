@@ -478,6 +478,7 @@ The task's commits not yet pushed are its next steps, in order. A commit beyond 
 | --- | --- |
 | `kebbie board [--overlay]` | The board. `--overlay` is the popup form, which `esc` closes. Until kebbie's Claude Code plugin is installed, it opens the setup guide first, and `esc` there opens the board. See [Board](board.md). |
 | `kebbie status [--json]` | Every task and Claude session, grouped by what it needs from you. See [the fields](#kebbie-status---json). |
+| `kebbie next` | What needs you, numbered in the order to do it: what is stopped on you, what to push in which order, what to read, and a line counting what is working, queued and parked. |
 | `kebbie profiles [--json]` | The [profiles](configuration.md#profiles) a task can start with: the built-in `task`, `reviewer` and `ops`, then each file in `~/.config/kebbie/profiles`. |
 | `kebbie list [--json]` | The pool's worktrees: each one's task or `free`, uncommitted changes, commits ahead and behind, its port, and the first line of its setup note. |
 | `kebbie areas` | The vault's areas with their repo: main against origin, the last release, notes and actions. Needs the vault. |
@@ -487,6 +488,19 @@ The task's commits not yet pushed are its next steps, in order. A commit beyond 
 | `kebbie backlog add [--priority <p>] "<Title> — <summary> (<area>)"` | Append an item to the local backlog file. See [Files](files.md#the-local-backlog-file). |
 
 `kebbie profiles` shows each profile with what it is for, what it is about, and its agent, model, effort, permission mode and skills. Under a profile that runs Codex, a `codex:` line gives the Codex binary, its version and whether kebbie's plugin is installed. A file that does not load is listed as ignored, with the reason. `--json` gives one object per profile, and `{"error": …}` for an ignored file.
+
+```
+$ kebbie next
+1  ? billing-vat        answer its question          waiting 42 min
+2  ✗ booking-calendar   CI red, needs your call      waiting 12 min
+3  ↑ card-component     push · 2 tasks wait on it    ready 1 h
+4  ↑ fix-grid           push · bump-pins waits on it ready 20 min
+5  ↑ copy-typo          push                         ready 3 h
+6  ◆ herdr-app-research read the result              2 h
+4 working · 3 queued · 1 parked
+```
+
+With nothing waiting, it prints `Nothing needs you.` and what is on its way in.
 
 `kebbie list --json` adds `port` and `url`, the worktree's `dev_url` filled in, each `null` when there is none.
 

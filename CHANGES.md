@@ -25,6 +25,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 - A task whose profile names a Codex model Codex no longer lists starts on the model Codex names in its place, else on Codex's default, with a notice on the board and a word to the lead; the profile file stays as you wrote it
 - kebbie doctor warns of a Claude profile that names a full model id, which keeps its tasks on that model, where an alias (opus, sonnet, haiku, fable) follows Claude Code to each new one
 - The lead tells you kebbie's own task commands are safe to let through when an agent asks before one, and recommends its don't-ask-again answer
+- kebbie next prints what needs you, numbered in the order to do it, and the lead answers a question about status or what to push first with it
 
 ### Fixed
 - The update window scrolls a list of what's new and fixed taller than the screen with ↑ ↓, PgUp PgDn, Home End and the mouse wheel, its keys line staying at the bottom with ↓ more while there is more, where the list was cut and the wheel closed the window
