@@ -846,7 +846,7 @@ fn main() -> ExitCode {
                 (Some(first), _) => first.to_string(),
                 (None, _) => String::new(),
             };
-            let error = if sandbox::TASK_COMMANDS.contains(&command.as_str()) { sandbox::ran_sandboxed(&command, &error, sandbox::confined()) } else { error };
+            let error = if sandbox::TASK_COMMANDS.contains(&command.as_str()) { sandbox::ran_sandboxed(&command, &error, sandbox::confined(), std::env::var_os(agent::codex::TASK_VAR).is_some()) } else { error };
             eprintln!("{error}");
             ExitCode::FAILURE
         }

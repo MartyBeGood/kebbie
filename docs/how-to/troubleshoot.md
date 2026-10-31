@@ -47,6 +47,7 @@ Find what is wrong with kebbie, and the fix for each message it shows.
 | `kebbie doctor` says `Codex replaced kebbie's plugin with …`, or a Codex task asks you to review a hook that is new or changed | `kebbie setup codex`. It writes kebbie's plugin again, which wins over the copy Codex installed from a repo's marketplace. |
 | `kebbie doctor` names `codex old plugin` | Run the `rm -rf` it names. The folder is a copy Codex made under the plugin id kebbie used before, and nothing turns it on. |
 | A Codex task's start says Codex asks you to sign in | Codex found no login in its home. Sign in in the task's Space, or run `codex login` and start the task again; kebbie types the prompt once Codex takes it. `kebbie doctor`'s `codex login` line says what `codex login status` reads. |
+| A sandboxed Codex task asks approval each time it runs `kebbie tell`, `kebbie report` or another kebbie command | Codex's sandbox keeps those commands from kebbie's state and herdr's socket. Answer `p` once per command, in the task's Space or through the lead, and Codex stops asking for it: Codex writes that rule to `~/.codex/rules/default.rules`. See [How the sandbox and the permission mode map](run-a-task-with-codex.md#how-the-sandbox-and-the-permission-mode-map). |
 | A Codex task under Needs you says `stopped by a model that is not available` | The model Codex runs is one your login cannot use. Set `model` in the task's Codex profile to one it can, then restart the task with `g`. |
 
 ## Pushes and rebases

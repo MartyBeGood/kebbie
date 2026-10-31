@@ -105,7 +105,9 @@ The lead can choose the profile too, by its `for`.
 
 ## How the sandbox and the permission mode map
 
-With `task.sandbox` on, the default, a Codex task runs in Codex's own sandbox. Codex keeps `.git` read-only there and turns the network off, so a commit or a command that needs the network asks for approval first. So do kebbie's own commands, `kebbie report` among them, which write kebbie's state outside the worktree.
+With `task.sandbox` on, the default, a Codex task runs in Codex's own sandbox. Codex keeps `.git` read-only there and turns the network off, so a commit or a command that needs the network asks for approval first. So do kebbie's own commands, `kebbie tell` and `kebbie report` among them, which write kebbie's state outside the worktree and reach herdr's socket. kebbie keeps its state out of the sandbox's reach on purpose, so a task can't write it directly.
+
+Each approval reaches you and the lead, as under [Approvals and choices](#approvals-and-choices). `p`, `Yes, and don't ask again for commands that start with …`, makes Codex stop asking for that kebbie command: Codex itself adds the rule to `~/.codex/rules/default.rules`, and every later Codex session, your own included, runs that command outside its sandbox without asking.
 
 | Permission mode | Sandbox on | Sandbox off |
 | --- | --- | --- |

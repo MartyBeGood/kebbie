@@ -428,10 +428,13 @@ pub fn refusal(missing: &[String]) -> Result<()> {
     ))
 }
 
-// A task-side command that failed inside the sandbox was spelled so Claude Code did not take it out: with cd, a pipe, $(…) or a redirect.
-pub fn ran_sandboxed(command: &str, error: &str, confined: bool) -> String {
+// A task-side command that failed inside Claude Code's sandbox was spelled so Claude Code did not take it out: with cd, a pipe, $(…) or a redirect. Codex takes out only a command it asks approval for.
+pub fn ran_sandboxed(command: &str, error: &str, confined: bool, codex: bool) -> String {
     if !confined || !TASK_COMMANDS.contains(&command) {
         return error.to_string();
+    }
+    if codex {
+        return format!("{error}\nkebbie {command} ran inside Codex's sandbox, where it cannot reach kebbie's state or herdr: run it again on its own, asking to run it outside the sandbox; the user or the lead approves it");
     }
     format!("{error}\nkebbie {command} ran inside the sandbox, where it cannot reach kebbie's state: run kebbie {command} on its own, without cd, pipes, redirects or $(…), so it runs outside it")
 }
@@ -588,11 +591,13 @@ mod tests {
 
     #[test]
     fn a_task_command_that_failed_in_the_sandbox_says_how_to_run_it_outside() {
-        let said = ran_sandboxed("report", "Operation not permitted", true);
+        let said = ran_sandboxed("report", "Operation not permitted", true, false);
         assert!(said.starts_with("Operation not permitted\n") && said.contains("run kebbie report on its own, without cd, pipes, redirects or $(…)"), "{said}");
-        assert_eq!(ran_sandboxed("routine ok", "x", true).lines().count(), 2);
-        assert_eq!(ran_sandboxed("report", "x", false), "x", "outside the sandbox the error is the error");
-        assert_eq!(ran_sandboxed("push", "x", true), "x", "a user-only command is refused on its own terms");
+        assert_eq!(ran_sandboxed("routine ok", "x", true, false).lines().count(), 2);
+        assert_eq!(ran_sandboxed("report", "x", false, false), "x", "outside the sandbox the error is the error");
+        assert_eq!(ran_sandboxed("push", "x", true, false), "x", "a user-only command is refused on its own terms");
+        let codex = ran_sandboxed("tell", "herdr workspace list failed: Operation not permitted", true, true);
+        assert!(codex.contains("ran inside Codex's sandbox") && codex.contains("asking to run it outside the sandbox") && !codex.contains("without cd"), "Codex runs a command outside its sandbox only on an approved request, however it is spelled: {codex}");
     }
 
     #[test]
