@@ -823,6 +823,7 @@ pub fn checks(env: &Env) -> Vec<Check> {
     checks.extend(task_profiles(&env.profiles_dir, &named_profiles(machine.as_ref(), &env.config, &env.repos_dir)));
     checks.extend(claude_models(&crate::profiles::list_in(&env.profiles_dir).0));
     checks.extend(unchosen_profiles(&crate::profiles::list_in(&env.profiles_dir).0, &chosen));
+    checks.extend(config::resolve(env.repo.as_deref()).ok().and_then(|loaded| crate::review::doctor(&env.profiles_dir, &loaded.settings)).map(|wrong| warn("reviewer", format!("kebbie review refuses: {wrong}"), one("pick a review profile for review.profile and review.second on the Settings page (,)"))));
     checks.extend(env.repo.as_deref().map(push_block));
     let repos = known_repos();
     checks.push(kelpie_leftovers(&crate::push_block::kelpie_era_worktrees(&repos), &sessions_with_gone_hooks(&env.kebbie_state.join("roles"), &open_addresses(&repos))));

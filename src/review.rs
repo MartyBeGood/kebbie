@@ -328,7 +328,9 @@ pub enum Request {
 
 // Starts the reviewer as a process of its own, so neither the board nor the caller waits for it.
 pub fn request(cwd: &Path, name: Option<&str>, send: Request) -> Result<String> {
-    let second = config::resolve(Some(&main_checkout(cwd)?))?.settings.review_second.value;
+    let settings = config::resolve(Some(&main_checkout(cwd)?))?.settings;
+    reviewers_of(&crate::profiles::dir(), &settings, send)?;
+    let second = settings.review_second.value;
     request_as(&state_dir()?, &crate::permit::caller(), cwd, name, &peers::own_exe()?, &crate::trusted_spawn::reviewer_env(std::env::vars()), send, &second)
 }
 
@@ -648,6 +650,29 @@ pub fn default_reviewer(dir: &Path, settings: &config::Settings) -> Result<crate
     let profile = crate::profiles::for_review(dir, &settings.review_profile.value).map_err(|error| format!("review.profile: {error}"))?;
     offered_agent(&profile)?;
     Ok(reviewer_profile(&profile, settings.review_model.value.as_deref()))
+}
+
+// The reviewers a request would start, refused at once with the words their background run would end on.
+fn reviewers_of(dir: &Path, settings: &config::Settings, send: Request) -> Result<()> {
+    if send != Request::SecondOnly {
+        default_reviewer(dir, settings)?;
+    }
+    let second = &settings.review_second.value;
+    if second.profile().is_some() && (send != Request::Review || second.always()) {
+        second_reviewer(dir, settings)?;
+    }
+    Ok(())
+}
+
+pub fn doctor(dir: &Path, settings: &config::Settings) -> Option<String> {
+    let mut wrong = Vec::new();
+    if let Err(error) = default_reviewer(dir, settings) {
+        wrong.push(error);
+    }
+    if settings.review_second.value.profile().is_some() && let Err(error) = second_reviewer(dir, settings) {
+        wrong.push(error);
+    }
+    (!wrong.is_empty()).then(|| wrong.join("; "))
 }
 
 // The profile review.second names, which never is the default reviewer.
@@ -1179,6 +1204,27 @@ mod tests {
         let review = include_str!("review.rs");
         let review = &review[review.find("\nfn review(").unwrap()..review.find("\n// A pass of a review that read").unwrap()];
         assert!(review.contains("profile: Some(&reviewer)") && review.contains("default_reviewer(&crate::profiles::dir(), &settings)?"), "the trusted run reads with the profile review.profile names");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_request_refuses_at_once_the_reviewer_its_background_run_would_refuse_and_the_doctor_names_it() {
+        let dir = crate::sh::test_dir("review-request-refused");
+        fs::write(dir.join("designer.toml"), "model = \"opus\"\n").unwrap();
+        let mut settings = config::settings(&config::Worktree::default(), &config::Machine::default());
+        assert!(reviewers_of(&dir, &settings, Request::Review).is_ok() && doctor(&dir, &settings).is_none());
+        settings.review_profile.value = "designer".to_string();
+        let refused = reviewers_of(&dir, &settings, Request::Review).unwrap_err();
+        assert_eq!(refused, default_reviewer(&dir, &settings).unwrap_err(), "the same words the background run ends on");
+        assert!(reviewers_of(&dir, &settings, Request::SecondOnly).is_ok(), "a second opinion alone runs no default reviewer");
+        assert!(doctor(&dir, &settings).unwrap().contains("review.profile: \"designer\" is a task's profile"));
+        settings.review_profile.value = crate::profiles::REVIEWER.to_string();
+        settings.review_second.value = config::Second::Offered("gone".to_string());
+        assert!(reviewers_of(&dir, &settings, Request::Review).is_ok(), "an offered second opinion is read only when asked for");
+        assert!(reviewers_of(&dir, &settings, Request::WithSecond).unwrap_err().starts_with("review.second: No profile \"gone\""));
+        settings.review_second.value = config::Second::Always("gone".to_string());
+        assert!(reviewers_of(&dir, &settings, Request::Review).unwrap_err().starts_with("review.second: "), "one that runs with every review is read with every review");
+        assert!(doctor(&dir, &settings).unwrap().starts_with("review.second: No profile \"gone\""));
         fs::remove_dir_all(dir).unwrap();
     }
 
