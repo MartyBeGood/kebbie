@@ -50,7 +50,7 @@ The task's note is where the why lives: kebbie writes the recipe and the assesso
 
 - **When**: the change must reach production in stages with a deploy between them: an expand and contract column rename, a backfill before a constraint, a flag turned on before the old code goes.
 - **Phases**: one task, its steps in stage order. The prompt says where each stage ends and what must be live before the next starts; the task builds on while a stage is out.
-- **The user**: a push per stage (`kebbie push --through <sha>`), and their word that it is deployed before the next goes.
+- **The user**: the push. For now each stage goes out as a push of its own, `kebbie push --through <sha>` on its last commit, once the stage before it is live.
 
 ### `follow-up`
 
