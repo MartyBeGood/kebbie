@@ -786,9 +786,17 @@ mod tests {
     }
 
     #[test]
+    fn the_lead_plans_a_task_by_the_playbook_and_answers_why_from_the_notes() {
+        let role = include_str!("../roles/lead.md");
+        for needed in ["run the skill `kebbie:playbook`", "--recipe \"<recipe>: <why>\"", "- **Why questions**", "starts in the notes", "archive included", "never why"] {
+            assert!(role.contains(needed), "{needed}");
+        }
+    }
+
+    #[test]
     fn the_lead_gets_copies_of_the_questions_the_user_answers_on_the_board() {
         let role = include_str!("../roles/lead.md");
-        for needed in ["answers them on the board", "copy", "kebbie answered <task>", "kebbie decide <task>", "a task or a subagent", "you answer it yourself with `kebbie tell <task> \"<answer>\"`, whether or not the user is present", "also while the user is here", "goes back to the task"] {
+        for needed in ["answers them on the board", "copy", "kebbie answered <task>", "kebbie decide <task>", "research goes to a task of its own by the playbook, a wide read to a subagent", "you answer it yourself with `kebbie tell <task> \"<answer>\"`, whether or not the user is present", "also while the user is here", "goes back to the task"] {
             assert!(role.contains(needed), "{needed}");
         }
         assert!(!role.contains("AskUserQuestion tool (while") && !role.contains("The plan to read"), "the lead never relays a question");

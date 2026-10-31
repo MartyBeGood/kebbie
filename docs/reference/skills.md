@@ -9,6 +9,7 @@ The skills the Claude Code plugin `kebbie@kebbie` ships, and the hooks kebbie gi
 | `kebbie:review` | The reviewer started by `kebbie review`, and the rules check on a ready report | Reviews a task's branch independently and gives a verdict with located findings. |
 | `kebbie:keep-docs` | A task's Claude in a repo with `docs.required`, or when a review finding ends `(keep-docs)` | Updates the README and `docs/` in the same task as the change. |
 | `kebbie:configure` | Claude, when you ask it to configure kebbie | Changes a setting in config.toml or a repo config, sets a machine up, or adopts a team's linked setup, and checks each change with `kebbie doctor`. |
+| `kebbie:playbook` | The lead, when it plans or starts a task | The recipes for how a task gets done: when each applies, its phases and where you are needed. The lead names one with `kebbie start --recipe`. |
 | `kebbie:using-kebbie` | Claude, the lead and tasks, when you ask about kebbie itself | Answers a question about kebbie from kebbie's own docs first, and cites the page the answer came from. |
 | `kebbie:propose-change` | The lead, when kebbie cost something; a task's Claude, to tell the lead | Proposes saving what kebbie cost as a [kebbie issue](commands.md#kebbie-issues), at a calm moment. |
 | `kebbie:review-split` | `/kebbie:review-split [base or what to review]` | Opens the [review split](review-split.md). |

@@ -177,7 +177,7 @@ Bring a parked task back to its group now, as `Z` on its row does.
 
 ### `kebbie recipe [task] ["<recipe>: <why>"]`
 
-How a task is done, by one of the recipes in the lead's [playbook](skills.md), and why.
+How a task is done, by one of the recipes in the lead's playbook, and why. See [Recipes](../explanation/recipes.md).
 
 | Form | What it does |
 | --- | --- |

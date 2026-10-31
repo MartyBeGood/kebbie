@@ -16,7 +16,8 @@ The lead:
 
 - **briefs you** when you arrive: what needs you first, then what is working, in review and ready to push, each with a recommendation,
 - **finds work** in your backlog sources and offers two or three candidates,
-- **starts tasks** with informed prompts: the ticket, the notes and decisions that bear on it, what other tasks touch, and what done looks like; a task it starts leaves you where you are, unless you ask to go there,
+- **starts tasks** with informed prompts: the ticket, the notes and decisions that bear on it, what other tasks touch, and what done looks like, each by a [recipe](recipes.md) from its playbook; a task it starts leaves you where you are, unless you ask to go there,
+- **answers why** from the notes: a question about why something was built a way starts in the task's note and the vault, archive included, never in the board's tasks, which say only what is going on,
 - **holds tasks to your rules** when the reviewer's rules check gives no verdict: it checks a ready task's commits against the rules skill, and approves them or sends back what to fix,
 - **relays** interface and contract changes between tasks, and brings you what needs a decision,
 - **does small cross-cutting fixes** itself, such as a script or a rename across repos.

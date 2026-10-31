@@ -91,7 +91,7 @@ pub fn asked_of(caller: &Caller, given: Option<&str>, recorded: bool) -> Result<
     match given {
         Some(text) => parse(text).map(Some).map_err(|error| format!("--recipe: {error}")),
         None if !recorded && matches!(caller, Caller::Lead | Caller::LeadSandboxed) => Err(format!(
-            "kebbie start from the lead names the task's recipe and why: --recipe {FORM}, such as --recipe \"small-fix: one function and its test\". The recipes are {}.",
+            "kebbie start from the lead names the task's recipe and why: --recipe {FORM}, such as --recipe \"small-fix: one function and its test\". The skill kebbie:playbook says when each recipe applies: {}.",
             names()
         )),
         None => Ok(None),
@@ -186,6 +186,13 @@ mod tests {
         assert_eq!(asked_of(&Caller::Agent, None, false).unwrap(), None);
         assert_eq!(asked_of(&Caller::Lead, Some("research: which queue fits"), false).unwrap(), Some(("research".to_string(), "which queue fits".to_string())));
         assert!(asked_of(&Caller::User, Some("nope: x"), false).unwrap_err().starts_with("--recipe: "), "a recipe you give is checked too");
+    }
+
+    #[test]
+    fn the_playbook_holds_each_recipe_kebbie_takes_and_no_other() {
+        let playbook = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/playbook/SKILL.md")).unwrap();
+        let headed: Vec<&str> = playbook.lines().filter_map(|line| line.strip_prefix("### `")?.strip_suffix('`')).collect();
+        assert_eq!(headed, RECIPES.map(|(slug, _)| slug), "the skill's recipes are the names kebbie start --recipe takes, in order");
     }
 
     #[test]
