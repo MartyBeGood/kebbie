@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::claude::{Screens, Started};
+use super::Started;
+use super::claude::Screens;
 use crate::profiles::Profile;
 use crate::sh::Result;
 use crate::tasks::Session;
@@ -469,7 +470,6 @@ pub fn user_messages_at(transcript: &str) -> Vec<(Option<u64>, String)> {
 // What Codex 0.163 draws in an empty composer (tui/src/chatwidget.rs); other faint text there is none kebbie can place, so it never counts as empty.
 const PLACEHOLDERS: [&str; 2] = ["Ask Codex to do anything", "Ask a follow-up question"];
 
-// Codex's composer is the last line that opens with its › prompt.
 pub fn draft(screen: &str) -> Draft {
     let styled: Vec<crate::typing::Styled> = screen.lines().map(crate::typing::styled).collect();
     let Some(prompt) = styled.iter().rposition(|line| line.text.trim_start().starts_with('›')) else { return Draft::Unreadable };

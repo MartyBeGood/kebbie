@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use super::Started;
 use crate::herdr;
 use crate::profiles::Profile;
 use crate::sandbox::{Policy, Protected, TaskDirs};
@@ -30,33 +31,6 @@ fn refusal(error: &str) -> Refusal {
 enum Launched {
     Up(Started),
     ShellBack(String),
-}
-
-#[derive(Debug, PartialEq)]
-pub enum Started {
-    Ready,
-    AwaitsTrust,
-    AwaitsBypass,
-    AwaitsHooks,
-    AwaitsSignIn,
-    AwaitsModel,
-    AwaitsUpdate,
-    BypassDisabled,
-}
-
-impl Started {
-    // What Claude asks in its Space before it runs; the answer is the user's, so kebbie sends it no key.
-    pub fn asks(&self) -> Option<&'static str> {
-        match self {
-            Started::AwaitsTrust => Some("whether you trust its folder"),
-            Started::AwaitsBypass => Some("you to accept bypass permissions mode"),
-            Started::AwaitsHooks => Some("whether to trust the hooks it found new or changed"),
-            Started::AwaitsSignIn => Some("you to sign in"),
-            Started::AwaitsModel => Some("which model to use, after its notice of a new one"),
-            Started::AwaitsUpdate => Some("whether to update it first"),
-            Started::Ready | Started::BypassDisabled => None,
-        }
-    }
 }
 
 // What kebbie reads on an agent's screen, and how herdr knows it: focus marks a menu's focused option, said opens the agent's own transcript lines, opens is a line a menu's question starts at, and keyed is whether an option's "(y)" is a key the menu takes.

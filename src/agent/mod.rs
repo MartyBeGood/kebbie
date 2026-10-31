@@ -10,12 +10,39 @@ use crate::profiles::Profile;
 use crate::sh::Result;
 use crate::tasks::Session;
 
-pub(crate) use claude::{Started, wait_for_prompt};
+pub(crate) use claude::wait_for_prompt;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Agent {
     Claude,
     Codex,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Started {
+    Ready,
+    AwaitsTrust,
+    AwaitsBypass,
+    AwaitsHooks,
+    AwaitsSignIn,
+    AwaitsModel,
+    AwaitsUpdate,
+    BypassDisabled,
+}
+
+impl Started {
+    // What the agent asks in its Space before it takes a prompt; the answer is the user's, so kebbie sends it no key.
+    pub fn asks(&self) -> Option<&'static str> {
+        match self {
+            Started::AwaitsTrust => Some("whether you trust its folder"),
+            Started::AwaitsBypass => Some("you to accept bypass permissions mode"),
+            Started::AwaitsHooks => Some("whether to trust the hooks it found new or changed"),
+            Started::AwaitsSignIn => Some("you to sign in"),
+            Started::AwaitsModel => Some("which model to use, after its notice of a new one"),
+            Started::AwaitsUpdate => Some("whether to update it first"),
+            Started::Ready | Started::BypassDisabled => None,
+        }
+    }
 }
 
 pub struct TaskFiles<'a> {
