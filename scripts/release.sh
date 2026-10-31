@@ -6,7 +6,7 @@ version=${1:-}
 summary=${2:-}
 case "$version" in
   [0-9]*.[0-9]*.[0-9]*) ;;
-  *) echo "usage: scripts/release.sh <X.Y.Z> \"<what it brings>\"" >&2; exit 2 ;;
+  *) printf '%s\n' "usage: scripts/release.sh <X.Y.Z> \"<what it brings>\"" "Before it, run scripts/release-smoke.sh on your machine: real Claude and Codex tasks through start, report, restart and drop." >&2; exit 2 ;;
 esac
 [ -n "$summary" ] || { echo "say what the release brings: scripts/release.sh $version \"<what it brings>\"" >&2; exit 2; }
 tag="v$version"
@@ -15,6 +15,7 @@ cd "$root"
 
 fail() { echo "release: $*" >&2; exit 1; }
 
+echo "release: scripts/release-smoke.sh is the step before this one; it is not run from here"
 [ "$(git rev-parse --abbrev-ref HEAD)" = main ] || fail "check out main first"
 [ -z "$(git status --porcelain)" ] || fail "commit or stash your changes first"
 git fetch --quiet --tags origin
