@@ -608,6 +608,9 @@ fn send_prompt(name: &str, started: &Started, prompt: Option<&str>, type_now: im
         Started::AwaitsTrust => format!("Answer {name}'s question in its Space: whether you trust the repo's folder."),
         Started::AwaitsBypass => format!("Answer {name}'s question in its Space: whether to accept bypass permissions mode."),
         Started::AwaitsHooks => format!("Answer {name}'s question in its Space: whether to trust the hooks it found new or changed."),
+        Started::AwaitsSignIn => format!("Answer {name}'s question in its Space: how you sign in, on its welcome screen."),
+        Started::AwaitsModel => format!("Answer {name}'s question in its Space: which model to use, after its notice of a new one."),
+        Started::AwaitsUpdate => format!("Answer {name}'s question in its Space: whether to update it first, on its update screen."),
         Started::Ready | Started::BypassDisabled => {
             if let Some(prompt) = prompt {
                 type_now(prompt)?;

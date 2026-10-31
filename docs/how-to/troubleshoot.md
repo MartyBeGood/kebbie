@@ -46,6 +46,7 @@ Find what is wrong with kebbie, and the fix for each message it shows.
 | --- | --- |
 | `kebbie doctor` says `Codex replaced kebbie's plugin with …`, or a Codex task asks you to review a hook that is new or changed | `kebbie setup codex`. It writes kebbie's plugin again, which wins over the copy Codex installed from a repo's marketplace. |
 | `kebbie doctor` names `codex old plugin` | Run the `rm -rf` it names. The folder is a copy Codex made under the plugin id kebbie used before, and nothing turns it on. |
+| A Codex task's start says Codex asks you to sign in | Codex found no login in its home. Sign in in the task's Space, or run `codex login` and start the task again; kebbie types the prompt once Codex takes it. `kebbie doctor`'s `codex login` line says what `codex login status` reads. |
 
 ## Pushes and rebases
 

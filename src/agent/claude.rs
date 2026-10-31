@@ -38,6 +38,9 @@ pub enum Started {
     AwaitsTrust,
     AwaitsBypass,
     AwaitsHooks,
+    AwaitsSignIn,
+    AwaitsModel,
+    AwaitsUpdate,
     BypassDisabled,
 }
 
@@ -48,6 +51,9 @@ impl Started {
             Started::AwaitsTrust => Some("whether you trust its folder"),
             Started::AwaitsBypass => Some("you to accept bypass permissions mode"),
             Started::AwaitsHooks => Some("whether to trust the hooks it found new or changed"),
+            Started::AwaitsSignIn => Some("you to sign in"),
+            Started::AwaitsModel => Some("which model to use, after its notice of a new one"),
+            Started::AwaitsUpdate => Some("whether to update it first"),
             Started::Ready | Started::BypassDisabled => None,
         }
     }
@@ -62,9 +68,10 @@ pub(crate) struct Screens {
     pub toward_trust: &'static str,
     pub held: fn(&str) -> Option<Started>,
     pub running: fn(&str) -> Started,
+    pub input_shown: fn(&str) -> bool,
 }
 
-const CLAUDE: Screens = Screens { kind: "claude", name: "Claude", asks_trust: |screen| screen.contains("trust this folder"), trust_selected: yes_selected, toward_trust: "down", held: |screen| asks_for_bypass(screen).then_some(Started::AwaitsBypass), running };
+const CLAUDE: Screens = Screens { kind: "claude", name: "Claude", asks_trust: |screen| screen.contains("trust this folder"), trust_selected: yes_selected, toward_trust: "down", held: |screen| asks_for_bypass(screen).then_some(Started::AwaitsBypass), running, input_shown: |_| true };
 
 // herdr types the agent's command into the pane's shell, so it is typed only once that shell is idle at its prompt.
 pub fn start_claude(name: &str, pane: &str, args: &[&str], trusted: bool) -> Result<Started> {
@@ -236,7 +243,7 @@ fn ready_with(screens: &Screens, mut look: impl FnMut() -> Result<(bool, String)
                 return Ok(Some(Launched::Up(Started::AwaitsTrust)));
             }
             press(if (screens.trust_selected)(&screen) { "enter" } else { screens.toward_trust })?;
-        } else if ready() {
+        } else if ready() && (screens.input_shown)(&screen) {
             return Ok(Some(Launched::Up((screens.running)(&screen))));
         }
         pause();
@@ -588,6 +595,17 @@ mod tests {
         assert_eq!(readied(&[TRUST, TRUST_YES, "❯ "], 0, true), (Some(Launched::Up(Started::Ready)), vec!["down".to_string(), "enter".to_string()]), "Claude Code 2.1.306 focuses No, exit first, inside a box");
         assert_eq!(readied(&["Do you trust this folder?\n❯ 1. Yes, I trust this folder\n  2. No, exit", "❯ "], 0, true), (Some(Launched::Up(Started::Ready)), vec!["enter".to_string()]), "Claude numbers its choices");
         assert_eq!(readied(&["", "", "❯ "], 2, false), (Some(Launched::Up(Started::Ready)), Vec::new()), "a folder Claude does not ask about is ready as before");
+    }
+
+    #[test]
+    fn a_codex_herdr_calls_ready_is_ready_only_once_its_composer_shows_and_never_on_its_welcome_screen() {
+        let codex = |screens: &[&str]| {
+            let mut screens = screens.iter().map(|screen| screen.to_string());
+            ready_with(&super::super::codex::SCREENS, || Ok((false, screens.next().unwrap_or_default())), || true, |_| Ok(()), || {}, true, 20).unwrap()
+        };
+        let welcome = "  Welcome to Codex, OpenAI's command-line coding agent\n\n  Choose how you want to use Codex.\n\n› 1. Sign in with ChatGPT\n\n  Press enter to continue";
+        assert_eq!(codex(&["", welcome]), Some(Launched::Up(Started::AwaitsSignIn)), "the prompt typed into the welcome screen was lost");
+        assert_eq!(codex(&["", "  loading", "› Ask Codex to do anything\n\n  100% context left"]), Some(Launched::Up(Started::Ready)), "a screen still drawing is not a composer");
     }
 
     const BYPASS: &str = "╭──────────────────────────────────────────────────────────────╮\n│ WARNING: Claude Code running in Bypass Permissions mode      │\n│                                                              │\n│ In Bypass Permissions mode, Claude Code will not ask for     │\n│ your approval before running potentially dangerous commands. │\n│ This mode should only be used in a sandboxed container/VM    │\n│ that has restricted internet access and can easily be        │\n│ restored if damaged.                                         │\n│                                                              │\n│ By proceeding, you accept all responsibility for actions     │\n│ taken while running in Bypass Permissions mode.              │\n│                                                              │\n│ https://code.claude.com/docs/en/security                     │\n│                                                              │\n│ ❯ No, exit                                                   │\n│   Yes, I accept                                              │\n╰──────────────────────────────────────────────────────────────╯";

@@ -43,6 +43,7 @@ Outside a kebbie task's worktree each hook does nothing.
 
 - `kebbie setup codex` never edits Codex's `config.toml` or `hooks.json`.
 - Codex loads the plugin only in the sessions kebbie starts. kebbie turns it on with `-c plugins.kebbie@kebbie-tasks.enabled=true` and trusts its three hooks by their hash with `-c hooks.state=…`, for that session alone. Your own Codex sessions don't load it.
+- kebbie also starts each Codex session with `-c check_for_update_on_startup=false`, so Codex's update screen never stands before the task's prompt. Your own Codex sessions still check, and updating Codex is yours to do.
 - Codex trusts the hooks by their command line, not by the launcher script they run. So kebbie starts a Codex task only when every file of the plugin is exactly what it writes, and a missing, out-of-date or changed plugin stops the start with `run kebbie setup codex`.
 - A second run that finds nothing to change writes nothing.
 - `kebbie setup codex` is yours to run: a task cannot run it.
@@ -85,7 +86,16 @@ A Codex profile takes `about`, `for`, `agent`, `model`, `effort`, `role`, `skill
 
 The lead can choose the profile too, by its `for`.
 
-- If Codex asks something before it runs, kebbie answers nothing and the start says what Codex asks: whether you trust the repo's folder, the first time Codex runs in it, or whether to trust hooks of your own that are new or changed. Answer it in the task's Space, and kebbie types the task's prompt in once the keeper or an open board runs.
+- If Codex asks something before it runs, kebbie answers nothing and types nothing, and the start says what Codex asks. Answer it in the task's Space, and kebbie types the task's prompt in once the keeper or an open board runs. Codex 0.163 asks:
+
+  | Codex shows | The start says Codex asks |
+  | --- | --- |
+  | `Welcome to Codex` and how you want to use it, or `Signed in with your ChatGPT account`, when it finds no login in its home | `you to sign in` |
+  | `Codex just got an upgrade` with `Try new model` and `Use existing model` | `which model to use, after its notice of a new one` |
+  | `Update available` with `Update now`, `Skip` and `Skip until next version`, in a Codex that checks for updates anyway, as under a managed config | `whether to update it first` |
+  | `Trust this folder?`, the first time Codex runs in the repo | `whether you trust its folder` |
+  | `Hooks need review`, for hooks of your own that are new or changed | `whether to trust the hooks it found new or changed` |
+
 - If you already trust the folder in Codex, that question is answered for you.
 
 ## How the sandbox and the permission mode map

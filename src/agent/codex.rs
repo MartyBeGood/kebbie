@@ -256,9 +256,12 @@ pub fn uninstall(home: &Path) -> Result<bool> {
     Ok(true)
 }
 
+// Codex's update screen stands before its composer, so the sessions kebbie starts never check; config.toml stays the user's.
+const NO_UPDATE_CHECK: &str = "check_for_update_on_startup=false";
+
 // kebbie's plugin runs only in the sessions kebbie starts: enabled, and its three hooks trusted by hash, for that invocation alone.
-pub fn plugin_args() -> [String; 4] {
-    ["-c".to_string(), enable_override(), "-c".to_string(), trust_override()]
+pub fn plugin_args() -> [String; 6] {
+    ["-c".to_string(), enable_override(), "-c".to_string(), trust_override(), "-c".to_string(), NO_UPDATE_CHECK.to_string()]
 }
 
 fn access(mode: Option<&str>, sandboxed: bool) -> Vec<String> {
@@ -365,7 +368,7 @@ pub fn with_role(args: &[String]) -> Vec<String> {
     let mut kept = Vec::new();
     let mut words = args.iter().peekable();
     while let Some(word) = words.next() {
-        let ours = |value: &String| value == &enable_override() || value == OLD_ENABLE || value.starts_with("hooks.state=");
+        let ours = |value: &String| value == &enable_override() || value == OLD_ENABLE || value == NO_UPDATE_CHECK || value.starts_with("hooks.state=");
         if (word == "-c" || word == "--config") && words.peek().is_some_and(|value| ours(value)) {
             words.next();
         } else {
@@ -487,11 +490,43 @@ pub(crate) fn asks_hooks(screen: &str) -> bool {
     screen.contains("Hooks need review") && screen.contains("Continue without trusting")
 }
 
+// Codex 0.163 onboards a home it finds no login in with its welcome and sign-in screens, and confirms a sign-in on one more; each waits for enter.
+pub(crate) fn asks_sign_in(screen: &str) -> bool {
+    ["Welcome to Codex", "Choose how you want to use Codex", "Signed in with your ChatGPT account"].iter().any(|text| screen.contains(text))
+}
+
+// Codex's update screen (tui/src/update_prompt.rs), for a Codex started without kebbie's NO_UPDATE_CHECK or under a managed config that forces the check.
+pub(crate) fn asks_update(screen: &str) -> bool {
+    screen.contains("Update available") && screen.contains("Skip until next version")
+}
+
+// Codex offers a newer model over the configured one before its composer runs.
+pub(crate) fn asks_model(screen: &str) -> bool {
+    screen.contains("Try new model") && screen.contains("Use existing model")
+}
+
+// What Codex asks on its screen before it takes a prompt; the trust question comes back as AwaitsTrust, which kebbie answers in a folder the user trusts.
+pub(crate) fn startup_question(screen: &str) -> Option<Started> {
+    if asks_hooks(screen) {
+        Some(Started::AwaitsHooks)
+    } else if asks_trust(screen) {
+        Some(Started::AwaitsTrust)
+    } else if asks_update(screen) {
+        Some(Started::AwaitsUpdate)
+    } else if asks_model(screen) {
+        Some(Started::AwaitsModel)
+    } else if asks_sign_in(screen) {
+        Some(Started::AwaitsSignIn)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn trust_selected(screen: &str) -> bool {
     screen.lines().any(|line| line.trim_start().starts_with('›') && line.contains("Trust and continue"))
 }
 
-pub(crate) const SCREENS: Screens = Screens { kind: "codex", name: "Codex", asks_trust, trust_selected, toward_trust: "up", held: |screen| asks_hooks(screen).then_some(Started::AwaitsHooks), running: |_| Started::Ready };
+pub(crate) const SCREENS: Screens = Screens { kind: "codex", name: "Codex", asks_trust, trust_selected, toward_trust: "up", held: |screen| startup_question(screen).filter(|asked| *asked != Started::AwaitsTrust), running: |_| Started::Ready, input_shown: |screen| draft(screen) != Draft::Unreadable };
 
 pub fn start(name: &str, pane: &str, args: &[&str], trusted: bool) -> Result<Started> {
     super::claude::start_with(&SCREENS, name, pane, args, trusted)
@@ -822,6 +857,37 @@ mod tests {
         assert_eq!((SCREENS.held)(hooks), Some(Started::AwaitsHooks), "Codex 0.163's startup review of the user's own hooks is left to the user");
         assert_eq!((SCREENS.held)(screen), None);
         assert_eq!(Started::AwaitsHooks.asks(), Some("whether to trust the hooks it found new or changed"));
+    }
+
+    const WELCOME: &str = "  Welcome to Codex, OpenAI's command-line coding agent\n\n  Choose how you want to use Codex.\n\n› 1. Sign in with ChatGPT\n     Usage included with Plus, Pro, Business, and Enterprise plans\n\n  2. Sign in with Device Code\n\n  Press enter to continue";
+    const SIGNED_IN: &str = "✓ Signed in with your ChatGPT account\n\n  You're in control\n\n  Press enter to continue";
+    const UPGRADE: &str = "  Codex just got an upgrade. Introducing\n  gpt-5.1-codex-max.\n\n› 1. Try new model\n  2. Use existing model\n\n  enter/esc confirm · ⌃c quit";
+
+    #[test]
+    fn codexs_welcome_sign_in_and_model_screens_hold_the_start_and_say_what_codex_asks() {
+        assert_eq!((SCREENS.held)(WELCOME), Some(Started::AwaitsSignIn), "codex-rs/tui/src/onboarding/welcome.rs and auth.rs at rust-v0.163.0");
+        assert_eq!((SCREENS.held)(SIGNED_IN), Some(Started::AwaitsSignIn));
+        assert_eq!((SCREENS.held)(UPGRADE), Some(Started::AwaitsModel), "model_migration.rs");
+        assert_eq!((SCREENS.held)("  Trust this folder? Codex can read\n› 1. Trust and continue\n  2. Quit"), None, "the trust prompt is answered for a trusted folder, so it is not held here");
+        assert_eq!(startup_question("  Trust this folder? Codex can read\n› 1. Trust and continue\n  2. Quit"), Some(Started::AwaitsTrust));
+        assert_eq!(startup_question("› Ask Codex to do anything\n\n  100% context left"), None);
+        assert_eq!(Started::AwaitsSignIn.asks(), Some("you to sign in"));
+        assert!(matches!(draft(WELCOME), Draft::Typed(_)), "a welcome screen is never an empty composer to type into");
+    }
+
+    const UPDATE: &str = "\n  Update available · 0.163.0 → 0.164.0\n  Release notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\n\n  enter continue · esc skip";
+
+    #[test]
+    fn a_codex_kebbie_starts_skips_its_update_check_and_its_update_screen_holds_the_start() {
+        for session in [Session::New("x".to_string()), Session::Resume("id".to_string())] {
+            let args = start_args(None, &profile(None, None), "billing@app", true, None, &session);
+            assert!(after(&args, "-c").contains(&"check_for_update_on_startup=false"), "codex-rs/tui/src/updates.rs reads config.check_for_update_on_startup before it shows tui/src/update_prompt.rs: {args:?}");
+        }
+        let resumed = with_role(&resume_args(&["codex".to_string(), "-c".to_string(), NO_UPDATE_CHECK.to_string()], "id").unwrap());
+        assert_eq!(resumed.iter().filter(|word| *word == NO_UPDATE_CHECK).count(), 1, "a restart keeps the check off once: {resumed:?}");
+        assert_eq!((SCREENS.held)(UPDATE), Some(Started::AwaitsUpdate), "a Codex that checks anyway, as under a managed config, holds the start on tui/src/update_prompt.rs");
+        assert_eq!(startup_question(UPDATE), Some(Started::AwaitsUpdate));
+        assert_eq!(Started::AwaitsUpdate.asks(), Some("whether to update it first"));
     }
 
     #[test]
