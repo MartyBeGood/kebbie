@@ -51,10 +51,17 @@ only_logs() { [ -d "$1" ] && [ -z "$(find "$1" -mindepth 1 ! -name '*.log' -prin
 leftover() { [ -e "$2" ] && only_logs "$1"; }
 kelpie_lines='command = "kelpie\.|/kelpie/current/|description = "kelpie|# kelpie.s |a kelpie task'
 
+# kebbie's folder gives way only when it holds nothing but logs; otherwise kelpie's is kept beside it, never deleted.
 move_dir() {
   if [ ! -e "$1" ]; then return 0; fi
   if leftover "$1" "$2"; then rm -r "$1"; return 0; fi
-  if [ -e "$2" ]; then rm -r "$1"; ok "removed the old $(short "$1"); kebbie runs on $(short "$2")"; return 0; fi
+  if only_logs "$2"; then rm -r "$2"; fi
+  if [ -e "$2" ]; then
+    backup="$2.kelpie-backup"
+    while [ -e "$backup" ]; do backup="$backup-$$"; done
+    mv "$1" "$backup" && ok "kept kelpie's $(short "$1") as $(short "$backup"); kebbie runs on $(short "$2")"
+    return 0
+  fi
   mv "$1" "$2" && moved=1
 }
 
