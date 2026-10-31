@@ -2,24 +2,12 @@ use std::path::PathBuf;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
 use crate::keys::Act;
 use crate::tasks;
 use super::{App, Hit, Mode};
-use super::widgets::{Choice, MUTED, PEACH, TEXT, YELLOW, modal, options_lines, style};
-
-fn confirm_lines(name: &str, about: Option<&str>, question: &str, nudged: bool) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(Span::styled(name.to_string(), style(TEXT)))];
-    lines.extend(about.map(|about| Line::from(Span::styled(about.to_string(), style(MUTED)))));
-    lines.push(Line::default());
-    lines.push(Line::from(vec![Span::styled(question.to_string(), style(YELLOW)), Span::styled("  y / n", style(MUTED))]));
-    if nudged {
-        lines.push(Line::from(Span::styled("press y or n", style(PEACH))));
-    }
-    lines
-}
+use super::widgets::{Choice, confirm_lines, modal, options_lines};
 
 impl App {
     pub(super) fn confirm_reset(&mut self, path: PathBuf, name: String, key: KeyEvent, cancels: bool) {

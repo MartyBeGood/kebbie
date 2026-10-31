@@ -370,6 +370,20 @@ impl App {
         matches!(self.mode, Mode::Normal) && self.areas.is_normal() && self.routines.is_normal() && self.settings.is_normal()
     }
 
+    pub(super) fn after_settings(&mut self, effect: settings_page::Effect, terminal: Option<&mut DefaultTerminal>) {
+        match effect {
+            settings_page::Effect::Left => self.page = Page::Work,
+            settings_page::Effect::Open(file) => match terminal {
+                Some(terminal) => {
+                    let status = crate::board::terminal::outside(terminal, || settings_page::open_in_editor(&file));
+                    self.settings.opened(&file, status);
+                }
+                None => self.settings.opened(&file, Err("no terminal to open it in".to_string())),
+            },
+            settings_page::Effect::Handled => {}
+        }
+    }
+
     fn open_settings(&mut self) {
         let repo = self.selected_task().and_then(|item| item.repo).or_else(|| self.checkouts.first().and_then(|checkout| self.repo_named(&checkout.name)));
         self.settings.open(repo);
@@ -509,18 +523,8 @@ impl App {
                     _ => {}
                 }
             }
-            match self.settings.handle(key) {
-                settings_page::Effect::Left => self.page = Page::Work,
-                settings_page::Effect::Open(file) => match terminal {
-                    Some(terminal) => {
-                        let status = crate::board::terminal::outside(terminal, || settings_page::open_in_editor(&file));
-                        self.settings.opened(&file, status);
-                    }
-                    None => self.settings.opened(&file, Err("no terminal to open it in".to_string())),
-                },
-                settings_page::Effect::Handled => {}
-            }
-            return;
+            let effect = self.settings.handle(key);
+            return self.after_settings(effect, terminal);
         }
         if self.at_rest() {
             let ctx = match self.page {

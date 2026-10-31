@@ -1,3 +1,4 @@
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -276,9 +277,70 @@ pub fn modal(frame: &mut Frame, title: String, lines: Vec<Line<'static>>, width:
     area
 }
 
+pub fn modal_spots(frame: &mut Frame, title: String, lines: Vec<Line<'static>>, spots: Vec<(usize, Spot)>, width: usize) -> (Rect, Vec<(Rect, Spot)>) {
+    let width = width.min(frame.area().width.saturating_sub(8) as usize);
+    let rows: Vec<u16> = lines.iter().map(|line| Paragraph::new(line.clone()).wrap(Wrap { trim: false }).line_count(width as u16) as u16).collect();
+    let area = modal(frame, title, lines, width as u16 + 4);
+    let mut hits = Vec::new();
+    for (line, spot) in spots {
+        let y = area.y + 1 + rows[..line].iter().sum::<u16>();
+        if y >= area.bottom().saturating_sub(1) {
+            continue;
+        }
+        match spot {
+            Spot::Choice(_) => hits.push((Rect::new(area.x, y, area.width, rows[line]), spot)),
+            Spot::Key { at, width: hint, .. } if at < width => hits.push((Rect::new(area.x + 2 + at as u16, y, hint.min(width - at) as u16, 1), spot)),
+            Spot::Key { .. } => {}
+        }
+    }
+    (area, hits)
+}
+
 pub fn modal_block(title: String) -> Block<'static> {
     Block::bordered().border_type(BorderType::Rounded).border_style(style(MAUVE)).padding(Padding::horizontal(1))
         .title(Span::styled(format!(" {title} "), bold(MAUVE)))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Spot {
+    Choice(usize),
+    Key { at: usize, width: usize, key: KeyEvent },
+}
+
+pub fn hint_line(lines: &mut Vec<Line<'static>>, spots: &mut Vec<(usize, Spot)>, parts: &[(&str, Option<KeyEvent>)]) {
+    let mut at = 0;
+    for (index, (text, key)) in parts.iter().enumerate() {
+        let width = Span::raw(*text).width();
+        if let Some(key) = key {
+            spots.push((lines.len(), Spot::Key { at, width, key: *key }));
+        }
+        at += width + if index + 1 < parts.len() { 3 } else { 0 };
+    }
+    let text = parts.iter().map(|(text, _)| *text).collect::<Vec<_>>().join(" · ");
+    lines.push(Line::from(Span::styled(text, style(MUTED))));
+}
+
+// The about wraps under its own column, so each row's text stays beside its label; one Line per row the caller places.
+pub fn choice_lines(selected: bool, label: &str, label_width: usize, about: &str, about_color: Color, width: usize) -> Vec<Line<'static>> {
+    let label = if text_width(label) < label_width { label.to_string() } else { format!("{label} ") };
+    let indent = 1 + label_width.max(text_width(&label));
+    let mut abouts = wrap(about, width.saturating_sub(indent), usize::MAX).into_iter();
+    let label_style = if selected { bold(TEXT) } else { style(TEXT) };
+    let bar = if selected { Span::styled("▌", style(MAUVE)) } else { Span::raw(" ") };
+    let mut lines = vec![Line::from(vec![bar, Span::styled(format!("{label:<label_width$}"), label_style), Span::styled(abouts.next().unwrap_or_default(), style(about_color))])];
+    lines.extend(abouts.map(|text| Line::from(vec![Span::raw(" ".repeat(indent)), Span::styled(text, style(about_color))])));
+    lines.into_iter().map(|line| if selected { line.style(Style::new().bg(SURFACE)) } else { line }).collect()
+}
+
+pub fn confirm_lines(name: &str, about: Option<&str>, question: &str, nudged: bool) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(name.to_string(), style(TEXT)))];
+    lines.extend(about.map(|about| Line::from(Span::styled(about.to_string(), style(MUTED)))));
+    lines.push(Line::default());
+    lines.push(Line::from(vec![Span::styled(question.to_string(), style(YELLOW)), Span::styled("  y / n", style(MUTED))]));
+    if nudged {
+        lines.push(Line::from(Span::styled("press y or n", style(PEACH))));
+    }
+    lines
 }
 
 pub fn options_lines(choices: Vec<Choice>, index: usize, width: usize) -> Vec<Line<'static>> {
@@ -349,6 +411,15 @@ mod tests {
         terminal.draw(|frame| { modal(frame, "push".to_string(), lines, 96); }).unwrap();
         let screen: String = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
         assert!(screen.contains("y push · esc cancel"), "{screen}");
+    }
+
+    #[test]
+    fn a_choices_long_about_wraps_under_its_own_column_and_a_long_label_keeps_a_space() {
+        let shown: Vec<String> = choice_lines(true, "Codex", 20, "codex-cli 0.163.0 · kebbie's plugin not installed: kebbie setup codex", MUTED, 64).iter().map(Line::to_string).collect();
+        assert_eq!(shown, ["▌Codex               codex-cli 0.163.0 · kebbie's plugin not", "                     installed: kebbie setup codex"], "the about's second row starts under its first, never at the bar");
+        let long: Vec<String> = choice_lines(false, "Copy of a-long-name.md", 20, "to change it", MUTED, 64).iter().map(Line::to_string).collect();
+        assert_eq!(long, [" Copy of a-long-name.md to change it"]);
+        assert_eq!(choice_lines(false, "None", 20, "", MUTED, 64).len(), 1, "an answer without an about is one row");
     }
 
     #[test]

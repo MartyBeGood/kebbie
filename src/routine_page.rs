@@ -9,10 +9,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, Mous
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::Paragraph;
 
 use crate::board::keys_window;
-use crate::board::widgets::{BLUE, Choice, FAINT, GREEN, MAUVE, MUTED, PEACH, RED, SURFACE, TEXT, YELLOW, bold, choice, column_title, cut, menu_lines, modal, render_column, style, wrap};
+use crate::board::widgets::{BLUE, Choice, FAINT, GREEN, MAUVE, MUTED, PEACH, RED, SURFACE, TEXT, bold, choice, column_title, confirm_lines, cut, menu_lines, modal, modal_spots, render_column, style, wrap};
 use crate::keys::{self, Act, Ctx};
 use crate::peers;
 use crate::routine_file;
@@ -788,31 +788,14 @@ impl Page {
                 let (now, offset) = self.now();
                 let width = 64.min(frame.area().width.saturating_sub(8) as usize);
                 let (lines, spots) = wizard.view(now, offset, width);
-                let rows: Vec<u16> = lines.iter().map(|line| Paragraph::new(line.clone()).wrap(Wrap { trim: false }).line_count(width as u16) as u16).collect();
-                let area = modal(frame, wizard.title(), lines, width as u16 + 4);
-                for (line, spot) in spots {
-                    let y = area.y + 1 + rows[..line].iter().sum::<u16>();
-                    if y >= area.bottom().saturating_sub(1) {
-                        continue;
-                    }
-                    match spot {
-                        Spot::Choice(index) => modal_hits.push((Rect::new(area.x, y, area.width, rows[line]), Hit::Choice(index))),
-                        Spot::Key { at, width: hint, key } if at < width => modal_hits.push((Rect::new(area.x + 2 + at as u16, y, hint.min(width - at) as u16, 1), Hit::Key(key))),
-                        Spot::Key { .. } => {}
-                    }
-                }
+                let (_, spots) = modal_spots(frame, wizard.title(), lines, spots, width);
+                modal_hits.extend(spots.into_iter().map(|(area, spot)| (area, match spot { Spot::Choice(index) => Hit::Choice(index), Spot::Key { key, .. } => Hit::Key(key) })));
             }
             Mode::ConfirmDelete { id, nudged } => {
                 let found = self.rows.iter().find(|(routine, _)| &routine.id == id);
                 let title = found.map_or(id.clone(), |(routine, _)| routine.title.clone());
                 let file = found.map(|(routine, _)| crate::area_page::home_relative(&routine_file::file_of(routine))).unwrap_or_default();
-                let mut lines = vec![
-                    Line::from(Span::styled(title, style(TEXT))), Line::from(Span::styled(format!("Its [[routines]] table goes from {file}; a run's task that is open stays."), style(MUTED))),
-                    Line::default(), Line::from(vec![Span::styled("Delete this routine?", style(YELLOW)), Span::styled("  y / n", style(MUTED))]),
-                ];
-                if *nudged {
-                    lines.push(Line::from(Span::styled("press y or n", style(PEACH))));
-                }
+                let lines = confirm_lines(&title, Some(&format!("Its [[routines]] table goes from {file}; a run's task that is open stays.")), "Delete this routine?", *nudged);
                 modal(frame, "delete".to_string(), lines, 72);
             }
             Mode::Working { label, .. } => {

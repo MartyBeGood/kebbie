@@ -20,10 +20,11 @@ impl App {
             return;
         }
         if self.page == Page::Settings {
-            if let MouseEventKind::ScrollUp | MouseEventKind::ScrollDown = event.kind {
-                let _ = self.settings.handle(KeyEvent::from(if event.kind == MouseEventKind::ScrollUp { KeyCode::Up } else { KeyCode::Down }));
-            }
-            return;
+            let effect = match event.kind {
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => self.settings.handle(KeyEvent::from(if event.kind == MouseEventKind::ScrollUp { KeyCode::Up } else { KeyCode::Down })),
+                _ => self.settings.mouse(event),
+            };
+            return self.after_settings(effect, Some(terminal));
         }
         if self.page == Page::Routines {
             let effect = self.routines.mouse(event, Some(terminal));

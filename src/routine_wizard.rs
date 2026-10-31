@@ -4,7 +4,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::board::widgets::{FAINT, GREEN, MAUVE, MUTED, RED, SURFACE, TEAL, TEXT, bold, cut, style, wrap};
+pub use crate::board::widgets::Spot;
+use crate::board::widgets::{FAINT, GREEN, MAUVE, MUTED, RED, SURFACE, TEAL, TEXT, bold, choice_lines, cut, hint_line as hints, style, wrap};
 use crate::routine_file::{self, Draft};
 use crate::routine_page::{first_when, schedule_words};
 use crate::routines::{Mode, Routine, Schedule, State};
@@ -42,12 +43,6 @@ pub struct Repo {
     pub shown: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Spot {
-    Choice(usize),
-    Key { at: usize, width: usize, key: KeyEvent },
-}
-
 pub enum Step {
     Stay,
     Cancel,
@@ -68,19 +63,6 @@ pub struct Wizard {
     pub taken: Vec<String>,
     pub file: PathBuf,
     pub default_repo: Option<String>,
-}
-
-fn hints(lines: &mut Vec<Line<'static>>, spots: &mut Vec<(usize, Spot)>, parts: &[(&str, Option<KeyEvent>)]) {
-    let mut at = 0;
-    for (index, (text, key)) in parts.iter().enumerate() {
-        let width = Span::raw(*text).width();
-        if let Some(key) = key {
-            spots.push((lines.len(), Spot::Key { at, width, key: *key }));
-        }
-        at += width + if index + 1 < parts.len() { 3 } else { 0 };
-    }
-    let text = parts.iter().map(|(text, _)| *text).collect::<Vec<_>>().join(" · ");
-    lines.push(Line::from(Span::styled(text, style(MUTED))));
 }
 
 fn suggested_title(prompt: &str) -> String {
@@ -250,13 +232,6 @@ impl Wizard {
         }).collect()
     }
 
-    fn choice(selected: bool, label: &str, width: usize, about: &str, about_color: ratatui::style::Color) -> Line<'static> {
-        let bar = if selected { Span::styled("▌", style(MAUVE)) } else { Span::raw(" ") };
-        let label_style = if selected { bold(TEXT) } else { style(TEXT) };
-        let line = Line::from(vec![bar, Span::styled(format!("{label:<width$}"), label_style), Span::styled(about.to_string(), style(about_color))]);
-        if selected { line.style(Style::new().bg(SURFACE)) } else { line }
-    }
-
     // The second value is each clickable spot with the line it is drawn on.
     pub fn view(&self, now: u64, offset: i64, width: usize) -> (Vec<Line<'static>>, Vec<(usize, Spot)>) {
         let mut spots = Vec::new();
@@ -283,8 +258,10 @@ impl Wizard {
                 let name_width = shown.iter().map(|repo| repo.name.chars().count()).max().unwrap_or(0) + 3;
                 let first = self.repo_index.saturating_sub(7);
                 for (index, repo) in shown.iter().enumerate().skip(first).take(8) {
-                    spots.push((lines.len(), Spot::Choice(index)));
-                    lines.push(Self::choice(index == self.repo_index, &repo.name, name_width, &repo.shown, MUTED));
+                    for line in choice_lines(index == self.repo_index, &repo.name, name_width, &repo.shown, MUTED, width) {
+                        spots.push((lines.len(), Spot::Choice(index)));
+                        lines.push(line);
+                    }
                 }
                 if shown.is_empty() {
                     lines.push(muted(if self.filter.trim().is_empty() { "No checkouts found under your repo folders; type the repo's path.".to_string() } else { format!("⏎ uses \"{}\" as the repo", self.filter.trim()) }));
@@ -309,8 +286,10 @@ impl Wizard {
                 lines.push(heading("What may it do?"));
                 lines.push(Line::default());
                 for (index, (label, about)) in MODES.iter().enumerate() {
-                    spots.push((lines.len(), Spot::Choice(index)));
-                    lines.push(Self::choice(index == self.mode, label, 14, about, MUTED));
+                    for line in choice_lines(index == self.mode, label, 14, about, MUTED, width) {
+                        spots.push((lines.len(), Spot::Choice(index)));
+                        lines.push(line);
+                    }
                 }
                 lines.push(Line::default());
                 hints(&mut lines, &mut spots, &[("↑ ↓ choose", None), ("⏎ next", Some(KeyCode::Enter.into()))]);

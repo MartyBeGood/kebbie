@@ -1,15 +1,15 @@
 use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::agent::Agent;
 use crate::agent::codex::CachedModel;
-use crate::board::widgets::{BLUE, FAINT, GREEN, MANTLE, MAUVE, MUTED, PEACH, RED, SUBTEXT, SURFACE, TEAL, TEXT, YELLOW, bold, cut, modal, style, text_width, wrap};
+use crate::board::widgets::{BLUE, FAINT, GREEN, MANTLE, MAUVE, MUTED, PEACH, RED, SUBTEXT, SURFACE, Spot, TEAL, TEXT, YELLOW, bold, choice_lines, cut, hint_line, modal, modal_spots, style, text_width, wrap};
 use crate::config::{self, Entry, Kind, Layer, Scope};
 use crate::config_edit::{self, Set};
 use crate::profiles::{self, Edited, Profile};
@@ -78,47 +78,74 @@ impl Field {
 }
 
 #[derive(Clone, Debug)]
-struct Choice {
-    label: String,
-    about: String,
-    set: Option<Option<String>>,
-    now: bool,
-    dim: bool,
-    gap: bool,
-}
-
-impl Choice {
-    fn value(label: &str, about: &str, now: bool) -> Self {
-        Choice { label: label.to_string(), about: about.to_string(), set: Some(Some(label.to_string())), now, dim: false, gap: false }
-    }
-}
-
-struct Chooser {
-    field: Field,
-    title: String,
-    head: String,
-    choices: Vec<Choice>,
-    index: usize,
-    foot: Vec<String>,
+enum Then {
+    Write(Change),
+    Type(Typed),
+    Field(Field, Option<String>),
+    TypeModel,
 }
 
 #[derive(Clone, Debug)]
-struct Pick {
+struct Choice {
     label: String,
     about: String,
     then: Then,
     now: bool,
 }
 
-#[derive(Clone, Debug)]
-enum Then {
-    Write(Change),
-    Type(Typed),
+impl Choice {
+    fn new(label: &str, about: &str, then: Then, now: bool) -> Self {
+        Choice { label: label.to_string(), about: if now { now_about(about) } else { about.to_string() }, then, now }
+    }
 }
+
+fn now_about(about: &str) -> String {
+    if about.is_empty() { "now".to_string() } else { format!("{about} · now") }
+}
+
+struct Chooser {
+    title: String,
+    question: String,
+    explain: String,
+    choices: Vec<Choice>,
+    index: usize,
+    foot: Vec<String>,
+}
+
+impl Chooser {
+    fn new(title: String, question: &str, explain: String, choices: Vec<Choice>, foot: Vec<String>) -> Self {
+        let index = choices.iter().position(|choice| choice.now).unwrap_or(0);
+        Chooser { title, question: question.to_string(), explain, choices, index, foot }
+    }
+
+    fn view(&self, width: usize) -> (Vec<Line<'static>>, Vec<(usize, Spot)>) {
+        let mut spots = Vec::new();
+        let mut lines = vec![Line::from(Span::styled(self.question.clone(), bold(MAUVE)))];
+        lines.extend(wrap(&self.explain, width, 6).into_iter().map(|text| Line::from(Span::styled(text, style(MUTED)))));
+        lines.push(Line::default());
+        let label_width = self.choices.iter().map(|choice| text_width(&choice.label) + 1).filter(|width| *width <= 28).max().unwrap_or(0).max(20);
+        for (at, choice) in self.choices.iter().enumerate() {
+            for line in choice_lines(at == self.index, &choice.label, label_width, &choice.about, MUTED, width) {
+                spots.push((lines.len(), Spot::Choice(at)));
+                lines.push(line);
+            }
+        }
+        lines.push(Line::default());
+        if !self.foot.is_empty() {
+            for text in &self.foot {
+                lines.extend(wrap(text, width, 4).into_iter().map(|text| Line::from(Span::styled(text, style(MUTED)))));
+            }
+            lines.push(Line::default());
+        }
+        hint_line(&mut lines, &mut spots, &[("↑ ↓ choose", None), ("⏎ set", Some(KeyCode::Enter.into())), ("esc close", Some(KeyCode::Esc.into()))]);
+        (lines, spots)
+    }
+}
+
+const POPUP: usize = 64;
 
 enum Mode {
     Normal,
-    Pick { picks: Vec<Pick>, index: usize },
     Edit { typed: Typed, buffer: String },
     Filter { buffer: String },
     Team { key: &'static str, change: Change },
@@ -160,6 +187,7 @@ pub struct Page {
     entries: Vec<Entry>,
     error: Option<String>,
     agents: Agents,
+    hits: Vec<(Rect, Spot)>,
 }
 
 #[derive(Default)]
@@ -273,7 +301,7 @@ pub fn copy_skill(kebbie: &Path, claude_home: &Path, skill: &str) -> Result<(Pat
 
 impl Page {
     pub fn new(paths: Paths, repo: Option<PathBuf>) -> Self {
-        Page { paths, repo, tab: Tab::Machine, section: 0, row: 0, filter: String::new(), mode: Mode::Normal, said: None, entries: Vec::new(), error: None, agents: Agents::default() }
+        Page { paths, repo, tab: Tab::Machine, section: 0, row: 0, filter: String::new(), mode: Mode::Normal, said: None, entries: Vec::new(), error: None, agents: Agents::default(), hits: Vec::new() }
     }
 
     pub fn is_normal(&self) -> bool {
@@ -373,41 +401,36 @@ impl Page {
         self.said = Some((text, color));
     }
 
-    fn picks(&self, entry: &Entry) -> Vec<Pick> {
+    fn chooser(&self, entry: &Entry) -> Chooser {
         let now = edit_text(&entry.value);
-        match &entry.kind {
-            Kind::Choice(options) => options.iter().map(|option| {
-                let now = *option == now || (*option == "none" && entry.value == "none");
-                Pick {
-                    label: if *option == "none" { "none".to_string() } else { format!("{option:?}") },
-                    about: if now { "now".to_string() } else { String::new() },
-                    then: Then::Write(if *option == "none" { Change::Remove } else { Change::Set(Set::Text(option.to_string())) }),
-                    now,
-                }
-            }).collect(),
+        let (question, choices) = match &entry.kind {
+            Kind::Choice(options) => ("Which value?", options.iter().map(|option| {
+                let none = *option == "none";
+                let label = if none { "none".to_string() } else { format!("{option:?}") };
+                Choice::new(&label, "", Then::Write(if none { Change::Remove } else { Change::Set(Set::Text(option.to_string())) }), *option == now || (none && entry.value == "none"))
+            }).collect()),
             Kind::Profile => {
                 let set = (entry.layer != Layer::Default).then_some(now);
-                let mut picks = vec![Pick { label: format!("none ({})", profiles::TASK), about: "the built-in task".to_string(), then: Then::Write(Change::Remove), now: set.is_none() }];
-                picks.extend(self.agents.profiles.iter().filter(|profile| profile.name != profiles::REVIEWER).map(|profile| Pick {
-                    label: format!("{:?}", profile.name),
-                    about: if profile.fits.is_empty() { "(for not said)".to_string() } else { profile.fits.clone() },
-                    then: Then::Write(Change::Set(Set::Text(profile.name.clone()))),
-                    now: set.as_deref() == Some(profile.name.as_str()),
+                let mut choices = vec![Choice::new(&format!("none ({})", profiles::TASK), "the built-in task", Then::Write(Change::Remove), set.is_none())];
+                choices.extend(self.agents.profiles.iter().filter(|profile| profile.name != profiles::REVIEWER).map(|profile| {
+                    let about = if profile.fits.is_empty() { "(for not said)" } else { profile.fits.as_str() };
+                    Choice::new(&format!("{:?}", profile.name), about, Then::Write(Change::Set(Set::Text(profile.name.clone()))), set.as_deref() == Some(profile.name.as_str()))
                 }));
-                picks
+                ("Which profile?", choices)
             }
             Kind::Skill => {
                 let default = default_skill(entry.key);
                 let skill = default.split_once(':').map_or(default, |(_, skill)| skill);
-                vec![
-                    Pick { label: format!("{default:?}"), about: "built in".to_string(), then: Then::Write(Change::Set(Set::Text(default.to_string()))), now: false },
-                    Pick { label: "Your skill, by name".to_string(), about: "<skill> or <plugin>:<skill>".to_string(), then: Then::Type(Typed::SkillName), now: false },
-                    Pick { label: "A Markdown file, by path".to_string(), about: "an absolute or ~ path to a .md file".to_string(), then: Then::Type(Typed::SkillFile), now: false },
-                    Pick { label: format!("Copy kebbie's to {}/{skill} and edit it", home_relative(&self.paths.claude_home.join("skills"))), about: format!("then the key names \"{skill}\""), then: Then::Write(Change::Copy(skill)), now: false },
-                ]
+                ("Which skill?", vec![
+                    Choice::new(&format!("{default:?}"), "built in", Then::Write(Change::Set(Set::Text(default.to_string()))), false),
+                    Choice::new("Your skill, by name", "<skill> or <plugin>:<skill>", Then::Type(Typed::SkillName), false),
+                    Choice::new("A Markdown file, by path", "an absolute or ~ path to a .md file", Then::Type(Typed::SkillFile), false),
+                    Choice::new(&format!("Copy kebbie's to {}/{skill} and edit it", home_relative(&self.paths.claude_home.join("skills"))), &format!("then the key names \"{skill}\""), Then::Write(Change::Copy(skill)), false),
+                ])
             }
-            _ => Vec::new(),
-        }
+            _ => ("", Vec::new()),
+        };
+        Chooser::new(entry.key.to_string(), question, entry.about.clone(), choices, Vec::new())
     }
 
     pub fn paste(&mut self, text: &str) -> bool {
@@ -441,21 +464,6 @@ impl Page {
                 }
                 _ => self.mode = Mode::Filter { buffer },
             },
-            Mode::Pick { picks, index } => match key.code {
-                KeyCode::Up | KeyCode::Char('k') => self.mode = Mode::Pick { index: index.saturating_sub(1), picks },
-                KeyCode::Down | KeyCode::Char('j') => self.mode = Mode::Pick { index: (index + 1).min(picks.len().saturating_sub(1)), picks },
-                KeyCode::Enter => match (picks.get(index).map(|pick| pick.then.clone()), self.current()) {
-                    (Some(Then::Write(change)), Some(entry)) => self.request(entry.key, change),
-                    (Some(Then::Type(typed)), Some(entry)) => {
-                        let now = edit_text(&entry.value);
-                        let keep = match typed { Typed::SkillFile => config::skill_path(&now).is_some(), _ => now != default_skill(entry.key) && config::skill_path(&now).is_none() };
-                        self.mode = Mode::Edit { typed, buffer: if keep { now } else { String::new() } };
-                    }
-                    _ => {}
-                },
-                KeyCode::Esc | KeyCode::Char('q') => {}
-                _ => self.mode = Mode::Pick { picks, index },
-            },
             Mode::Edit { typed, mut buffer } => match key.code {
                 KeyCode::Enter => self.save_typed(typed, &buffer),
                 KeyCode::Esc => {}
@@ -479,11 +487,11 @@ impl Page {
                     chooser.index = (chooser.index + 1).min(chooser.choices.len().saturating_sub(1));
                     self.mode = Mode::Choose(chooser);
                 }
-                KeyCode::Enter => match chooser.choices.get(chooser.index).map(|choice| choice.set.clone()) {
-                    Some(Some(value)) => self.set_field(chooser.field, value.as_deref()),
-                    Some(None) => self.mode = Mode::Edit { typed: Typed::Model, buffer: self.profile().and_then(|profile| self.agents.own_model(&profile)).unwrap_or_default() },
-                    None => {}
-                },
+                KeyCode::Enter => {
+                    if let Some(choice) = chooser.choices.into_iter().nth(chooser.index) {
+                        self.then(choice.then);
+                    }
+                }
                 KeyCode::Esc | KeyCode::Char('q') => {}
                 _ => self.mode = Mode::Choose(chooser),
             },
@@ -493,6 +501,35 @@ impl Page {
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {}
                 _ => self.mode = Mode::Team { key: name, change },
             },
+        }
+        Effect::Handled
+    }
+
+    fn then(&mut self, then: Then) {
+        match (then, self.current()) {
+            (Then::Field(field, value), _) => self.set_field(field, value.as_deref()),
+            (Then::TypeModel, _) => self.mode = Mode::Edit { typed: Typed::Model, buffer: self.profile().and_then(|profile| self.agents.own_model(&profile)).unwrap_or_default() },
+            (Then::Write(change), Some(entry)) => self.request(entry.key, change),
+            (Then::Type(typed), Some(entry)) => {
+                let now = edit_text(&entry.value);
+                let keep = match typed { Typed::SkillFile => config::skill_path(&now).is_some(), _ => now != default_skill(entry.key) && config::skill_path(&now).is_none() };
+                self.mode = Mode::Edit { typed, buffer: if keep { now } else { String::new() } };
+            }
+            _ => {}
+        }
+    }
+
+    pub fn mouse(&mut self, event: MouseEvent) -> Effect {
+        if event.kind != MouseEventKind::Down(MouseButton::Left) {
+            return Effect::Handled;
+        }
+        let hit = self.hits.iter().find(|(area, _)| area.contains(Position::new(event.column, event.row))).map(|(_, spot)| *spot);
+        match (hit, &mut self.mode) {
+            (Some(Spot::Choice(at)), Mode::Choose(chooser)) if chooser.index != at => chooser.index = at,
+            (Some(Spot::Choice(_)), _) => return self.handle(KeyCode::Enter.into()),
+            (Some(Spot::Key { key, .. }), _) => return self.handle(key),
+            (None, Mode::Choose(_)) => self.mode = Mode::Normal,
+            _ => {}
         }
         Effect::Handled
     }
@@ -572,11 +609,7 @@ impl Page {
         let Some(entry) = self.current() else { return };
         match entry.kind {
             Kind::Bool => self.request(entry.key, Change::Set(Set::Bool(entry.value != "true"))),
-            Kind::Choice(_) | Kind::Skill | Kind::Profile => {
-                let picks = self.picks(&entry);
-                let index = picks.iter().position(|pick| pick.now).unwrap_or(0);
-                self.mode = Mode::Pick { picks, index };
-            }
+            Kind::Choice(_) | Kind::Skill | Kind::Profile => self.mode = Mode::Choose(Box::new(self.chooser(&entry))),
             Kind::Secret => self.say(format!("{} is never shown here; set it in {} by hand", entry.key, home_relative(&self.paths.machine)), MUTED),
             Kind::Text | Kind::Number | Kind::List => self.mode = Mode::Edit { typed: Typed::Value, buffer: edit_text(&entry.value) },
         }
@@ -662,78 +695,84 @@ impl Page {
         let key = field.key();
         if field == Field::Model && profile.name == profiles::REVIEWER {
             let file = home_relative(&self.file());
-            return vec![format!("writes review.model = \"…\" in {file}, ahead of the reviewer profile's model"), "a review already running keeps its model; the next review takes it".to_string()];
+            return vec![format!("This writes review.model in {file}, ahead of the reviewer profile's model."), "A review already running keeps its model; the next review takes it.".to_string()];
         }
+        let running = format!("A task already running keeps its {key}; the next start takes it.");
         if self.built_in_without_file(profile) {
-            return vec![format!("{name} is built in: setting a {key} writes profiles/{name}.toml with {key} alone, and the built-in's role and rules stay as they are.", name = profile.name), "d on the row removes that file again.".to_string(), format!("a task already running keeps its {key}; the next start takes it")];
+            return vec![format!("{name} is kebbie's: a {key} you set goes in profiles/{name}.toml, which an update never writes, and kebbie's role and rules stay as they ship. d on the row removes that file again.", name = profile.name), running];
         }
-        let file = profile.file.as_deref().map(|file| self.shown_file(file)).unwrap_or_default();
-        let file = file.trim_start_matches("profiles/");
-        vec![format!("writes {key} = \"…\" in {file}, the rest stays as it is"), format!("a task already running keeps its {key}; the next start takes it")]
+        vec![running]
     }
 
-    fn choose(&mut self, field: Field) -> Effect {
-        let Some(profile) = self.profile() else { return Effect::Handled };
+    fn model_choices(&self, agent: Agent, current: Option<&str>, reviewer: Option<&Profile>) -> (String, Vec<Choice>) {
         let agents = &self.agents;
-        let built_in = if self.built_in_without_file(&profile) { format!("; {} is built in", profile.name) } else { String::new() };
-        let (title, head, choices) = match (field, profile.agent) {
-            (Field::Model, Agent::Codex) => {
+        match agent {
+            Agent::Codex => {
                 let cache = home_relative(&self.paths.codex_home.join("models_cache.json"));
-                let listed: Vec<&CachedModel> = agents.codex_models.iter().flatten().filter(|model| model.listed).collect();
-                let head = if agents.codex_models.is_some() { format!("Codex's own list for your account ({cache})") } else { format!("no list from Codex at {cache}: Codex writes it when it starts") };
-                let mut choices: Vec<Choice> = listed.iter().map(|model| Choice { label: model.name.clone(), about: model.slug.clone(), set: Some(Some(model.slug.clone())), now: profile.model.as_deref() == Some(model.slug.as_str()), dim: false, gap: false }).collect();
+                let explain = if agents.codex_models.is_some() { "Codex's own list for your account.".to_string() } else { format!("No list from Codex at {cache}: Codex writes it when it starts.") };
+                let mut choices: Vec<Choice> = agents.codex_models.iter().flatten().filter(|model| model.listed).map(|model| Choice::new(&model.name, &model.slug, Then::Field(Field::Model, Some(model.slug.clone())), current == Some(model.slug.as_str()))).collect();
                 let default = match agents.codex_default.as_deref() {
                     Some(model) if agents.offered(model) == Some(false) => format!("{model}, not offered to you ⚠"),
                     Some(model) => model.to_string(),
                     None => "none in Codex's config.toml: Codex picks".to_string(),
                 };
-                choices.push(Choice { label: "Codex's default".to_string(), about: default, set: Some(None), now: profile.model.is_none(), dim: true, gap: !choices.is_empty() });
-                choices.push(Choice { label: "Type a model…".to_string(), about: "any id Codex accepts".to_string(), set: None, now: false, dim: true, gap: false });
-                (format!("{} · model", profile.name), head, choices)
+                choices.push(Choice::new("Codex's default", &default, Then::Field(Field::Model, None), current.is_none()));
+                choices.push(Choice::new("Type a model…", "any id Codex accepts", Then::TypeModel, false));
+                (explain, choices)
             }
-            (Field::Model, Agent::Claude) => {
+            Agent::Claude => {
                 let settings = home_relative(&self.paths.claude_home.join("settings.json"));
                 let default = match agents.claude_default.as_deref() {
                     Some(model) => format!("{model}, from {settings}"),
                     None => format!("none in {settings}: Claude Code picks"),
                 };
-                let reviewer = profile.name == profiles::REVIEWER;
-                let current = if reviewer { agents.review_model(&profile).map(str::to_string) } else { profile.model.clone() };
-                let (label, default) = match (reviewer, &profile.model) {
-                    (true, Some(model)) => ("The profile's".to_string(), format!("{model}, from reviewer.toml")),
-                    _ => ("Claude's default".to_string(), default),
+                let (label, default) = match reviewer.and_then(|profile| profile.model.as_ref()) {
+                    Some(model) => ("The profile's".to_string(), format!("{model}, from reviewer.toml")),
+                    None => ("Claude's default".to_string(), default),
                 };
-                let mut choices = vec![Choice { label, about: default, set: Some(None), now: current.is_none(), dim: true, gap: false }];
-                choices.extend(CLAUDE_MODELS.iter().map(|(name, about)| Choice::value(name, about, current.as_deref() == Some(*name))));
-                choices.push(Choice { label: "Type a model…".to_string(), about: "a full id, as claude-opus-5-5".to_string(), set: None, now: false, dim: true, gap: false });
-                let head = if reviewer { "Claude Code's model names; m sets review.model, which kebbie review runs".to_string() } else { format!("Claude Code's model names{built_in}") };
-                (format!("{} · model", profile.name), head, choices)
+                let mut choices = vec![Choice::new(&label, &default, Then::Field(Field::Model, None), current.is_none())];
+                choices.extend(CLAUDE_MODELS.iter().map(|(name, about)| Choice::new(name, about, Then::Field(Field::Model, Some(name.to_string())), current == Some(*name))));
+                choices.push(Choice::new("Type a model…", "a full id, as claude-opus-5-5", Then::TypeModel, false));
+                let explain = if reviewer.is_some() { "Claude Code's model names; this sets review.model, which kebbie review runs.".to_string() } else { "Claude Code's model names.".to_string() };
+                (explain, choices)
             }
-            (Field::Effort, agent) => {
-                let model = agents.model(&profile);
-                let cached = model.as_deref().and_then(|model| agents.cached(model)).filter(|_| agent == Agent::Codex);
-                let shown = model.clone().unwrap_or_else(|| format!("{}'s default", agent.name()));
-                let (levels, default, head): (Vec<String>, Option<String>, String) = match (agent, cached) {
-                    (Agent::Codex, Some(cached)) => (cached.efforts.iter().filter(|level| profiles::CODEX_EFFORTS.contains(&level.as_str())).cloned().collect(), cached.default_effort.clone(), format!("the levels {} takes, from Codex's list", cached.name)),
-                    (Agent::Codex, None) => (profiles::CODEX_EFFORTS.map(str::to_string).to_vec(), None, format!("{shown} is not in Codex's list, so these are every level Codex takes")),
-                    (Agent::Claude, _) => (profiles::EFFORTS.map(str::to_string).to_vec(), None, "Claude Code's effort levels".to_string()),
-                };
-                let mut choices: Vec<Choice> = levels.iter().map(|level| {
-                    let about = if default.as_deref() == Some(level.as_str()) { "Codex's default for this model" } else if level == "ultra" { "only some Codex models" } else { "" };
-                    Choice::value(level, about, profile.effort.as_deref() == Some(level.as_str()))
-                }).collect();
-                let leave = match (agent, &default) {
-                    (Agent::Codex, Some(level)) => format!("leave it to Codex: {level}"),
-                    _ => format!("leave it to {}", agent.name()),
-                };
-                choices.push(Choice { label: "Default".to_string(), about: leave, set: Some(None), now: profile.effort.is_none(), dim: true, gap: true });
-                (format!("{} · effort, for {shown}", profile.name), head, choices)
-            }
+        }
+    }
+
+    fn effort_choices(&self, agent: Agent, model: Option<&str>, current: Option<&str>) -> (String, Vec<Choice>) {
+        let agents = &self.agents;
+        let cached = model.and_then(|model| agents.cached(model)).filter(|_| agent == Agent::Codex);
+        let shown = model.map_or_else(|| format!("{}'s default", agent.name()), str::to_string);
+        let (levels, default, explain): (Vec<String>, Option<String>, String) = match (agent, cached) {
+            (Agent::Codex, Some(cached)) => (cached.efforts.iter().filter(|level| profiles::CODEX_EFFORTS.contains(&level.as_str())).cloned().collect(), cached.default_effort.clone(), format!("The levels {} takes, from Codex's list.", cached.name)),
+            (Agent::Codex, None) => (profiles::CODEX_EFFORTS.map(str::to_string).to_vec(), None, format!("{shown} is not in Codex's list, so these are every level Codex takes.")),
+            (Agent::Claude, _) => (profiles::EFFORTS.map(str::to_string).to_vec(), None, format!("Claude Code's effort levels, for {shown}.")),
         };
-        let foot = if field == Field::Model { self.foot(&profile, field) } else { Vec::new() };
-        let index = choices.iter().position(|choice| choice.now).unwrap_or(0);
+        let mut choices: Vec<Choice> = levels.iter().map(|level| {
+            let about = if default.as_deref() == Some(level.as_str()) { "Codex's default for this model" } else if level == "ultra" { "only some Codex models" } else { "" };
+            Choice::new(level, about, Then::Field(Field::Effort, Some(level.clone())), current == Some(level.as_str()))
+        }).collect();
+        let leave = match (agent, &default) {
+            (Agent::Codex, Some(level)) => format!("leave it to Codex: {level}"),
+            _ => format!("leave it to {}", agent.name()),
+        };
+        choices.push(Choice::new("Default", &leave, Then::Field(Field::Effort, None), current.is_none()));
+        (explain, choices)
+    }
+
+    fn choose(&mut self, field: Field) -> Effect {
+        let Some(profile) = self.profile() else { return Effect::Handled };
+        let reviewer = profile.name == profiles::REVIEWER;
+        let (question, (explain, choices)) = match field {
+            Field::Model => {
+                let current = if reviewer { self.agents.review_model(&profile).map(str::to_string) } else { profile.model.clone() };
+                ("Which model?", self.model_choices(profile.agent, current.as_deref(), reviewer.then_some(&profile)))
+            }
+            Field::Effort => ("How much effort?", self.effort_choices(profile.agent, self.agents.model(&profile).as_deref(), profile.effort.as_deref())),
+        };
+        let foot = self.foot(&profile, field);
         self.said = None;
-        self.mode = Mode::Choose(Box::new(Chooser { field, title, head, choices, index, foot }));
+        self.mode = Mode::Choose(Box::new(Chooser::new(format!("{} · {}", field.key(), profile.name), question, explain, choices, foot)));
         Effect::Handled
     }
 
@@ -919,30 +958,6 @@ impl Page {
         (lines, selected)
     }
 
-    fn chooser_lines(chooser: &Chooser) -> Vec<Line<'static>> {
-        let mut lines = vec![Line::from(Span::styled(chooser.head.clone(), style(MUTED))), Line::default()];
-        for (at, choice) in chooser.choices.iter().enumerate() {
-            if choice.gap {
-                lines.push(Line::default());
-            }
-            let chosen = at == chooser.index;
-            let label = if chosen { bold(MAUVE) } else if choice.dim { style(MUTED) } else { style(TEXT) };
-            lines.push(Line::from(vec![
-                Span::styled(if chosen { "▸ " } else { "  " }, style(MAUVE)),
-                Span::styled(if choice.now { "● " } else { "  " }, style(GREEN)),
-                Span::styled(format!("{:<18}", choice.label), label),
-                Span::styled(choice.about.clone(), style(MUTED)),
-            ]).style(if chosen { Style::new().bg(SURFACE) } else { Style::new() }));
-        }
-        lines.push(Line::default());
-        if !chooser.foot.is_empty() {
-            lines.extend(chooser.foot.iter().map(|text| Line::from(Span::styled(text.clone(), style(MUTED)))));
-            lines.push(Line::default());
-        }
-        lines.push(Line::from(Span::styled("↑ ↓ choose · ⏎ set · esc close", style(FAINT))));
-        lines
-    }
-
     pub fn draw(&mut self, frame: &mut Frame, body: Rect) {
         let [title, tabs, _, main, said] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1), Constraint::Min(3), Constraint::Length(2)]).areas(body);
         let right = "from the board: , · or kebbie config edit";
@@ -994,21 +1009,12 @@ impl Page {
             let lines: Vec<Line> = wrap(&text, said.width as usize, 2).into_iter().map(|text| Line::from(Span::styled(text, style(color)))).collect();
             frame.render_widget(Paragraph::new(lines), said);
         }
+        self.hits.clear();
         match &self.mode {
-            Mode::Pick { picks, index } => {
-                let title = self.current().map_or_else(String::new, |entry| entry.key.to_string());
-                let mut lines: Vec<Line> = picks.iter().enumerate().map(|(at, pick)| {
-                    let chosen = at == *index;
-                    let about = if pick.about.is_empty() { String::new() } else { format!("  · {}", pick.about) };
-                    Line::from(vec![Span::raw(if chosen { "▸ " } else { "  " }), Span::styled(pick.label.clone(), if chosen { bold(MAUVE) } else { style(TEXT) }), Span::styled(about, style(MUTED))])
-                        .style(if chosen { Style::new().bg(SURFACE) } else { Style::new() })
-                }).collect();
-                lines.push(Line::default());
-                lines.push(Line::from(Span::styled("↑ ↓ choose · ⏎ set · esc close", style(FAINT))));
-                modal(frame, title, lines, 72);
-            }
             Mode::Choose(chooser) => {
-                modal(frame, chooser.title.clone(), Self::chooser_lines(chooser), 72);
+                let width = POPUP.min(frame.area().width.saturating_sub(8) as usize);
+                let (lines, spots) = chooser.view(width);
+                self.hits = modal_spots(frame, chooser.title.clone(), lines, spots, width).1;
             }
             Mode::Team { key, .. } => {
                 let target = std::fs::canonicalize(self.file()).map(|path| home_relative(&path)).unwrap_or_default();
@@ -1215,16 +1221,45 @@ mod tests {
         go_to(&mut fixture.page, "task.also_noticed");
         press(&mut fixture.page, &[KeyCode::Enter]);
         let shown = screen(&mut fixture.page);
-        assert!(shown.contains("▸ \"backlog\"  · now") && shown.contains("\"ask\""), "{shown}");
+        assert!(shown.contains("╭ task.also_noticed ") && shown.contains("│ Which value?") && shown.contains("│ What a task's Claude does with what it notices"), "the key is the title, its text the explanation: {shown}");
+        assert!(shown.contains("│ ▌\"backlog\"           now ") && shown.contains("│  \"ask\"  ") && shown.contains("│ ↑ ↓ choose · ⏎ set · esc close"), "{shown}");
         press(&mut fixture.page, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
         assert_eq!(file(&fixture, "config.toml"), "[task]\nalso_noticed = \"ask\"\n");
         go_to(&mut fixture.page, "task.permission_mode");
         press(&mut fixture.page, &[KeyCode::Enter, KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
         assert!(file(&fixture, "config.toml").contains("permission_mode = \"acceptEdits\""));
         press(&mut fixture.page, &[KeyCode::Enter]);
-        assert!(matches!(fixture.page.mode, Mode::Pick { index: 2, .. }), "the pick opens on the value in effect");
+        assert!(matches!(&fixture.page.mode, Mode::Choose(chooser) if chooser.index == 2), "the pick opens on the value in effect");
         press(&mut fixture.page, &[KeyCode::Up, KeyCode::Up, KeyCode::Enter]);
         assert!(!file(&fixture, "config.toml").contains("permission_mode"), "none leaves it to Claude: the key goes");
+    }
+
+    fn click(page: &mut Page, shown: &str, text: &str) -> Effect {
+        let (row, line) = shown.lines().enumerate().find(|(_, line)| line.contains(text)).unwrap_or_else(|| panic!("{text}: {shown}"));
+        let column = line.chars().collect::<Vec<_>>().windows(text.chars().count()).position(|window| window.iter().collect::<String>() == text).unwrap();
+        page.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: column as u16, row: row as u16, modifiers: KeyModifiers::NONE })
+    }
+
+    #[test]
+    fn a_click_selects_an_answer_takes_it_on_the_second_and_one_beside_the_pick_closes_it() {
+        let mut fixture = fixture("settings-click", "", None);
+        go_to(&mut fixture.page, "task.also_noticed");
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        let shown = screen(&mut fixture.page);
+        click(&mut fixture.page, &shown, "  \"ask\"  ");
+        assert!(matches!(&fixture.page.mode, Mode::Choose(chooser) if chooser.index == 2), "the first click selects");
+        assert_eq!(file(&fixture, "config.toml"), "", "and writes nothing");
+        let shown = screen(&mut fixture.page);
+        click(&mut fixture.page, &shown, "▌\"ask\"");
+        assert_eq!(file(&fixture, "config.toml"), "[task]\nalso_noticed = \"ask\"\n", "the second takes it");
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        let shown = screen(&mut fixture.page);
+        click(&mut fixture.page, &shown, "esc close");
+        assert!(fixture.page.is_normal(), "a key in the hints is pressed by a click");
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        let shown = screen(&mut fixture.page);
+        click(&mut fixture.page, &shown, "Settings");
+        assert!(fixture.page.is_normal(), "a click beside the pick closes it");
     }
 
     #[test]
@@ -1302,7 +1337,7 @@ mod tests {
         go_to(&mut fixture.page, "task.rules_skill");
         press(&mut fixture.page, &[KeyCode::Enter]);
         let shown = screen(&mut fixture.page);
-        assert!(shown.contains("\"kebbie:work-rules\"  · built in") && shown.contains("Your skill, by name") && shown.contains("A Markdown file, by path") && shown.contains("Copy kebbie's to"), "{shown}");
+        assert!(shown.contains("│ Which skill?") && shown.contains("▌\"kebbie:work-rules\"      built in") && shown.contains(" Your skill, by name      <skill> or <plugin>:<skill>") && shown.contains("A Markdown file, by path") && shown.contains("Copy kebbie's to"), "{shown}");
         press(&mut fixture.page, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
         type_text(&mut fixture.page, "~/code/team/RULES.md");
         press(&mut fixture.page, &[KeyCode::Enter]);
@@ -1434,11 +1469,10 @@ mod tests {
         go_to_profile(&mut fixture.page, "codex-build");
         press(&mut fixture.page, &[KeyCode::Char('m')]);
         let (shown, _) = screen_at(&mut fixture.page, 100, 30);
-        assert!(shown.contains("╭ codex-build · model ") && shown.contains("Codex's own list for your account"), "{shown}");
-        assert!(matches!(&fixture.page.mode, Mode::Choose(chooser) if chooser.head.ends_with("codex/models_cache.json)")));
-        assert!(shown.contains("▸ ● GPT-6.1-Sol       gpt-6.1-sol") && shown.contains("    GPT-6-Astra       gpt-6-astra") && shown.contains("    GPT-6.1 Terra     gpt-6.1-terra"), "{shown}");
-        assert!(shown.contains("    Codex's default   gpt-5.1-codex-max, not offered to you ⚠") && shown.contains("    Type a model…     any id Codex accepts"), "{shown}");
-        assert!(shown.contains("writes model = \"…\" in codex-build.toml, the rest stays as it is") && shown.contains("a task already running keeps its model; the next start takes it"), "{shown}");
+        assert!(shown.contains("╭ model · codex-build ") && shown.contains("│ Which model?") && shown.contains("│ Codex's own list for your account."), "{shown}");
+        assert!(shown.contains("│ ▌GPT-6.1-Sol         gpt-6.1-sol · now") && shown.contains("│  GPT-6-Astra         gpt-6-astra") && shown.contains("│  GPT-6.1 Terra       gpt-6.1-terra"), "{shown}");
+        assert!(shown.contains("│  Codex's default     gpt-5.1-codex-max, not offered to you ⚠") && shown.contains("│  Type a model…       any id Codex accepts"), "{shown}");
+        assert!(shown.contains("│ A task already running keeps its model; the next start takes it.") && shown.contains("│ ↑ ↓ choose · ⏎ set · esc close"), "{shown}");
         assert!(matches!(&fixture.page.mode, Mode::Choose(chooser) if !chooser.choices.iter().any(|choice| choice.about == "gpt-5.1-codex-max")), "a model Codex hides is not offered, only named");
         press(&mut fixture.page, &[KeyCode::Down, KeyCode::Enter]);
         assert_eq!(file(&fixture, "profiles/codex-build.toml"), CODEX_BUILD.replace("gpt-6.1-sol", "gpt-6-astra"), "the one line changes, comments and all else stay");
@@ -1457,8 +1491,24 @@ mod tests {
         fixture.page.load();
         press(&mut fixture.page, &[KeyCode::Char('m')]);
         let (shown, _) = screen_at(&mut fixture.page, 100, 30);
-        assert!(shown.contains("no list from Codex at ") && shown.contains("Codex's default   gpt-5.1-codex-max") && shown.contains("Type a model…") && !shown.contains("GPT-6"), "{shown}");
+        assert!(shown.contains("No list from Codex at ") && shown.contains("Codex's default     gpt-5.1-codex-max") && shown.contains("Type a model…") && !shown.contains("GPT-6"), "{shown}");
         assert!(!shown.contains("not offered"), "without Codex's list nothing is called not offered: {shown}");
+    }
+
+    #[test]
+    fn a_pick_in_a_narrow_window_wraps_each_about_under_its_own_column_and_a_click_takes_the_row_it_hits() {
+        let mut fixture = agents_fixture("settings-narrow-pick");
+        go_to_profile(&mut fixture.page, "codex-build");
+        press(&mut fixture.page, &[KeyCode::Char('m')]);
+        let (shown, _) = screen_at(&mut fixture.page, 60, 40);
+        let rows: Vec<&str> = shown.lines().collect();
+        let at = rows.iter().position(|line| line.contains("│  Codex's default ")).unwrap_or_else(|| panic!("{shown}"));
+        assert!(rows[at + 1].starts_with(&format!("{}│ {}", " ".repeat(rows[at].find('│').unwrap()), " ".repeat(21))) && rows[at + 1].contains("⚠"), "the about goes on under its column, not from the edge: {shown}");
+        assert!(rows.iter().all(|line| line.chars().count() <= 60), "{shown}");
+        click(&mut fixture.page, &shown, "GPT-6.1 Terra");
+        assert!(matches!(&fixture.page.mode, Mode::Choose(chooser) if chooser.choices[chooser.index].label == "GPT-6.1 Terra"), "a click takes the row drawn there");
+        let (wide, _) = screen_at(&mut fixture.page, 100, 40);
+        assert!(wide.contains("│  Codex's default     gpt-5.1-codex-max, not offered to you ⚠"), "{wide}");
     }
 
     #[test]
@@ -1467,16 +1517,16 @@ mod tests {
         go_to_profile(&mut fixture.page, "codex-build");
         press(&mut fixture.page, &[KeyCode::Char('e')]);
         let (shown, _) = screen_at(&mut fixture.page, 100, 30);
-        assert!(shown.contains("╭ codex-build · effort, for gpt-6.1-sol ") && shown.contains("the levels GPT-6.1-Sol takes, from Codex's list"), "{shown}");
-        assert!(shown.contains("    low               Codex's default for this model") && shown.contains("▸ ● medium") && shown.contains("    ultra             only some Codex models"), "{shown}");
-        assert!(shown.contains("    Default           leave it to Codex: low"), "{shown}");
+        assert!(shown.contains("╭ effort · codex-build ") && shown.contains("│ How much effort?") && shown.contains("│ The levels GPT-6.1-Sol takes, from Codex's list."), "{shown}");
+        assert!(shown.contains("│  low                 Codex's default for this model") && shown.contains("│ ▌medium              now") && shown.contains("│  ultra               only some Codex models"), "{shown}");
+        assert!(shown.contains("│  Default             leave it to Codex: low"), "{shown}");
         press(&mut fixture.page, &[KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
         assert_eq!(file(&fixture, "profiles/codex-build.toml"), CODEX_BUILD.replace("effort = \"medium\"", "effort = \"ultra\""));
         assert_eq!(fixture.page.profile().unwrap().effort.as_deref(), Some("ultra"));
         go_to_profile(&mut fixture.page, "codex");
         press(&mut fixture.page, &[KeyCode::Char('e')]);
         let (shown, _) = screen_at(&mut fixture.page, 100, 30);
-        assert!(shown.contains("codex · effort, for gpt-5.1-codex-max") && shown.contains("the levels gpt-5.1-codex-max takes"), "a hidden model's own levels: {shown}");
+        assert!(shown.contains("╭ effort · codex ") && shown.contains("The levels gpt-5.1-codex-max takes"), "a hidden model's own levels: {shown}");
         press(&mut fixture.page, &[KeyCode::Down, KeyCode::Enter]);
         assert!(!file(&fixture, "profiles/codex.toml").contains("effort"), "Default leaves it to Codex");
     }
@@ -1489,16 +1539,16 @@ mod tests {
         assert!(said(&fixture.page).contains("task is built in and has no file until a value is set"), "{}", said(&fixture.page));
         press(&mut fixture.page, &[KeyCode::Char('m')]);
         let (shown, _) = screen_at(&mut fixture.page, 100, 30);
-        assert!(shown.contains("╭ task · model ") && shown.contains("Claude Code's model names; task is built in"), "{shown}");
-        assert!(matches!(&fixture.page.mode, Mode::Choose(chooser) if chooser.choices[0].about == format!("opus, from {}", fixture.dir.join("claude/settings.json").display())));
-        assert!(shown.contains("▸ ● Claude's default  opus, from") && shown.contains("    opus              the newest Opus") && shown.contains("    fable             the newest Fable") && shown.contains("    Type a model…     a full id, as claude-opus-5-5"), "{shown}");
-        assert!(shown.contains("task is built in: setting a model writes profiles/task.toml with") && shown.contains("model alone, and the built-in's role and rules stay as they are.") && shown.contains("d on the row removes that file again.") && shown.contains("a task already running keeps its model; the next start takes it"), "{shown}");
+        assert!(shown.contains("╭ model · task ") && shown.contains("│ Claude Code's model names."), "{shown}");
+        assert!(matches!(&fixture.page.mode, Mode::Choose(chooser) if chooser.choices[0].about == format!("opus, from {} · now", fixture.dir.join("claude/settings.json").display())));
+        assert!(shown.contains("│ ▌Claude's default    opus, from") && shown.contains("│  opus                the newest Opus") && shown.contains("│  fable               the newest Fable") && shown.contains("│  Type a model…       a full id, as claude-opus-5-5"), "{shown}");
+        assert!(shown.contains("│ task is kebbie's: a model you set goes in profiles/task.toml,") && shown.contains("│ which an update never writes, and kebbie's role and rules stay") && shown.contains("│ as they ship. d on the row removes that file again.") && shown.contains("│ A task already running keeps its model; the next start takes it."), "{shown}");
         press(&mut fixture.page, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
         assert_eq!(file(&fixture, "profiles/task.toml"), "model = \"sonnet\"\n");
         assert!(screen_at(&mut fixture.page, 100, 30).0.lines().any(|line| line.contains(" task ") && line.contains("sonnet") && line.ends_with(" task.toml")));
         press(&mut fixture.page, &[KeyCode::Char('e')]);
         let (shown, _) = screen_at(&mut fixture.page, 100, 30);
-        assert!(shown.contains("task · effort, for sonnet") && shown.contains("Claude Code's effort levels") && !shown.contains("ultra") && shown.contains("leave it to Claude"), "{shown}");
+        assert!(shown.contains("╭ effort · task ") && shown.contains("Claude Code's effort levels, for sonnet.") && !shown.contains("ultra") && shown.contains("leave it to Claude"), "{shown}");
         press(&mut fixture.page, &[KeyCode::Up, KeyCode::Enter]);
         assert_eq!(file(&fixture, "profiles/task.toml"), "model = \"sonnet\"\neffort = \"max\"\n");
         assert!(matches!(fixture.page.handle(KeyEvent::from(KeyCode::Enter)), Effect::Open(file) if file == fixture.dir.join("profiles/task.toml")), "⏎ opens the file once there is one");
@@ -1542,8 +1592,8 @@ mod tests {
         assert!(row.contains("claude sonnet") && row.contains("max") && row.ends_with("from review.model · machine"), "the model kebbie review runs, and where it comes from: {row}");
         press(&mut fixture.page, &[KeyCode::Char('m')]);
         let (shown, _) = screen_at(&mut fixture.page, 100, 30);
-        assert!(shown.contains("Claude Code's model names; m sets review.model") && shown.contains("    The profile's     opus, from reviewer.toml") && shown.contains("▸ ● sonnet"), "{shown}");
-        assert!(shown.contains("writes review.model = \"…\" in "), "{shown}");
+        assert!(shown.contains("Claude Code's model names; this sets review.model") && shown.contains("│  The profile's       opus, from reviewer.toml") && shown.contains("│ ▌sonnet              the newest Sonnet · now"), "{shown}");
+        assert!(shown.contains("This writes review.model in "), "{shown}");
         press(&mut fixture.page, &[KeyCode::Down, KeyCode::Enter]);
         assert_eq!(file(&fixture, "config.toml"), "# mine\n[review]\nmodel = \"haiku\"\n");
         assert_eq!(file(&fixture, "profiles/reviewer.toml"), "model = \"opus\"\neffort = \"max\"\n", "the reviewer's model has one place");
@@ -1569,15 +1619,15 @@ mod tests {
         assert!(fixture.page.hint_lines().0.to_string().contains("⏎ pick"));
         press(&mut fixture.page, &[KeyCode::Enter]);
         let shown = screen(&mut fixture.page);
-        assert!(shown.contains("▸ none (task)  · the built-in task") && shown.contains("\"ops\"  · work on other machines over ssh") && shown.contains("\"codex-build\"") && shown.contains("\"codex\""), "{shown}");
+        assert!(shown.contains("│ Which profile?") && shown.contains("│ ▌none (task)         the built-in task · now") && shown.contains("│  \"ops\"               work on other machines over ssh") && shown.contains("\"codex-build\"") && shown.contains("\"codex\""), "{shown}");
         assert!(!shown.contains("\"reviewer\""), "the reviewer is never a task's profile: {shown}");
-        let Mode::Pick { picks, .. } = &fixture.page.mode else { panic!("a pick") };
-        let at = picks.iter().position(|pick| pick.label == "\"codex-build\"").unwrap();
+        let Mode::Choose(chooser) = &fixture.page.mode else { panic!("a pick") };
+        let at = chooser.choices.iter().position(|choice| choice.label == "\"codex-build\"").unwrap();
         press(&mut fixture.page, &vec![KeyCode::Down; at]);
         press(&mut fixture.page, &[KeyCode::Enter]);
         assert_eq!(file(&fixture, "config.toml"), "[task]\nprofile = \"codex-build\"\n");
         press(&mut fixture.page, &[KeyCode::Enter]);
-        assert!(matches!(fixture.page.mode, Mode::Pick { index, .. } if index == at), "the pick opens on the profile in effect");
+        assert!(matches!(&fixture.page.mode, Mode::Choose(chooser) if chooser.index == at), "the pick opens on the profile in effect");
         press(&mut fixture.page, &[KeyCode::Esc]);
         press(&mut fixture.page, &[KeyCode::Enter]);
         press(&mut fixture.page, &vec![KeyCode::Up; at]);

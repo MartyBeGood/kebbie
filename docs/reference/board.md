@@ -700,6 +700,7 @@ Press `,` to open it, or run `kebbie config edit` for the same page on its own. 
 | `/` | Search the keys by name and text; `⏎` keeps the search, `esc` clears it. |
 | `esc` | Back to the board, or quit `kebbie config edit`. |
 
+- A pick asks its question in the form the new-routine steps use: what the answers mean under it, the one in effect marked `now`, `↑` `↓` and `⏎` or a click to choose, `esc` or a click beside it to close.
 - Each change is checked before it is written, and a value kebbie would refuse writes nothing and says why.
 - A write changes only that key's line, keeping the file's comments and order, and goes to the tab's file.
 - After each write, kebbie doctor's check of that file shows on one line, such as `doctor: ok, config.toml parses`.
