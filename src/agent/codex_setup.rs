@@ -219,6 +219,11 @@ pub fn hide_args(config: &toml::Table, names: &[String]) -> Vec<String> {
     names.iter().flat_map(|name| ["-c".to_string(), format!("shell_environment_policy.filters.{name}=\"exclude\"")]).collect()
 }
 
+// "0.164.0" → "0.164", as a short label beside another version.
+pub fn short_version(version: &str) -> String {
+    version.strip_suffix(".0").filter(|rest| rest.contains('.')).unwrap_or(version).to_string()
+}
+
 // Codex's default: the listed model it ranks first (models-manager, the lowest priority number).
 pub fn default_model(models: &[CachedModel]) -> Option<&CachedModel> {
     models.iter().filter(|model| model.listed).min_by_key(|model| model.priority.unwrap_or(i64::MAX))
@@ -452,7 +457,7 @@ mod tests {
         assert_eq!(latest_from(latest_source(Some(Installer::Standalone)), &serde_json::json!({ "tag_name": "rust-v0.164.0" })).as_deref(), Some("0.164.0"));
         assert_eq!(latest_from(latest_source(Some(Installer::Brew)), &serde_json::json!({ "version": "0.164.0" })).as_deref(), Some("0.164.0"));
         assert_eq!(latest_from(latest_source(None), &serde_json::json!({ "tag_name": "v1" })), None);
-        assert_eq!(version_word("codex-cli 0.163.0").as_deref(), Some("0.163.0"));
+        assert_eq!((version_word("codex-cli 0.163.0").as_deref(), short_version("0.164.0").as_str(), short_version("0.164.2").as_str()), (Some("0.163.0"), "0.164", "0.164.2"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

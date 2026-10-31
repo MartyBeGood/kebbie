@@ -75,6 +75,18 @@ fn write(state: &Path, found: &Found) {
     let _ = crate::state::write(&state.join(FILE), found.to_json().to_string());
 }
 
+#[cfg(test)]
+pub fn write_for_test(state: &Path, found: &Found) {
+    write(state, found);
+}
+
+// After Codex's own installer ran, the record names the version now installed, so doctor and the next U see it.
+pub fn installed_now(state: &Path) {
+    if let Some(found) = read(state) {
+        write(state, &Found { installed: Machine::current().version.or(found.installed.clone()), ..found });
+    }
+}
+
 // What the check reads on this machine: Codex's binary and version, its home, the profiles that run it, and whether kebbie's vault is on.
 pub struct Machine {
     pub binary: Option<PathBuf>,

@@ -136,6 +136,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Questions(_) => modal_hits = draw_questions(frame, app),
         Mode::Hub(window) => super::hub_window::draw(frame, window),
         Mode::Update => super::update_window::draw(frame, app),
+        Mode::AgentUpdates => super::agent_updates::draw(frame, app),
         Mode::Report { id, scroll, read, nudged } => {
             let (id, nudged) = (id.clone(), *nudged);
             let (drawn, seen) = super::bug_report::draw_report(frame, app, &id, *scroll, *read, nudged);

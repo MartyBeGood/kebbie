@@ -264,7 +264,11 @@ impl App {
             self.fixed = self.fixed.take().filter(|shown| shown.last > self.fixed_seen);
         }
         self.restart_after_update = succeeded;
+        let state = run.file.parent().map(Path::to_path_buf);
         self.update = None;
+        if let (true, Some(state)) = (succeeded, state) {
+            self.offer_agent_updates(&state);
+        }
     }
 
     pub(super) fn update_pill(&self) -> Option<String> {

@@ -1028,6 +1028,10 @@ pub fn report_settings() -> Result<Report> {
     Ok(load_machine(&path())?.report)
 }
 
+pub fn agent_updates_in(path: &Path) -> AgentUpdates {
+    load_machine(path).ok().and_then(|machine| machine.agent_updates).unwrap_or_default()
+}
+
 pub fn channel() -> Result<Channel> {
     channel_in(&path())
 }
@@ -1692,6 +1696,7 @@ mod tests {
         let config = dir.join("config.toml");
         std::fs::write(&config, "[update]\nchannel = \"main\"\nagents = \"always\"\n").unwrap();
         assert_eq!(channel_in(&config).unwrap(), Channel::Main, "kebbie update reads its channel past a bad update.agents");
+        assert_eq!(agent_updates_in(&config), AgentUpdates::Ask, "a value kebbie cannot read asks, as the default does");
         let shown = describe(&Loaded { machine: config, repo: None, settings: settings(&Worktree::default(), &Machine::default()) });
         assert!(shown.contains("update.agents = \"ask\"  (default)\n  What happens when an agent that does not update itself"), "{shown}");
         let _ = std::fs::remove_dir_all(dir);

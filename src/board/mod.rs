@@ -34,6 +34,7 @@ pub(crate) mod terminal;
 #[cfg(test)]
 mod test_support;
 mod threads;
+mod agent_updates;
 mod update_window;
 pub(crate) mod widgets;
 
@@ -126,6 +127,7 @@ enum Mode {
     Help(keys_window::Scroll),
     Hub(Box<hub_window::Window>),
     Update,
+    AgentUpdates,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -206,6 +208,9 @@ struct App {
     stale: Vec<String>,
     stale_at: u64,
     restart_after_update: bool,
+    agent_offer: Option<agent_updates::Offer>,
+    agent_mode: std::sync::Arc<dyn Fn() -> config::AgentUpdates + Send + Sync>,
+    installer: agent_updates::Install,
     filter: Option<(Column, String)>,
     ctrl_c: Option<Instant>,
     notice: Option<(String, Instant)>,
@@ -449,7 +454,7 @@ impl App {
 
     // A rebuilt binary takes over only once nothing is open, and never while an update this board runs is going or its summary is unread.
     fn may_restart(&self) -> bool {
-        matches!(self.mode, Mode::Normal | Mode::Help(_) | Mode::Message(_)) && self.update.is_none() && self.areas.is_idle() && self.routines.is_idle() && self.settings.is_normal()
+        matches!(self.mode, Mode::Normal | Mode::Help(_) | Mode::Message(_)) && self.update.is_none() && self.agent_offer.is_none() && self.areas.is_idle() && self.routines.is_idle() && self.settings.is_normal()
     }
 
     fn show(&mut self, result: Result<String>) {
@@ -595,6 +600,7 @@ impl App {
             Mode::Questions(window) => self.handle_questions(window, key),
             Mode::Hub(window) => self.handle_hub(window, key),
             Mode::Update => self.handle_update(key),
+            Mode::AgentUpdates => self.handle_agent_updates(key),
             Mode::Report { id, scroll, read, .. } => self.confirm_report(id, scroll, read, key, cancels),
             Mode::NoteCard { key: note, scroll, .. } => self.handle_note_card(note, scroll, key, cancels),
             Mode::Comment { id, scroll, .. } => self.handle_comment_window(id, scroll, key, cancels),
@@ -1032,6 +1038,7 @@ impl App {
             details: HashMap::new(), detail_requests: None, detail_results: None, asked_details: HashMap::new(),
             graphics: Graphics::Off, images: HashMap::new(), cell_guessed: false, viewer: None, decoded: HashMap::new(), image_requests: None, image_results: None, plans: HashMap::new(),
             updates: Vec::new(), updater: std::sync::Arc::new(|| update::run(&crate::doctor::Env::current().claude_dir, false, &crate::release::Request::Channel).map(|outcome| outcome.details.join("\n"))), update: None, progress_file: None, recheck: None, stale: Vec::new(), stale_at: 0, restart_after_update: false,
+            agent_offer: None, agent_mode: std::sync::Arc::new(|| config::agent_updates_in(&config::path())), installer: agent_updates::default_install(),
             filter: None, ctrl_c: None, notice: None, lead_chat: None, restart_auto: true, lead_restarter: std::sync::Arc::new(crate::lead_restart::restart_now), lead_fresh_starter: std::sync::Arc::new(crate::lead_restart::fresh_now), lead_checker: std::sync::Arc::new(crate::lead::restart_refusal), lead_context: None, subject: None, shown: None, toast: None, hub_paths: None, hub_banner: None,
             comments: Vec::new(), comment_panel: Default::default(), comment_dir: None, copier: comments::default_copier(), reopener: comments::default_reopener(),
         }
@@ -1091,6 +1098,7 @@ pub fn run(overlay: bool) -> Result<String> {
             app.take_working_result();
             app.poll_hub();
             app.poll_update();
+            app.poll_agent_install();
             while let Ok(updates) = update_notices.try_recv() {
                 app.updates = updates;
             }
