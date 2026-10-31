@@ -37,7 +37,7 @@ The task's note is where the why lives: kebbie writes the recipe and the assesso
 - **Phases**:
   1. **Mockup.** The task publishes a mockup and puts it to the user as a plan holding its link, with `kebbie ask --plan`. Their yes is the only gate on what is built: it revises the mockup until they say yes.
   2. **Plan.** The task researches the code and lists its steps with `kebbie steps`. The plan is the task's own; it goes on without the user's approval.
-  3. **Build.** Preparatory commits first, then bite-size steps, each finished and pushable, trunk-based. When the code contradicts the plan, the task rewrites its steps and records why in its note.
+  3. **Build.** Preparatory commits first, then bite-size steps, each finished and pushable, trunk-based. When the code contradicts the plan, the task rewrites its steps and says why in the commit that changes course, and in its vault note when it has one.
 - **The user**: the mockup's yes, then the push.
 
 ### `task-after-task`
