@@ -708,7 +708,7 @@ fn path_step(shell: &str) -> String {
 }
 
 pub fn ending(codex: Option<Login>, checks: &[crate::doctor::Check], shell: &str) -> Vec<String> {
-    let count = |ok: bool| checks.iter().filter(|check| (check.level == crate::doctor::Level::Ok) == ok).count();
+    let count = |ok: bool| checks.iter().filter(|check| if ok { check.level == crate::doctor::Level::Ok } else { matches!(check.level, crate::doctor::Level::Warn | crate::doctor::Level::Fail) }).count();
     let open = count(false);
     let left = if open > 0 { format!(", {open} to look at") } else { String::new() };
     let mut lines = vec![String::new(), format!("{DONE} · doctor: {} ok{left}", count(true)), String::new(), NEXT.to_string()];
@@ -1428,6 +1428,8 @@ mod tests {
         use crate::doctor::Level;
         let clean = ending(Some(Login::In), &[check(Level::Ok, "git", "/usr/bin/git", &[]), check(Level::Ok, "jq", "/usr/bin/jq", &[])], "/bin/zsh");
         assert_eq!(clean, ["", "Setup done · doctor: 2 ok", "", "Next steps", "  prefix+space         tell the lead what you want done"], "the lead is the one step left when nothing else is");
+        let unchecked = ending(Some(Login::In), &[check(Level::Ok, "git", "/usr/bin/git", &[]), check(Level::Skip, "claude login", "login not checked", &[])], "/bin/zsh");
+        assert_eq!(unchecked[1], "Setup done · doctor: 1 ok", "a check that got no answer is neither ok nor to look at");
         let checks = [check(Level::Ok, "git", "/usr/bin/git", &[]), check(Level::Fail, "jq", "jq is missing", &["macOS: brew install jq"]), check(Level::Warn, "status line", "statusLine runs \"my-line\"", &["have your statusLine command pipe its stdin to `kebbie statusline`"])];
         assert_eq!(ending(Some(Login::Out), &checks, "/bin/zsh"), [
             "",

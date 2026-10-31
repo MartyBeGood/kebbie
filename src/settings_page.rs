@@ -749,7 +749,7 @@ impl Page {
         let done = match written {
             Ok(said) => {
                 let check = if machine { crate::doctor::config_file(&file).0 } else { crate::doctor::repo_file(&file).0 };
-                let level = match check.level { crate::doctor::Level::Ok => "ok", crate::doctor::Level::Warn => "warn", crate::doctor::Level::Fail => "fail" };
+                let level = match check.level { crate::doctor::Level::Ok => "ok", crate::doctor::Level::Skip => "skip", crate::doctor::Level::Warn => "warn", crate::doctor::Level::Fail => "fail" };
                 let fact = check.fact.replace(&file.display().to_string(), &shown);
                 let color = if check.level == crate::doctor::Level::Ok { GREEN } else { PEACH };
                 let linked = if replace_link { " (now a file of this machine's own)" } else { "" };

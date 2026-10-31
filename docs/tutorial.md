@@ -87,7 +87,7 @@ signals = false   # no error signals; text = "ask" (the default) still asks befo
    kebbie doctor
    ```
 
-2. Read one line per check, each starting with `ok`, `warn` or `fail`:
+2. Read one line per check, each starting with `ok`, `skip`, `warn` or `fail`:
 
    ```text
    ok    git                   /usr/bin/git

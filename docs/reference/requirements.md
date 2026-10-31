@@ -50,7 +50,7 @@ npm install -g @openai/codex
 
 ## What `kebbie doctor` checks
 
-Each line is `ok`, `warn` or `fail`. Every `warn` and `fail` carries a `fix:` line for macOS and Linux. `kebbie doctor` exits non-zero when any line fails.
+Each line is `ok`, `skip`, `warn` or `fail`; `skip` is a check that got no answer, counted apart as not checked. Every `warn` and `fail` carries a `fix:` line for macOS and Linux. `kebbie doctor` exits non-zero when any line fails.
 
 | Check | Looks at |
 | --- | --- |
@@ -59,7 +59,7 @@ Each line is `ok`, `warn` or `fail`. Every `warn` and `fail` carries a `fix:` li
 | `herdr link` | The folder herdr links kebbie from, for a local link, still holds a kebbie checkout. One that is gone fails, with `kebbie doctor --fix` as the fix. |
 | `plugin binary` | The plugin's binary is in place, and whether it was downloaded for a release tag or built from source. |
 | `claude plugin` | The Claude Code plugin is installed, and the copy Claude Code runs matches the checkout. |
-| `claude login` | `claude auth status` says Claude Code is logged in. A `warn` names `claude auth login`; no answer reads `login not checked`. |
+| `claude login` | `claude auth status` says Claude Code is logged in. A `warn` names `claude auth login`; no answer reads `skip`, `login not checked`. |
 | `claude plugin source` | The plugin's marketplace matches the update channel. |
 | `status line` | The status line for plan usage. |
 | `current link` | `~/.local/share/kebbie/current` points at the plugin. |

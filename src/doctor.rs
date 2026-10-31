@@ -10,6 +10,7 @@ use crate::sh::run;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Level {
     Ok,
+    Skip,
     Warn,
     Fail,
 }
@@ -191,7 +192,7 @@ pub fn login(name: &str, signed: Login, fix: &str, why: &str) -> Check {
     match signed {
         Login::In => ok(name, "logged in"),
         Login::Out => warn(name, format!("not logged in, so {why}"), one(fix)),
-        Login::Unknown => ok(name, "login not checked: no answer to its status command"),
+        Login::Unknown => Check { level: Level::Skip, name: name.to_string(), fact: "login not checked: no answer to its status command".to_string(), fix: Vec::new() },
     }
 }
 
@@ -834,6 +835,7 @@ pub fn render(checks: &[Check]) -> String {
     for check in checks {
         let level = match check.level {
             Level::Ok => "ok",
+            Level::Skip => "skip",
             Level::Warn => "warn",
             Level::Fail => "fail",
         };
@@ -844,7 +846,9 @@ pub fn render(checks: &[Check]) -> String {
     }
     let count = |level: Level| checks.iter().filter(|check| check.level == level).count();
     lines.push(String::new());
-    lines.push(format!("{} failed, {} warnings, {} ok", count(Level::Fail), count(Level::Warn), count(Level::Ok)));
+    let skipped = count(Level::Skip);
+    let skipped = if skipped > 0 { format!(", {skipped} not checked") } else { String::new() };
+    lines.push(format!("{} failed, {} warnings, {} ok{skipped}", count(Level::Fail), count(Level::Warn), count(Level::Ok)));
     lines.join("\n")
 }
 
@@ -1432,7 +1436,8 @@ mod tests {
         assert_eq!((out.name.as_str(), out.level, out.fix), ("codex login", Level::Warn, vec!["codex login".to_string()]));
         assert_eq!(signed(Login::Out, true).level, Level::Fail, "a profile that runs Codex cannot start logged out");
         let unknown = signed(Login::Unknown, true);
-        assert!(unknown.level == Level::Ok && unknown.fact.starts_with("login not checked"), "no answer is never logged out: {unknown:?}");
+        assert!(unknown.level == Level::Skip && unknown.fact.starts_with("login not checked"), "no answer is never logged out, nor ok: {unknown:?}");
+        assert!(render(std::slice::from_ref(&unknown)).ends_with("0 failed, 0 warnings, 0 ok, 1 not checked"), "{}", render(&[unknown]));
         assert_eq!(login("claude login", Login::Out, "claude auth login", "the lead cannot start").fix, ["claude auth login"]);
     }
 
