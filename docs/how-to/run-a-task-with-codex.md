@@ -122,6 +122,15 @@ Codex has no inbox kebbie can write to, so kebbie types a message into the task'
 - Empty means the composer shows nothing or Codex's own placeholder, `Ask Codex to do anything`. Any other text there, faint or not, keeps kebbie from typing, so nothing is glued onto it.
 - The task's first prompt waits the same way: when the new Codex's composer already holds text, the start says so, and kebbie types the prompt in once the composer is empty, while the keeper or an open board runs.
 
+## Restarts after an update
+
+A Codex task keeps the role and hooks it started with until it restarts, and Codex never updates a running session. So kebbie restarts a Codex task as it does a Claude one, with `codex resume <session id>` in its pane, once it is idle and out of focus: after `kebbie update`, after a newer `codex` lands on `PATH`, or when it runs without kebbie's plugin.
+
+- The same rules hold: `restart.auto` and `restart.idle_minutes` decide when, and a restart never ends a Codex mid-turn, in the pane you are in, with text in its composer or on one of its start-up questions.
+- `kebbie restart` names each Codex task with the others, as `flaky-test: restarted, as kebbie update`.
+- Your own Codex sessions, outside a task, are never restarted.
+- A Codex task whose profile no longer loads, or no longer runs Codex, is skipped with the profile and the error, as `skipped: its profile "coder" does not load (…)`, rather than resumed on the built-in task's Claude role. Fix the profile and the next restart takes it.
+
 ## Compressed sessions
 
 Codex can compress a session file it hasn't written to for a week to `.jsonl.zst`. kebbie still finds such a session and resumes it, but can't read it. So it doesn't send the task's first prompt again and can't tell from it whether a typed message arrived.
@@ -130,7 +139,6 @@ Codex can compress a session file it hasn't written to for a week to `.jsonl.zst
 
 - The record of test runs that `kebbie evidence` and the reviewer read.
 - The vault gate that holds edits until the task note's Problem is written.
-- Restarts after a kebbie or agent update: `kebbie restart` skips Codex sessions.
 - Resumes after an API error. An error that stops Codex's turn puts the task under Needs you with the API's message, and the lead hears it, but kebbie does not type it going again.
 
 [Profiles](../reference/configuration.md#profiles) lists every key. [`kebbie setup codex`](../reference/commands.md#setup-and-maintenance) is in the command reference.

@@ -165,7 +165,7 @@ An assessment with no answer reads as `review not assessed`, a suggestion in eve
 | `comments.watch` | `true` | either | Whether kebbie reads the comments colleagues leave on the commits it pushed and shows each under COMMENTS on the board. |
 | `comments.watch_days` | `7` | either | How many days after a push kebbie checks its commits for new comments, a whole number from 1 to 90. |
 | `update.channel` | `"release"` | config.toml only | What `kebbie update` installs: `"release"`, the highest `vX.Y.Z` tag on origin, or `"main"`, origin's default branch. |
-| `restart.auto` | `true` | config.toml only | Whether kebbie restarts the Claude sessions that run older code than is installed, after an update or a new Claude Code; no other session restarts. |
+| `restart.auto` | `true` | config.toml only | Whether kebbie restarts the Claude sessions and Codex tasks that run older code than is installed, after an update or a new Claude Code or Codex; no other session restarts. |
 | `restart.idle_minutes` | `10` | config.toml only | How long, an integer from 1 to 1440 minutes, a session on older code waits to be idle and out of focus before that restart. |
 | `keeper.enabled` | `true` | config.toml only | Whether the keeper, one background kebbie per machine, runs the routines. |
 | `recover.enabled` | `true` | config.toml only | Whether kebbie resumes a task whose Claude an API error stopped, and puts a Codex task an API error stopped under Needs you. |

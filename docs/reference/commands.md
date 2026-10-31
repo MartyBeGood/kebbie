@@ -651,7 +651,7 @@ After a ready report the keeper starts the reviewer. It checks the commits again
 | `kebbie update --check` | Fetch and show the installed versions against the channel's latest. Changes nothing else. |
 | `kebbie update --from <branch or path>` | Install that branch on origin, or that checkout's commits, until `--stable`. |
 | `kebbie update --stable` | Return to the channel. |
-| `kebbie restart` | Restart each stale Claude session that is idle, not the pane you are in, and has no background work. Works with `restart.auto = false`. |
+| `kebbie restart` | Restart each stale Claude session or Codex task that is idle, not the pane you are in, and has no background work. Works with `restart.auto = false`. |
 | `kebbie restart --all` | Restart every idle session, stale or not. |
 | `kebbie keeper --status` | Whether the keeper runs, with its pid, binary, uptime, log and each of its routines' interval, last run and last error. |
 | `kebbie keeper --start` | Start the keeper in the background unless one runs. Says `off` while `keeper.enabled = false`. |

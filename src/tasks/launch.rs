@@ -124,6 +124,15 @@ pub(crate) fn record_text(record: &Record) -> String {
     json!({ "session": record.session, "mode": record.mode, "profile": record.profile, "agent": record.agent }).to_string()
 }
 
+pub(crate) fn codex_restart_refusal(task: &str, repo: &Path) -> Option<String> {
+    let configured = config::resolve(Some(repo)).ok().and_then(|config| config.settings.profile.value);
+    profiles::codex_restart_refusal(&profiles::dir(), recorded_session(task, repo).profile.as_deref(), configured.as_deref())
+}
+
+pub(crate) fn recorded_session_id(task: &str, repo: &Path) -> Option<String> {
+    recorded_session(task, repo).session
+}
+
 fn recorded_session(task: &str, repo: &Path) -> Record {
     parse_record(&session_file(task, repo).ok().and_then(|file| std::fs::read_to_string(file).ok()).unwrap_or_default())
 }

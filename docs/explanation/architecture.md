@@ -90,7 +90,7 @@ Some of kebbie's work runs on a clock rather than on a command. The keeper runs 
 
 | Every | The keeper |
 | --- | --- |
-| minute | Restarts stale Claude sessions once idle. |
+| minute | Restarts stale Claude sessions and Codex tasks once idle. |
 | minute | Closes tasks whose commits are on the default branch as done. See [`kebbie done --landed`](../reference/commands.md#kebbie-done---landed). |
 | minute | Starts due [routines](routines.md)' runs as tasks. |
 | minute | Rebases tasks that follow main when it moves. See [`kebbie follow`](../reference/commands.md#kebbie-follow-name-onoff). |

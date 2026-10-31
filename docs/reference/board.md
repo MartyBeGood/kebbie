@@ -25,7 +25,7 @@ The status line shows:
 | `◆ N to accept`, yellow | N commits of tasks working in steps wait for you to accept them. |
 | `! N bugs to send` | Bugs in kebbie you ran into wait for you to send them to its maintainers, on their row under Work. |
 | Plan usage | How much of the plan is used. |
-| `↻ N stale` | Claude sessions wait to be restarted. |
+| `↻ N stale` | Claude sessions or Codex tasks wait to be restarted. |
 | `☾ away` | Away mode is on. |
 | `chat hidden` | The lead's chat is hidden. |
 | `↑ kebbie v0.28.0 · U updates` | A newer release is out. On the main channel, `↑ kebbie main, 3 new · U updates` with the commits the installed build lacks. |

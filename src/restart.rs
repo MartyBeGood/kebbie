@@ -210,6 +210,8 @@ pub struct Plugin {
 pub struct Changes {
     pub claude: Option<PathBuf>,
     pub claude_changed: Option<u64>,
+    pub codex: Option<PathBuf>,
+    pub codex_changed: Option<u64>,
     pub plugins: Vec<Plugin>,
     pub mcp: HashMap<String, u64>,
     pub updated: Option<u64>,
@@ -287,6 +289,7 @@ pub fn observe_mcp(record: &Path, claude: &Value, now: u64) -> HashMap<String, u
 impl Changes {
     pub fn gather(state: &Path, now: u64) -> Changes {
         let claude = on_path(&crate::setup::claude_bin()).and_then(|path| path.canonicalize().ok());
+        let codex = on_path("codex").and_then(|path| path.canonicalize().ok());
         let home = crate::agent::claude::home();
         let read = |path: Option<PathBuf>| path.and_then(|path| std::fs::read_to_string(path).ok()).and_then(|text| serde_json::from_str::<Value>(&text).ok()).unwrap_or_default();
         let installed = read(home.map(|home| home.join("plugins/installed_plugins.json")));
@@ -295,6 +298,8 @@ impl Changes {
         Changes {
             claude_changed: claude.as_deref().and_then(mtime),
             claude,
+            codex_changed: codex.as_deref().and_then(mtime),
+            codex,
             plugins: plugins(&installed),
             mcp,
             updated: dir.and_then(|dir| std::fs::read_to_string(dir.join("updated")).ok()).and_then(|text| text.trim().parse().ok()),
@@ -302,18 +307,7 @@ impl Changes {
     }
 
     pub fn reasons(&self, exe: Option<&Path>, started: u64, cwd: Option<&Path>) -> Vec<String> {
-        let mut reasons = Vec::new();
-        let same_install = |exe: &Path, now: &Path| exe.parent() == now.parent() || exe.file_name() == now.file_name();
-        // The keeper's PATH is the one it started with, so a Claude on it older than the session's own is the keeper's stale view, not the session's.
-        let older = |now: &Path, exe: &Path| mtime(now).zip(mtime(exe)).is_some_and(|(now, exe)| now < exe);
-        match (exe.map(|exe| exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf())), &self.claude) {
-            (Some(exe), Some(now)) if same_install(&exe, now) && &exe != now && !older(now, &exe) => {
-                let name = |path: &Path| path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
-                if exe.parent() == now.parent() { reasons.push(format!("Claude Code {} → {}", name(&exe), name(now))) } else { reasons.push("a newer Claude Code".to_string()) }
-            }
-            _ if self.claude_changed.is_some_and(|at| at > started) => reasons.push("a newer Claude Code".to_string()),
-            _ => {}
-        }
+        let mut reasons: Vec<String> = newer_binary(CLAUDE_CODE, exe, self.claude.as_deref(), self.claude_changed, started).into_iter().collect();
         let applies = |project: &Option<PathBuf>| project.as_ref().is_none_or(|project| cwd.is_some_and(|cwd| cwd.starts_with(project)));
         let mut names: Vec<&str> = self.plugins.iter().filter(|plugin| plugin.updated > started && applies(&plugin.project)).map(|plugin| plugin.id.split('@').next().unwrap_or(&plugin.id)).collect();
         names.dedup();
@@ -329,6 +323,37 @@ impl Changes {
         }
         reasons
     }
+
+    // Codex loads no plugin, hook or MCP change into a running session that kebbie could date, so its own binary and kebbie's update are what make it stale.
+    pub fn codex_reasons(&self, exe: Option<&Path>, started: u64) -> Vec<String> {
+        let mut reasons: Vec<String> = newer_binary(CODEX, exe, self.codex.as_deref(), self.codex_changed, started).into_iter().collect();
+        if self.updated.is_some_and(|at| at > started) {
+            reasons.push(KEBBIE_UPDATE.to_string());
+        }
+        reasons
+    }
+}
+
+const CLAUDE_CODE: &str = "Claude Code";
+const CODEX: &str = "Codex";
+
+// The agent on PATH is another file of the same install than the process runs, or was replaced since it started; an interpreter's exe is no install, so only the change time counts for it.
+fn newer_binary(agent: &str, exe: Option<&Path>, now: Option<&Path>, changed: Option<u64>, started: u64) -> Option<String> {
+    let same_install = |exe: &Path, now: &Path| exe.parent() == now.parent() || exe.file_name() == now.file_name();
+    // The keeper's PATH is the one it started with, so an agent on it older than the session's own is the keeper's stale view, not the session's.
+    let older = |now: &Path, exe: &Path| mtime(now).zip(mtime(exe)).is_some_and(|(now, exe)| now < exe);
+    match (exe.map(|exe| exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf())), now) {
+        (Some(exe), Some(now)) if same_install(&exe, now) && exe != now && !older(now, &exe) => {
+            let name = |path: &Path| path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
+            Some(if exe.parent() == now.parent() { format!("{agent} {} → {}", name(&exe), name(now)) } else { format!("a newer {agent}") })
+        }
+        _ if changed.is_some_and(|at| at > started) => Some(format!("a newer {agent}")),
+        _ => None,
+    }
+}
+
+fn binary_reason(reason: &str) -> bool {
+    [CLAUDE_CODE, CODEX].iter().any(|agent| reason.starts_with(&format!("{agent} ")) || reason == format!("a newer {agent}"))
 }
 
 fn blocks<'a>(text: &'a str, tag: &str) -> Vec<&'a str> {
@@ -447,12 +472,16 @@ pub struct Process {
     pub cwd: Option<PathBuf>,
 }
 
-// The pane's Claude leads its process group; its MCP servers and tools share the group.
+// The pane's agent leads its process group; its MCP servers and tools share the group.
 pub fn claude_process(info: &Value) -> Option<Process> {
+    agent_process(info, Agent::Claude)
+}
+
+pub fn agent_process(info: &Value, agent: Agent) -> Option<Process> {
     let processes = info["foreground_processes"].as_array()?;
     let leader = info["foreground_process_group_id"].as_u64();
     let claude = processes.iter().find(|process| process["pid"].as_u64().is_some() && process["pid"].as_u64() == leader && base(process["argv0"].as_str().unwrap_or_default()) != "sh")
-        .or_else(|| processes.iter().find(|process| base(process["argv0"].as_str().unwrap_or_default()) == "claude"))?;
+        .or_else(|| processes.iter().find(|process| base(process["argv0"].as_str().unwrap_or_default()) == agent.kind()))?;
     Some(Process {
         pid: u32::try_from(claude["pid"].as_u64()?).ok()?,
         argv: claude["argv"].as_array().map(|argv| argv.iter().filter_map(|arg| arg.as_str().map(str::to_string)).collect()).filter(|argv: &Vec<String>| !argv.is_empty()),
@@ -489,9 +518,9 @@ fn load_restarted(state: &Path) -> Map<String, Value> {
 
 pub const KEBBIE_UPDATE: &str = "kebbie update";
 
-// The reasons a second restart cannot satisfy when the first left them standing: the pane's PATH starts the same Claude Code, or the restart did not give a task its role or working hooks.
+// The reasons a second restart cannot satisfy when the first left them standing: the pane's PATH starts the same agent binary, or the restart did not give a task its role or working hooks.
 fn sticky(entry: &Value) -> Vec<&str> {
-    entry["reasons"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|reason| reason.starts_with("Claude Code ") || *reason == "a newer Claude Code" || *reason == NO_ROLE || *reason == HOOKS_GONE).collect()
+    entry["reasons"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|reason| binary_reason(reason) || *reason == NO_ROLE || *reason == HOOKS_GONE).collect()
 }
 
 // A session kebbie recorded starting on the installed kebbie already runs it, whatever the update's time says.
@@ -512,8 +541,9 @@ pub fn held_back(last: Option<&Value>, now: &Value, manual: bool) -> Option<Stri
     let held = |reason: &&str| (same_claude && sticky(now).contains(reason)) || (same_kebbie && *reason == KEBBIE_UPDATE);
     if !reasons.is_empty() && reasons.iter().all(held) {
         let left = sticky(now);
-        return Some(if same_claude && left.iter().any(|reason| reason.starts_with("Claude Code ") || *reason == "a newer Claude Code") {
-            format!("a restart brought back the same Claude Code ({}), so the pane starts that one; restarting again cannot update it", now["exe"].as_str().unwrap_or("?"))
+        return Some(if same_claude && left.iter().any(|reason| binary_reason(reason)) {
+            let agent = if left.iter().any(|reason| reason.contains(CODEX)) { CODEX } else { CLAUDE_CODE };
+            format!("a restart brought back the same {agent} ({}), so the pane starts that one; restarting again cannot update it", now["exe"].as_str().unwrap_or("?"))
         } else if same_claude {
             format!("{} after a restart already; restarting again would not mend it", left.join(" and "))
         } else {
@@ -609,14 +639,14 @@ fn same_folder(one: &Path, other: &Path) -> bool {
     one == other || one.canonicalize().ok().is_some_and(|one| other.canonicalize().ok() == Some(one))
 }
 
-fn wait_for_claude(pane: &str) -> Result<()> {
+fn wait_for_agent(pane: &str, name: &str) -> Result<()> {
     for _ in 0..120 {
         if herdr::agents()?.iter().any(|agent| agent["pane_id"] == pane && Agent::of(agent).is_some() && agent["interactive_ready"] == true) {
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    Err(format!("Claude did not come back in pane {pane}; see what the pane shows"))
+    Err(format!("{name} did not come back in pane {pane}; see what the pane shows"))
 }
 
 fn perform(pane: &Pane, own: Option<&Path>, args: &[String], lead: bool) -> Result<tasks::Started> {
@@ -626,6 +656,9 @@ fn perform(pane: &Pane, own: Option<&Path>, args: &[String], lead: bool) -> Resu
             Err(stderr) if stderr.is_empty() => Err("kebbie lead --restart failed".to_string()),
             Err(stderr) => Err(stderr),
         };
+    }
+    if pane.agent == Agent::Codex {
+        crate::agent::codex::ready_to_start(crate::agent::codex::home().as_deref(), &crate::peers::kebbie_command()?)?;
     }
     let role = own.or(pane.cwd.as_deref()).map(tasks::task_role).transpose()?.flatten();
     let args = role.map_or_else(|| args.to_vec(), |(settings, role)| pane.agent.with_role(args, &settings, &role));
@@ -642,15 +675,22 @@ fn perform(pane: &Pane, own: Option<&Path>, args: &[String], lead: bool) -> Resu
             tasks::wait_for_prompt(&pane.pane)?;
             let line = std::iter::once(pane.agent.kind().to_string()).chain(args.iter().map(|arg| sh::quote(arg))).collect::<Vec<_>>().join(" ");
             herdr::run_in_pane(&pane.pane, &line)?;
-            wait_for_claude(&pane.pane).map(|()| tasks::Started::Ready)
+            wait_for_agent(&pane.pane, pane.agent.name()).map(|()| tasks::Started::Ready)
         }
     }
 }
 
-fn restarted_said(label: &str, reasons: &[String], started: &tasks::Started) -> String {
+fn resume_command(agent: Agent) -> &'static str {
+    match agent {
+        Agent::Claude => "claude --resume",
+        Agent::Codex => "codex resume",
+    }
+}
+
+fn restarted_said(label: &str, agent: Agent, reasons: &[String], started: &tasks::Started) -> String {
     match started.asks() {
-        None => format!("Restarted {label} with claude --resume, as it ran older code ({}).", reasons.join(", ")),
-        Some(asks) => format!("Restarted {label}, as it ran older code ({}); Claude there asks {asks}. Answer it there, and it resumes its conversation.", reasons.join(", ")),
+        None => format!("Restarted {label} with {}, as it ran older code ({}).", resume_command(agent), reasons.join(", ")),
+        Some(asks) => format!("Restarted {label}, as it ran older code ({}); {} there asks {asks}. Answer it there, and it resumes its conversation.", reasons.join(", "), agent.name()),
     }
 }
 
@@ -700,6 +740,19 @@ pub fn mode_for(mode: Mode, lead: bool) -> Mode {
         Mode::Routine { min_idle } if lead => Mode::Routine { min_idle: min_idle.min(LEAD_IDLE) },
         other => other,
     }
+}
+
+// A Codex on one of its start-up questions waits on the user, so it is not ended under the question; otherwise its composer is read as any draft.
+pub fn with_screen(mode: Mode, verdict: Verdict, agent: Agent, screen: impl FnOnce() -> Option<String>) -> Verdict {
+    if verdict != Verdict::Restart {
+        return verdict;
+    }
+    let screen = screen();
+    let plain = screen.as_deref().map(|screen| screen.lines().map(|line| crate::typing::styled(line).text).collect::<Vec<_>>().join("\n"));
+    if agent == Agent::Codex && plain.as_deref().and_then(crate::agent::codex::startup_question).is_some() {
+        return Verdict::Busy;
+    }
+    with_draft(mode, verdict, || screen.map_or(Draft::Unreadable, |screen| agent.draft(&screen)))
 }
 
 // A restart on its own waits on a box kebbie cannot read, as it may hold a draft; one asked for goes ahead.
@@ -764,7 +817,6 @@ pub fn run_counted(mode: Mode, memory: &mut Memory, only: Option<&str>, counted:
     let at = now();
     let changes = Changes::gather(&state, at);
     let lead_space = lead::lead_workspace(&herdr::workspaces()?);
-    let home = crate::agent::claude::home();
     let mut asked = load_asked(&state);
     let mut restarted = load_restarted(&state);
     let mut live: HashMap<String, u32> = HashMap::new();
@@ -772,7 +824,7 @@ pub fn run_counted(mode: Mode, memory: &mut Memory, only: Option<&str>, counted:
     let mut lines = Vec::new();
     let panes: Vec<(Pane, Option<Process>)> = herdr::agents()?.iter().filter_map(Pane::from_agent).filter(|pane| only.is_none_or(|only| pane.session.as_deref() == Some(only)))
         .map(|pane| {
-            let process = (pane.agent == Agent::Claude).then(|| herdr::process_info(&pane.pane).ok().as_ref().and_then(claude_process)).flatten();
+            let process = herdr::process_info(&pane.pane).ok().as_ref().and_then(|info| agent_process(info, pane.agent));
             (pane, process)
         })
         .filter(|(pane, process)| ours(pane, process.as_ref(), lead_space.as_deref()))
@@ -781,27 +833,35 @@ pub fn run_counted(mode: Mode, memory: &mut Memory, only: Option<&str>, counted:
     for (index, (pane, process)) in panes.into_iter().enumerate() {
         counted(index, total);
         let line = |verdict: &Verdict| Line { label: pane.label.clone(), said: verdict.words(auto), stale: verdict.stale(), reasons: Vec::new() };
-        if pane.agent != Agent::Claude {
-            lines.push(line(&Verdict::Skip(format!("kebbie restarts Claude sessions; {} is left as it runs", pane.agent.name()))));
+        let lead = lead_space.is_some() && pane.workspace == lead_space;
+        let task = process.as_ref().and_then(|process| process.cwd.as_deref()).or(pane.cwd.as_deref()).and_then(tasks::task_at);
+        if pane.agent == Agent::Codex && (lead || task.is_none()) {
+            lines.push(line(&Verdict::Skip("kebbie restarts a Codex only in a task".to_string())));
             continue;
         }
-        let Some(session) = pane.session.clone() else {
+        if pane.agent == Agent::Codex && let Some(why) = task.as_ref().and_then(|(repo, slot)| tasks::codex_restart_refusal(slot.task.as_deref()?, repo)) {
+            lines.push(line(&Verdict::Skip(why)));
+            continue;
+        }
+        let Some(session) = pane.session.clone().or_else(|| task.as_ref().filter(|_| pane.agent == Agent::Codex).and_then(|(repo, slot)| tasks::recorded_session_id(slot.task.as_deref()?, repo))) else {
             lines.push(line(&Verdict::Skip("its session id is unknown".to_string())));
             continue;
         };
         let Some(process) = process else {
-            lines.push(line(&Verdict::Skip("its Claude process cannot be read".to_string())));
+            lines.push(line(&Verdict::Skip(format!("its {} process cannot be read", pane.agent.name()))));
             continue;
         };
         live.insert(session.clone(), process.pid);
-        let lead = lead_space.is_some() && pane.workspace == lead_space;
         let Some(start) = started(process.pid, at) else {
             lines.push(line(&Verdict::Skip("its start time cannot be read".to_string())));
             continue;
         };
         let cwd = process.cwd.clone().or_else(|| pane.cwd.clone());
         let exe = exe_of(process.pid);
-        let mut reasons = changes.reasons(exe.as_deref(), start, cwd.as_deref());
+        let mut reasons = match pane.agent {
+            Agent::Claude => changes.reasons(exe.as_deref(), start, cwd.as_deref()),
+            Agent::Codex => changes.codex_reasons(exe.as_deref(), start),
+        };
         if process.argv.as_deref().is_some_and(|argv| pane.agent.lacks_role(argv)) && cwd.as_deref().and_then(tasks::task_at).is_some() {
             reasons.push(NO_ROLE.to_string());
         }
@@ -829,7 +889,7 @@ pub fn run_counted(mode: Mode, memory: &mut Memory, only: Option<&str>, counted:
             None => Err("its command line cannot be read".to_string()),
             Some(args) => args,
         };
-        let transcript = home.as_deref().and_then(|home| transcript(home, cwd.as_deref(), &session));
+        let transcript = pane.agent.home().and_then(|home| pane.agent.session_transcript(&home, cwd.as_deref(), &session));
         let mode = mode_for(mode, lead);
         let entry = asked_for(&asked, &session, process.pid);
         let facts = Facts {
@@ -842,9 +902,9 @@ pub fn run_counted(mode: Mode, memory: &mut Memory, only: Option<&str>, counted:
         };
         let verdict = match &args {
             Err(reason) if facts.stale || mode == (Mode::Manual { all: true }) => Verdict::Skip(reason.clone()),
-            _ => match decide(mode, auto, &facts, || transcript.as_deref().is_some_and(|path| !memory.background(path, start, at).is_empty())) {
+            _ => match decide(mode, auto, &facts, || pane.agent == Agent::Claude && transcript.as_deref().is_some_and(|path| !memory.background(path, start, at).is_empty())) {
                 Verdict::Restart if transcript.is_none() => Verdict::Skip("its conversation file is not found".to_string()),
-                other => with_draft(mode, other, || crate::typing::draft_in(&pane.pane, pane.agent)),
+                other => with_screen(mode, other, pane.agent, || crate::typing::screen(&pane.pane).ok()),
             },
         };
         let verdict = match verdict {
@@ -870,11 +930,11 @@ pub fn run_counted(mode: Mode, memory: &mut Memory, only: Option<&str>, counted:
                 memory.active.insert(session.clone(), at);
                 live.remove(&session);
                 if matches!(mode, Mode::Routine { .. }) || started.asks().is_some() {
-                    tell_board(&restarted_said(&pane.label, &reasons, &started));
+                    tell_board(&restarted_said(&pane.label, pane.agent, &reasons, &started));
                 }
                 lines.push(match started.asks() {
                     None => Line { reasons: reasons.clone(), ..line(&Verdict::Restart) },
-                    Some(asks) => Line { label: pane.label.clone(), said: format!("restarted; Claude there asks {asks}, answer it there"), stale: true, reasons: reasons.clone() },
+                    Some(asks) => Line { label: pane.label.clone(), said: format!("restarted; {} there asks {asks}, answer it there", pane.agent.name()), stale: true, reasons: reasons.clone() },
                 });
             }
             Err(error) => {
@@ -919,9 +979,9 @@ pub fn with_reasons(lines: Vec<Line>) -> Vec<Line> {
 }
 
 pub fn report(lines: &[Line]) -> Vec<String> {
-    let mut out = vec!["Claude sessions:".to_string()];
+    let mut out = vec!["Claude and Codex sessions:".to_string()];
     if lines.is_empty() {
-        out.push("  no Claude sessions running".to_string());
+        out.push("  no Claude or Codex sessions running".to_string());
     }
     out.extend(lines.iter().map(|line| format!("  {}: {}", line.label, line.said)));
     out
@@ -1156,11 +1216,11 @@ mod tests {
     #[test]
     fn a_restart_that_waits_at_the_trust_prompt_tells_the_board_to_answer_it_rather_than_that_it_runs() {
         let reasons = ["kebbie was rebuilt".to_string()];
-        assert_eq!(restarted_said("billing@app", &reasons, &tasks::Started::Ready), "Restarted billing@app with claude --resume, as it ran older code (kebbie was rebuilt).");
-        let waits = restarted_said("billing@app", &reasons, &tasks::Started::AwaitsTrust);
+        assert_eq!(restarted_said("billing@app", Agent::Claude, &reasons, &tasks::Started::Ready), "Restarted billing@app with claude --resume, as it ran older code (kebbie was rebuilt).");
+        let waits = restarted_said("billing@app", Agent::Claude, &reasons, &tasks::Started::AwaitsTrust);
         assert!(waits.contains("asks whether you trust its folder") && waits.contains("Answer it there, and it resumes its conversation") && !waits.contains("with claude --resume"), "{waits}");
         let source = include_str!("restart.rs").split("#[cfg(test)]").next().unwrap();
-        assert!(source.contains("Ok(started) => {") && source.contains("tell_board(&restarted_said(&pane.label, &reasons, &started))"), "the board hears how the restart came out");
+        assert!(source.contains("Ok(started) => {") && source.contains("tell_board(&restarted_said(&pane.label, pane.agent, &reasons, &started))"), "the board hears how the restart came out");
     }
 
     #[test]
@@ -1379,6 +1439,67 @@ mod tests {
         assert_eq!(Pane::from_agent(&anonymous).unwrap().session, None);
         assert_eq!(Pane::from_agent(&json!({ "agent": "codex", "pane_id": "p" })).map(|pane| pane.agent), Some(Agent::Codex), "a Codex pane is kebbie's");
         assert!(Pane::from_agent(&json!({ "agent": "gemini", "pane_id": "p" })).is_none());
+    }
+
+    #[test]
+    fn a_codex_task_is_stale_on_a_newer_codex_or_a_kebbie_update_and_on_nothing_claude_loads() {
+        let dir = crate::sh::test_dir("restart-codex-binary");
+        let releases = dir.join("packages/standalone/releases");
+        let (old, new) = (releases.join("0.163.0-aarch64-apple-darwin/bin/codex"), releases.join("0.164.0-aarch64-apple-darwin/bin/codex"));
+        for (file, at) in [(&old, 1_000), (&new, 2_000)] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "").unwrap();
+            std::fs::File::options().write(true).open(file).unwrap().set_modified(UNIX_EPOCH + std::time::Duration::from_secs(at)).unwrap();
+        }
+        let path_has = |codex: &Path| Changes { codex: Some(codex.canonicalize().unwrap()), ..Changes::default() };
+        assert_eq!(path_has(&new).codex_reasons(Some(&old), 3_000), ["a newer Codex"], "Codex's standalone installer keeps the old release, so the running process's exe is still there beside the new one");
+        assert!(path_has(&new).codex_reasons(Some(&new), 3_000).is_empty());
+        assert!(path_has(&old).codex_reasons(Some(&new), 3_000).is_empty(), "a keeper whose PATH still finds the older release does not call the session stale");
+        assert_eq!(Changes { codex_changed: Some(200), ..Changes::default() }.codex_reasons(Some(Path::new("/usr/bin/node")), 100), ["a newer Codex"], "an npm install runs under node, so the change time counts");
+        let loaded = Changes { plugins: vec![Plugin { id: "vault@gronare".to_string(), updated: 500, project: None }], mcp: HashMap::from([("user".to_string(), 500)]), updated: Some(700), ..path_has(&new) };
+        assert_eq!(loaded.codex_reasons(Some(&new), 100), [KEBBIE_UPDATE], "Claude's plugins and MCP servers are nothing a Codex loads");
+        let held = held_back(Some(&entry(1000, "/r/0.163/bin/codex", &["a newer Codex"], None, None)), &entry(99_999, "/r/0.163/bin/codex", &["a newer Codex"], None, None), true).unwrap();
+        assert_eq!(held, "a restart brought back the same Codex (/r/0.163/bin/codex), so the pane starts that one; restarting again cannot update it");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_codex_in_a_pane_is_its_process_group_leader() {
+        let info = json!({ "foreground_process_group_id": 5120, "shell_pid": 1927, "foreground_processes": [
+            { "argv": ["/Users/u/.local/bin/codex", "resume", "--sandbox", "workspace-write", "019b3136"], "argv0": "codex", "cwd": "/src/wt1.app", "pid": 5120 },
+            { "argv0": "codex-code-mode-host", "pid": 5121 },
+        ] });
+        let process = agent_process(&info, Agent::Codex).unwrap();
+        assert_eq!((process.pid, process.cwd.as_deref()), (5120, Some(Path::new("/src/wt1.app"))));
+        assert_eq!(Agent::Codex.resume_args(&process.argv.unwrap(), "019b3136").unwrap(), argv(&["resume", "--sandbox", "workspace-write", "019b3136"]));
+        let led_by_sh = json!({ "foreground_process_group_id": 7, "foreground_processes": [{ "argv0": "sh", "pid": 7 }, { "argv0": "codex", "pid": 8, "argv": ["codex"] }] });
+        assert_eq!(agent_process(&led_by_sh, Agent::Codex).unwrap().pid, 8);
+    }
+
+    #[test]
+    fn a_codex_on_a_start_up_question_or_with_a_draft_is_never_ended_and_an_empty_composer_is() {
+        let update = "  Update available · 0.163.0 → 0.164.0\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version";
+        assert_eq!(with_screen(Mode::Manual { all: false }, Verdict::Restart, Agent::Codex, || Some(update.to_string())), Verdict::Busy, "its question is the user's to answer, even on kebbie restart by hand");
+        assert_eq!(with_screen(ROUTINE, Verdict::Restart, Agent::Codex, || Some("› Ask Codex to do anything\n\n  100% context left".to_string())), Verdict::Restart);
+        assert_eq!(with_screen(ROUTINE, Verdict::Restart, Agent::Codex, || Some("› fix the flaky test\n\n  100% context left".to_string())), Verdict::Drafted);
+        assert_eq!(with_screen(ROUTINE, Verdict::Restart, Agent::Codex, || None), Verdict::Drafted, "a screen that cannot be read may hold a draft");
+        assert_eq!(with_screen(ROUTINE, Verdict::Busy, Agent::Codex, || panic!("a busy session's screen is not read")), Verdict::Busy);
+        assert_eq!(restarted_said("flaky@app", Agent::Codex, &[KEBBIE_UPDATE.to_string()], &tasks::Started::Ready), "Restarted flaky@app with codex resume, as it ran older code (kebbie update).");
+        assert!(restarted_said("flaky@app", Agent::Codex, &[KEBBIE_UPDATE.to_string()], &tasks::Started::AwaitsHooks).contains("; Codex there asks whether to trust the hooks"));
+    }
+
+    #[test]
+    fn a_codex_task_is_restarted_like_a_claude_one_but_never_a_codex_outside_a_task_and_never_cut_from_claudes_background_work() {
+        let source = include_str!("restart.rs");
+        let run = &source[source.find("\npub fn run_counted(").unwrap()..];
+        let run = &run[..run.find("\n}\n").unwrap()];
+        assert!(run.contains("if pane.agent == Agent::Codex && (lead || task.is_none())"), "the lead and the user's own Codex sessions are left as they run");
+        assert!(run.contains("tasks::codex_restart_refusal(") && run.find("tasks::codex_restart_refusal(").unwrap() < run.find("perform(").unwrap(), "a Codex task whose profile no longer loads is skipped before anything ends it");
+        assert!(run.contains("Agent::Codex => changes.codex_reasons(") && run.contains("pane.agent.session_transcript("), "a Codex is judged by its own binary and its rollout");
+        assert!(run.contains("|| pane.agent == Agent::Claude && transcript"), "Claude's background-work check reads a Claude transcript only");
+        assert!(run.find("lacks_role(argv)").unwrap() < run.find("held_back(").unwrap(), "a Codex task started on the plugin's first id or without its hooks is stale like a Claude without its role");
+        let perform = &source[source.find("\nfn perform(").unwrap()..];
+        assert!(perform.find("codex::ready_to_start(").unwrap() < perform.find(".end(&pane.pane)").unwrap(), "a Codex is ended only when kebbie's plugin is the one it writes, so the resumed session reports");
     }
 
     #[test]

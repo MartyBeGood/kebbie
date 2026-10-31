@@ -94,6 +94,16 @@ pub fn for_running_task(dir: &Path, given: Option<&str>, recorded: Option<&str>,
     }
 }
 
+// A Codex task resumed on its profile alone: the built-in task the start falls back to is a Claude role, which a Codex session must never be given.
+pub fn codex_restart_refusal(dir: &Path, recorded: Option<&str>, configured: Option<&str>) -> Option<String> {
+    let wanted = chosen(None, recorded, configured);
+    match for_task(dir, wanted) {
+        Ok(profile) if profile.agent == Agent::Codex => None,
+        Ok(_) => Some(format!("its profile \"{wanted}\" no longer runs Codex, so its Codex session is not resumed on a Claude role")),
+        Err(error) => Some(format!("its profile \"{wanted}\" does not load ({error}), so its Codex session is not resumed on the built-in Claude role")),
+    }
+}
+
 pub fn for_task(dir: &Path, wanted: &str) -> Result<Profile> {
     if wanted == REVIEWER {
         return Err(format!("\"{REVIEWER}\" is kebbie review's profile, not a task's; kebbie profiles lists the others"));
@@ -502,6 +512,18 @@ mod tests {
         assert!(for_running_task(&dir, None, Some("designer"), None).unwrap().1.unwrap().contains("No profile \"designer\""));
         assert!(for_running_task(&dir, Some("designer"), Some("task"), None).is_err(), "a profile asked for by name is refused, not swapped");
         assert!(for_running_task(&dir, None, None, Some("designer")).is_err(), "a new start never falls back");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_codex_task_whose_profile_no_longer_loads_is_not_restarted_on_the_built_in_claude_role() {
+        let dir = folder("profile-codex-restart", &[("coder.toml", "agent = \"codex\"\nmodel = \"gpt-5.5\"\n"), ("writer.toml", "about = \"Claude now\"\n")]);
+        assert_eq!(codex_restart_refusal(&dir, Some("coder"), None), None);
+        let gone = codex_restart_refusal(&dir, Some("designer"), None).unwrap();
+        assert!(gone.starts_with("its profile \"designer\" does not load (") && gone.contains("No profile \"designer\"") && gone.ends_with("so its Codex session is not resumed on the built-in Claude role"), "{gone}");
+        assert_eq!(codex_restart_refusal(&dir, Some("writer"), None).as_deref(), Some("its profile \"writer\" no longer runs Codex, so its Codex session is not resumed on a Claude role"));
+        std::fs::write(dir.join("coder.toml"), "agent = \"codex\"\ndeny = [\"Bash(rm:*)\"]\n").unwrap();
+        assert!(codex_restart_refusal(&dir, Some("coder"), None).unwrap().contains("does not load"), "a profile broken since the start is refused too");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

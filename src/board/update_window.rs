@@ -276,7 +276,7 @@ mod tests {
             tracker.done(progress::PLUGINS, "Updated the Claude Code and vault plugins");
             tracker.done(progress::RESTART, "Sessions move to the new kebbie");
             tracker.finish(finish.clone());
-            Ok("kebbie follows the main channel\nkebbie main rebuilt, 02c7fe0 → 9cbd545\n\nClaude sessions:\n  lead: restarts when idle\nkeeper: restarted on the new kebbie (pid 4242)".to_string())
+            Ok("kebbie follows the main channel\nkebbie main rebuilt, 02c7fe0 → 9cbd545\n\nClaude and Codex sessions:\n  lead: restarts when idle\nkeeper: restarted on the new kebbie (pid 4242)".to_string())
         });
         release
     }

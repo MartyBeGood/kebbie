@@ -323,12 +323,12 @@ const USAGE: &str = "kebbie: herding coding agents in herdr
                                   and say in one line what it wrote, so tasks whose profile runs Codex report, get
                                   their role and are recorded; never edits Codex's config.toml or hooks.json
                                   (--uninstall removes the plugin, on your y)
-  kebbie restart [--all]          restart, with claude --resume in its own pane and with its own flags, each Claude
-                                  session that runs older code than is installed (Claude Code, a plugin, MCP servers,
-                                  kebbie) and is idle, not the pane you are in and without background work (that one
-                                  is asked about on the board); a task's Claude gets its role and settings written
-                                  anew, and one running without them counts as stale; --all every idle one; works
-                                  with [restart] auto = false
+  kebbie restart [--all]          restart, with claude --resume or codex resume in its own pane and with its own
+                                  flags, each Claude session or Codex task that runs older code than is installed
+                                  (Claude Code, Codex, a plugin, MCP servers, kebbie) and is idle, not the pane you
+                                  are in and without background work (that one is asked about on the board); a task
+                                  gets its role written anew, and one running without it counts as stale; --all
+                                  every idle one; works with [restart] auto = false
   kebbie keeper                   the keeper: one background kebbie per machine that runs the routines (stale-session
                                   restarts, the update check, held messages, delivery checks of typed prompts, the
                                   scheduled routines, rebasing the tasks that follow main, starting queued tasks) with no

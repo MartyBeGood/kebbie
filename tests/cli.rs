@@ -776,9 +776,9 @@ fn update_restarts_the_idle_session_at_once_with_its_flags_and_says_what_waits_f
     assert!(output.status.success(), "{said}\n{}", stderr(&output));
     assert!(said.contains("Restarting\n  ✓ 1 session is on the new kebbie\n  2 sessions restart when they're idle\n  1 session waits for your answer, as background work is still running\n"), "the summary sums the sessions up: {said}");
     assert!(said.starts_with("▸ Fetching main") && said.contains("\n✓ Sessions move to the new kebbie\n"), "a pipe gets one plain line per step: {said}");
-    let tail: Vec<&str> = said.lines().skip_while(|line| *line != "Claude sessions:").collect();
+    let tail: Vec<&str> = said.lines().skip_while(|line| *line != "Claude and Codex sessions:").collect();
     assert_eq!(tail, [
-        "Claude sessions:",
+        "Claude and Codex sessions:",
         "  billing: restarted",
         "  Notes (p_notes): you are in it: restarts when you leave it",
         "  api: restarts when idle",

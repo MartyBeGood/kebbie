@@ -109,7 +109,7 @@ pub(crate) fn suggested(lines: &[Styled], marks: &[char]) -> bool {
     lines.iter().all(|line| line.text.chars().zip(&line.faint).all(|(character, faint)| *faint || character.is_whitespace() || marks.contains(&character)))
 }
 
-fn screen(pane: &str) -> Result<String> {
+pub(crate) fn screen(pane: &str) -> Result<String> {
     crate::sh::run(&herdr::bin(), &["pane", "read", pane, "--source", "visible", "--format", "ansi"], None)
 }
 

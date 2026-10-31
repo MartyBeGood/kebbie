@@ -272,7 +272,7 @@ pub fn restart_summary(lines: &[crate::restart::Line]) -> Vec<String> {
         said.push(format!("Restarting {} failed; d shows why", who.replacen("The lead", "the lead", 1)));
     }
     if said.is_empty() && lines.is_empty() {
-        said.push("No Claude sessions are running".to_string());
+        said.push("No Claude or Codex sessions are running".to_string());
     }
     said
 }
@@ -719,7 +719,7 @@ mod tests {
         assert_eq!(restart_summary(&manual), ["The lead and 1 session keep the old kebbie until you restart them: restart.auto is off"]);
         let trouble = said(&[("billing@app", "restart failed: Claude did not come back"), ("worker@app", "waiting for your answer: background work running"), ("api@app", "stale, held: a restart onto kebbie 0.27.0 left it on kebbie 0.26.0; restarting again would not move it")]);
         assert_eq!(restart_summary(&trouble), ["1 session stays on the old kebbie, as a restart did not move it; d shows why", "1 session waits for your answer, as background work is still running", "Restarting 1 session failed; d shows why"]);
-        assert_eq!(restart_summary(&[]), ["No Claude sessions are running"]);
+        assert_eq!(restart_summary(&[]), ["No Claude or Codex sessions are running"]);
         let on = said(&[("lead", "restarted"), ("billing@app", "up to date"), ("api@app", "restarted"), ("worker@app", "up to date"), ("docs@app", "restarts when idle")]);
         assert_eq!(restart_summary(&on), ["✓ The lead and 3 sessions are on the new kebbie", "1 session restarts when it's idle"]);
         assert_eq!(restart_summary(&said(&[("billing@app", "up to date")])), ["✓ 1 session is on the new kebbie"]);
