@@ -299,7 +299,7 @@ pub(super) fn authorize_as(caller: &Caller, repo: &Path, slot: &Slot, upstream: 
     let shown = crate::review::shown(&address, &slot.path, upstream);
     let covered = |reviewed: &str| same_code(&slot.path, upstream, reviewed, &head) || same_code(&slot.path, upstream, reviewed, &sha);
     if let Some(why) = state_dir().ok().and_then(|state| crate::assessment::holds_push(&state, &address)) {
-        return Notice::new(Tone::NotNow, format!("{refused}: {why}")).next("It waits under In review; push it again once that is settled.").detail("task", task).err();
+        return Notice::new(Tone::NotNow, format!("{refused}: {why}")).next("It stays under Ready to push while the assessor reads it; push it again once the board shows its word.").detail("task", task).err();
     }
     crate::review::gate(shown.as_ref(), covered).map_err(|why| Notice::new(Tone::NotNow, format!("{refused}: {why}")).detail("task", task).to_string())?;
     let check = Pusher { caller: caller.clone(), permit: crate::permit::of(&address, &name_of(repo)), reviewed: shown.as_ref().is_some_and(|shown| !shown.pending()), approved: approved(&slot.path, upstream, &address) };
@@ -1336,6 +1336,19 @@ mod tests {
         deliver(&dir, &slot, &upstream, Through::All, &Out { sha: head.clone(), rebased: false }, "the user", &state, watching).unwrap();
         assert_eq!(phase(), Some(Phase::CiRunning { sha: head.clone() }));
         assert_eq!(git(&origin, &["rev-parse", upstream.trim_start_matches("origin/")]).unwrap(), head, "pushed");
+        cleanup(dir, origin, &slot);
+    }
+
+    #[test]
+    fn a_push_held_for_the_assessment_says_where_the_task_waits() {
+        use crate::permit::Caller;
+        let (dir, origin, slot, upstream) = task_with_a_commit("billing");
+        let state = state_dir().unwrap();
+        let address = crate::peers::address("billing", &name_of(&dir));
+        assert!(crate::assessment::ask(&state, &address, &slot.path, crate::config::ReviewAuto::Require).unwrap());
+        let refused = authorize(&Caller::User, &dir, &slot, &upstream, Through::All).unwrap_err();
+        assert!(refused.contains("is being assessed") && refused.contains("stays under Ready to push while the assessor reads it") && !refused.contains("In review"), "{refused}");
+        crate::assessment::forget_in(&state, &address);
         cleanup(dir, origin, &slot);
     }
 
