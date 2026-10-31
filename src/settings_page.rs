@@ -205,6 +205,7 @@ struct Agents {
     claude_default: Option<String>,
     review_model: Option<(String, Layer)>,
     version: String,
+    chosen: Vec<Agent>,
 }
 
 impl Agents {
@@ -218,6 +219,7 @@ impl Agents {
             codex_effort: codex_effort(&paths.codex_home),
             claude_default: crate::agent::claude::configured_model(&paths.claude_home),
             version: crate::issue_recheck::version_at(&paths.kebbie).unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
+            chosen: crate::agent::chosen_in(Some(&paths.codex_home)),
         }
     }
 
@@ -248,7 +250,14 @@ impl Agents {
         self.codex_models.iter().flatten().find(|cached| cached.slug == model)
     }
 
+    fn set_up(&self, profile: &Profile) -> bool {
+        self.chosen.contains(&profile.agent)
+    }
+
     fn warning(&self, profile: &Profile) -> Option<String> {
+        if !self.set_up(profile) {
+            return Some(format!("⚠ {}", profile.agent.not_set_up()));
+        }
         let model = self.model(profile).filter(|_| profile.agent == Agent::Codex)?;
         if self.offered(&model) != Some(false) {
             return None;
@@ -427,11 +436,12 @@ impl Page {
             Kind::Profile => {
                 let set = (entry.layer != Layer::Default).then_some(now);
                 let mut choices = vec![choice(&format!("none ({})", profiles::TASK), "the built-in task", Then::Write(Change::Remove), set.is_none())];
-                choices.extend(self.agents.profiles.iter().filter(|profile| profile.name != profiles::REVIEWER).map(|profile| {
+                choices.extend(self.agents.profiles.iter().filter(|profile| profile.name != profiles::REVIEWER && self.agents.set_up(profile)).map(|profile| {
                     let about = if profile.fits.is_empty() { "(for not said)" } else { profile.fits.as_str() };
                     choice(&format!("{:?}", profile.name), about, Then::Write(Change::Set(Set::Text(profile.name.clone()))), set.as_deref() == Some(profile.name.as_str()))
                 }));
-                keep_current(&mut choices, 0, set.as_deref(), |name| choice(&format!("{name:?}"), "no profile loads by this name", Then::Write(Change::Set(Set::Text(name.to_string()))), true));
+                let unset = |name: &str| self.agents.profiles.iter().find(|profile| profile.name == name).map(|profile| profile.agent.not_set_up());
+                keep_current(&mut choices, 0, set.as_deref(), |name| choice(&format!("{name:?}"), &unset(name).unwrap_or_else(|| "no profile loads by this name".to_string()), Then::Write(Change::Set(Set::Text(name.to_string()))), true));
                 ("Which profile?", choices)
             }
             Kind::Skill => {
@@ -988,15 +998,18 @@ impl Page {
     }
 
     fn wizard(&mut self, from: &str) {
-        let starts: Vec<Profile> = self.agents.profiles.iter().filter(|profile| profile.name != profiles::REVIEWER).cloned().collect();
+        let starts: Vec<Profile> = self.agents.profiles.iter().filter(|profile| profile.name != profiles::REVIEWER && self.agents.set_up(profile)).cloned().collect();
         let start = starts.iter().position(|profile| profile.name == from).or_else(|| starts.iter().position(|profile| profile.name == profiles::TASK)).unwrap_or(0);
         let dir = &self.paths.profiles;
         let mut taken: Vec<String> = self.agents.profiles.iter().map(|profile| profile.name.clone()).collect();
         taken.extend(std::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|entry| entry.file_name().to_str()?.strip_suffix(".toml").map(str::to_string)));
-        let codex = crate::agent::codex::availability(&self.paths.path, Some(&self.paths.codex_home), &self.paths.kebbie_command).short_line();
+        let agents = self.agents.chosen.iter().map(|agent| (*agent, match agent {
+            Agent::Claude => "kebbie's own default".to_string(),
+            Agent::Codex => crate::agent::codex::availability(&self.paths.path, Some(&self.paths.codex_home), &self.paths.kebbie_command).short_line(),
+        })).collect();
         let files = profiles::role_choices(dir, &self.agents.profiles, "");
         self.said = None;
-        self.mode = Mode::Wizard(Box::new(Wizard::new(starts, start, files, dir.clone(), home_relative(dir), taken, codex)));
+        self.mode = Mode::Wizard(Box::new(Wizard::new(starts, start, files, dir.clone(), home_relative(dir), taken, agents)));
     }
 
     fn answers(choices: Vec<Choice>) -> (Vec<Answer<Pick>>, usize) {
@@ -1910,6 +1923,7 @@ mod tests {
         std::fs::write(dir.join("codex/config.toml"), "model = \"gpt-5.1-codex-max\"\n").unwrap();
         std::fs::write(dir.join("codex/models_cache.json"), crate::agent::codex::CACHE_FIXTURE).unwrap();
         std::fs::write(dir.join("claude/settings.json"), "{\"model\": \"opus\"}").unwrap();
+        crate::agent::codex::install(&dir.join("codex"), "kebbie").unwrap();
         let mut fixture = fixture;
         fixture.page.load();
         fixture
@@ -2151,7 +2165,7 @@ mod tests {
         press(&mut fixture.page, &[KeyCode::Down]);
         let (shown, _) = screen_at(&mut fixture.page, 100, 34);
         assert!(shown.contains("│ step 3 of 6") && shown.contains("│ Which agent?") && shown.contains("│ It runs the task; the model comes next."), "{shown}");
-        assert!(shown.contains("│  Claude Code         kebbie's own default") && shown.contains("│ ▌Codex               codex-cli 0.163.0 · kebbie's plugin not ") && shown.contains("│                      installed: kebbie setup codex"), "Codex's version and kebbie's plugin, as kebbie profiles says them: {shown}");
+        assert!(shown.contains("│  Claude Code         kebbie's own default") && shown.contains("│ ▌Codex               codex-cli 0.163.0 · kebbie's plugin ") && shown.contains("│                      installed "), "Codex's version and kebbie's plugin, as kebbie profiles says them: {shown}");
         assert!(shown.contains("│ ↑ ↓ choose · ⏎ next · ← back · esc cancel"), "{shown}");
         press(&mut fixture.page, &[KeyCode::Enter]);
         assert!(screen_at(&mut fixture.page, 100, 34).0.contains("│ ▌Codex's default     gpt-5.1-codex-max, not offered to you ⚠"), "the same answers as m, with no now");
@@ -2549,6 +2563,46 @@ mod tests {
         assert!(screen_at(&mut fixture.page, 100, 34).0.contains("│ ▌gpt-7-preview       not offered to you ⚠"), "the start's model is offered as it is: {}", screen_at(&mut fixture.page, 100, 34).0);
         press(&mut fixture.page, &[KeyCode::Enter, KeyCode::Enter]);
         assert_eq!((wizard(&fixture.page).model().as_deref(), wizard(&fixture.page).effort().as_deref()), (Some("gpt-7-preview"), Some("persistent")), "the wizard keeps the start's model and effort on ⏎");
+    }
+
+    #[test]
+    fn without_codex_chosen_in_setup_no_codex_is_offered_and_a_codex_profile_says_how_to_set_it_up() {
+        let mut fixture = agents_fixture("settings-no-codex");
+        fake_codex(&fixture);
+        crate::agent::codex::uninstall(&fixture.dir.join("codex")).unwrap();
+        fixture.page.load();
+        assert_eq!(fixture.page.agents.chosen, [Agent::Claude]);
+        go_to_profile(&mut fixture.page, "codex-build");
+        let (shown, _) = screen_at(&mut fixture.page, 120, 34);
+        assert!(line_of(&shown, " codex-build ").contains("codex · gpt-6.1-sol ⚠ · medium"), "{shown}");
+        assert!(shown.contains("⚠ Codex is not set up: kebbie setup codex"), "the selected row says what to run: {shown}");
+        press(&mut fixture.page, &[KeyCode::Char('m')]);
+        assert!(matches!(&fixture.page.mode, Mode::Choose(_)), "m still edits its file");
+        press(&mut fixture.page, &[KeyCode::Esc]);
+        go_to_profile(&mut fixture.page, "designer");
+        press(&mut fixture.page, &[KeyCode::Char('n')]);
+        type_text(&mut fixture.page, "writer");
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        let (shown, _) = screen_at(&mut fixture.page, 100, 34);
+        assert!(shown.contains("│ step 2 of 6") && shown.contains("│ ▌designer ") && !shown.contains("│  codex"), "a Codex profile is no start: {shown}");
+        assert!(wizard(&fixture.page).starts.iter().all(|profile| profile.agent == Agent::Claude));
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        let (shown, _) = screen_at(&mut fixture.page, 100, 34);
+        assert!(shown.contains("│ step 3 of 6") && shown.contains("│ ▌Claude Code         kebbie's own default") && !shown.contains("│  Codex "), "the one agent setup chose, selected: {shown}");
+        assert_eq!(wizard(&fixture.page).agents, [(Agent::Claude, "kebbie's own default".to_string())]);
+        press(&mut fixture.page, &[KeyCode::Down, KeyCode::Enter]);
+        assert_eq!((wizard(&fixture.page).step, wizard(&fixture.page).agent()), (3, Agent::Claude));
+        press(&mut fixture.page, &[KeyCode::Esc]);
+        go_to(&mut fixture.page, "task.profile");
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        let shown = screen(&mut fixture.page);
+        assert!(shown.contains("\"designer\"") && !shown.contains("\"codex"), "a task.profile answer only on an agent setup chose: {shown}");
+        press(&mut fixture.page, &[KeyCode::Esc]);
+        std::fs::write(fixture.dir.join("config.toml"), "[task]\nprofile = \"codex-build\"\n").unwrap();
+        fixture.page.load();
+        go_to(&mut fixture.page, "task.profile");
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        assert!(screen(&mut fixture.page).contains("│ ▌\"codex-build\"       Codex is not set up: kebbie setup codex ·"), "{}", screen(&mut fixture.page));
     }
 
     #[test]

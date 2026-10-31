@@ -8,7 +8,7 @@ Use a profile when a kind of work needs more than kebbie's task role: UI work th
 
 1. Open the board's Settings page with `,` and go to Profiles.
 2. Select the profile to start from and press `n`.
-3. Answer the six steps: a name, the profile to start from, the agent, its model, its effort and its role. `←` goes back a step, `esc` cancels and writes nothing.
+3. Answer the six steps: a name, the profile to start from, the agent (Claude Code, or Codex once you have set it up), its model, its effort and its role. `←` goes back a step, `esc` cancels and writes nothing.
 4. Read the check, the file and the role file kebbie will write, and press `y` to add it, or `g` to add it and open its role in your editor.
 
 The profile is `~/.config/kebbie/profiles/<name>.toml`, yours: an update never writes it. It takes the start's `about`, `for`, skills, permissions and sandbox, and a role of its own, a new empty file, a copy, or a role file other profiles already read. Edit `for` afterwards with `⏎`, as the lead chooses by it. `x` on the row deletes it again.
@@ -56,7 +56,7 @@ kebbie's own `task`, `reviewer` and `ops` profiles take a role file of yours too
 
 kebbie writes `role = "task.md"` in `~/.config/kebbie/profiles/task.toml`. Both files are yours, and an update never writes them. `s` in the same menu shows kebbie's own role, read-only.
 
-If you want the task to run in Codex, give the profile `agent = "codex"`. See [Run a task with Codex](run-a-task-with-codex.md).
+If you want the task to run in Codex, give the profile `agent = "codex"`. See [Run a task with Codex](run-a-task-with-codex.md). Codex is offered only once you have set it up with `kebbie setup codex`; until then a Codex profile shows `Codex is not set up: kebbie setup codex`, and no task starts with it.
 
 ## Start a task with it
 

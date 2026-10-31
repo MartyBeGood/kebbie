@@ -182,6 +182,11 @@ pub enum Installed {
     UnderOldId(PathBuf),
 }
 
+// Whether kebbie's plugin is there at all, with no kebbie command to compare its files against.
+pub fn plugin_state(home: &Path) -> Installed {
+    installed(home, "")
+}
+
 pub fn installed(home: &Path, kebbie: &str) -> Installed {
     let root = plugin_root(home);
     if !root.join(HOOKS_FILE).is_file() {
@@ -210,7 +215,7 @@ pub fn ready_to_start(home: Option<&Path>, kebbie: &str) -> Result<()> {
     let home = home.ok_or("Neither CODEX_HOME nor HOME is set, so kebbie cannot find Codex's home")?;
     match installed(home, kebbie) {
         Installed::Current => Ok(()),
-        Installed::Missing => Err(format!("kebbie's Codex plugin is not installed in {}, so the task would neither report nor get its role; run kebbie setup codex", plugin_root(home).display())),
+        Installed::Missing => Err(super::Agent::Codex.not_set_up()),
         Installed::Stale(files) => Err(format!("kebbie's Codex plugin in {} is not what this kebbie writes ({}); run kebbie setup codex", plugin_root(home).display(), files.join(", "))),
         Installed::Replaced(copies) => Err(format!("Codex replaced kebbie's plugin with {}, a copy from a marketplace of the same name; run kebbie setup codex", shown_paths(&copies))),
         Installed::UnderOldId(old) => Err(format!("kebbie's Codex plugin is at {}, under the id kebbie@kebbie, which a repo's marketplace replaces; run kebbie setup codex", old.display())),
@@ -951,7 +956,7 @@ mod tests {
     #[test]
     fn a_codex_task_starts_only_on_the_plugin_this_kebbie_writes() {
         let home = crate::sh::test_dir("codex-ready");
-        assert!(ready_to_start(Some(&home), "/opt/kebbie").unwrap_err().contains("not installed"));
+        assert_eq!(ready_to_start(Some(&home), "/opt/kebbie").unwrap_err(), "Codex is not set up: kebbie setup codex", "the same words as the Settings page and kebbie profiles");
         install(&home, "/opt/kebbie").unwrap();
         assert_eq!(ready_to_start(Some(&home), "/opt/kebbie"), Ok(()));
         let launcher = plugin_root(&home).join(LAUNCHER);

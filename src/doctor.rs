@@ -355,6 +355,12 @@ pub fn task_profiles(profiles_dir: &Path, named: &[(String, String)]) -> Option<
     Some(warn("task profile", format!("{}; the profiles are {}", missing.join("; "), names.join(", ")), one("pick it on the Settings page (,) under Tasks")))
 }
 
+pub fn unchosen_profiles(profiles: &[crate::profiles::Profile], chosen: &[crate::agent::Agent]) -> Vec<Check> {
+    profiles.iter().filter(|profile| !chosen.contains(&profile.agent)).map(|profile| {
+        warn("profile", format!("profile {}: {}", profile.name, profile.agent.not_set_up()), one(format!("kebbie setup {}", profile.agent.key())))
+    }).collect()
+}
+
 const CLAUDE_ALIASES: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
 
 // A Claude profile that pins a full model id stays on it after Claude Code moves on; an alias follows each new model.
@@ -783,10 +789,11 @@ pub fn checks(env: &Env) -> Vec<Check> {
     checks.push(status_line(&claude_settings));
     checks.push(current_link(&env.home, env.data_home.as_deref(), plugin.as_ref().filter(|_| !gone).map(|plugin| plugin.root.as_path())));
     checks.push(kebbie_on_path(&env.home, &env.path));
-    let needed = crate::profiles::list_in(&env.profiles_dir).0.iter().any(|profile| profile.agent == crate::agent::Agent::Codex);
     let kebbie = crate::peers::kebbie_command().unwrap_or_default();
     let codex_config = std::fs::read_to_string(env.codex_dir.join("config.toml")).ok().and_then(|text| text.parse::<toml::Table>().ok());
     let found = crate::agent::codex::availability(&env.path, Some(&env.codex_dir), &kebbie);
+    let chosen = crate::agent::chosen_with(&found.plugin);
+    let needed = chosen.contains(&crate::agent::Agent::Codex) && crate::profiles::list_in(&env.profiles_dir).0.iter().any(|profile| profile.agent == crate::agent::Agent::Codex);
     let signed = (needed || found.plugin != crate::agent::codex::Installed::Missing).then(|| crate::agent::login::codex(found.binary.as_deref(), crate::agent::login::TIMEOUT)).filter(|_| found.binary.is_some());
     checks.extend(codex(&found, codex_config.as_ref(), needed, &env.codex_dir, signed));
     if found.binary.is_some() && (needed || found.plugin != crate::agent::codex::Installed::Missing) {
@@ -815,6 +822,7 @@ pub fn checks(env: &Env) -> Vec<Check> {
     checks.extend(repo_checks);
     checks.extend(task_profiles(&env.profiles_dir, &named_profiles(machine.as_ref(), &env.config, &env.repos_dir)));
     checks.extend(claude_models(&crate::profiles::list_in(&env.profiles_dir).0));
+    checks.extend(unchosen_profiles(&crate::profiles::list_in(&env.profiles_dir).0, &chosen));
     checks.extend(env.repo.as_deref().map(push_block));
     let repos = known_repos();
     checks.push(kelpie_leftovers(&crate::push_block::kelpie_era_worktrees(&repos), &sessions_with_gone_hooks(&env.kebbie_state.join("roles"), &open_addresses(&repos))));
@@ -1527,6 +1535,11 @@ mod tests {
         assert!(task_profiles(&profiles, &[("config.toml".to_string(), "reviewer".to_string())]).unwrap().level == Level::Warn, "the reviewer is never a task's profile");
         assert_eq!(task_profiles(&profiles, &named[..1]).unwrap().level, Level::Ok);
         assert_eq!(task_profiles(&profiles, &[]), None, "nothing to say when no file sets it");
+        let coder = crate::profiles::list_in(&profiles).0.into_iter().find(|profile| profile.name == "coder").unwrap();
+        let unchosen = unchosen_profiles(&[crate::profiles::built_in(crate::profiles::TASK).unwrap(), coder.clone()], &[crate::agent::Agent::Claude]);
+        assert_eq!(unchosen.len(), 1);
+        assert_eq!((unchosen[0].level, unchosen[0].fact.as_str(), unchosen[0].fix[0].as_str()), (Level::Warn, "profile coder: Codex is not set up: kebbie setup codex", "kebbie setup codex"));
+        assert!(unchosen_profiles(&[coder], &crate::agent::Agent::ALL).is_empty(), "a machine that chose Codex has nothing to say");
         let claude = |name: &str, model: &str| crate::profiles::Profile { name: name.to_string(), model: Some(model.to_string()), file: Some(PathBuf::from(format!("/p/{name}.toml"))), ..crate::profiles::built_in(crate::profiles::TASK).unwrap() };
         let pinned = claude_models(&[claude("designer", "claude-opus-4-5-20251101"), claude("writer", "sonnet"), claude("long", "opus[1m]"), crate::profiles::Profile { agent: crate::agent::Agent::Codex, ..claude("coder", "gpt-6.1-sol") }]);
         assert_eq!(pinned.len(), 1, "an alias, an alias with its context suffix and a Codex model are fine: {pinned:?}");

@@ -34,7 +34,7 @@ pub struct Wizard {
     pub starts: Vec<Profile>,
     pub start: usize,
     pub agent: usize,
-    pub codex: String,
+    pub agents: Vec<(Agent, String)>,
     pub models: (String, Vec<Answer<Pick>>),
     pub model: usize,
     pub typing: Option<String>,
@@ -50,12 +50,10 @@ pub struct Wizard {
     pub error: Option<String>,
 }
 
-const AGENTS: [Agent; 2] = [Agent::Claude, Agent::Codex];
-
 impl Wizard {
-    pub fn new(starts: Vec<Profile>, start: usize, files: Vec<(String, String)>, dir: PathBuf, folder: String, taken: Vec<String>, codex: String) -> Self {
+    pub fn new(starts: Vec<Profile>, start: usize, files: Vec<(String, String)>, dir: PathBuf, folder: String, taken: Vec<String>, agents: Vec<(Agent, String)>) -> Self {
         let mut wizard = Wizard {
-            step: NAME, name: String::new(), starts, start, agent: 0, codex, models: (String::new(), Vec::new()), model: 0, typing: None, typed: None,
+            step: NAME, name: String::new(), starts, start, agent: 0, agents, models: (String::new(), Vec::new()), model: 0, typing: None, typed: None,
             efforts: (String::new(), Vec::new()), effort: 0, role: 0, files, dir, folder, taken, new_role: String::new(), error: None,
         };
         wizard.agent = wizard.start_agent();
@@ -63,11 +61,11 @@ impl Wizard {
     }
 
     fn start_agent(&self) -> usize {
-        self.from().map_or(0, |profile| AGENTS.iter().position(|agent| *agent == profile.agent).unwrap_or(0))
+        self.from().map_or(0, |profile| self.agents.iter().position(|(agent, _)| *agent == profile.agent).unwrap_or(0))
     }
 
     pub fn agent(&self) -> Agent {
-        AGENTS[self.agent]
+        self.agents.get(self.agent).map_or(Agent::Claude, |(agent, _)| *agent)
     }
 
     pub fn from(&self) -> Option<&Profile> {
@@ -139,7 +137,7 @@ impl Wizard {
     fn count(&self) -> usize {
         match self.step {
             START => self.starts.len(),
-            AGENT => AGENTS.len(),
+            AGENT => self.agents.len(),
             MODEL => self.models.1.len(),
             EFFORT => self.efforts.1.len(),
             ROLE => self.roles().len(),
@@ -272,7 +270,8 @@ impl Wizard {
                 lines.push(heading("Which agent?"));
                 lines.extend(muted("It runs the task; the model comes next."));
                 lines.push(Line::default());
-                answer_lines(&mut lines, &mut spots, &[Answer::new("Claude Code", "kebbie's own default", ()), Answer::new("Codex", &self.codex, ())], self.agent, width);
+                let answers: Vec<Answer<()>> = self.agents.iter().map(|(agent, about)| Answer::new(if *agent == Agent::Claude { "Claude Code" } else { agent.name() }, about, ())).collect();
+                answer_lines(&mut lines, &mut spots, &answers, self.agent, width);
                 lines.push(Line::default());
                 hint_line(&mut lines, &mut spots, &choose);
             }

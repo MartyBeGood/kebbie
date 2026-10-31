@@ -64,8 +64,25 @@ pub struct Reviewer<'a> {
     pub docs: Option<&'a Path>,
 }
 
+// The agents setup chose: Claude always, Codex once kebbie's plugin is in Codex's home in any state, as the setup guide reads it.
+pub fn chosen_with(codex_plugin: &codex::Installed) -> Vec<Agent> {
+    Agent::ALL.into_iter().filter(|agent| *agent == Agent::Claude || *codex_plugin != codex::Installed::Missing).collect()
+}
+
+pub fn chosen_in(codex_home: Option<&Path>) -> Vec<Agent> {
+    chosen_with(&codex_home.map_or(codex::Installed::Missing, codex::plugin_state))
+}
+
+pub fn chosen() -> Vec<Agent> {
+    chosen_in(codex::home().as_deref())
+}
+
 impl Agent {
     pub const ALL: [Agent; 2] = [Agent::Claude, Agent::Codex];
+
+    pub fn not_set_up(self) -> String {
+        format!("{} is not set up: kebbie setup {}", self.name(), self.key())
+    }
 
     pub fn key(self) -> &'static str {
         match self {
@@ -238,5 +255,19 @@ mod tests {
         assert_eq!(Agent::of(&serde_json::json!({ "agent": "codex" })), Some(Agent::Codex));
         assert_eq!(Agent::of(&serde_json::json!({ "agent": "gemini" })), None, "a pane of an agent kebbie has no adapter for is not kebbie's");
         assert_eq!(Agent::Codex.kind(), "codex", "herdr agent start --kind codex");
+    }
+
+    #[test]
+    fn claude_is_always_chosen_and_codex_once_kebbies_plugin_is_in_its_home_in_any_state() {
+        let home = crate::sh::test_dir("agent-chosen");
+        assert_eq!(chosen_in(None), [Agent::Claude]);
+        assert_eq!(chosen_in(Some(&home)), [Agent::Claude], "no plugin: Codex was not chosen in setup");
+        codex::install(&home, "/opt/kebbie").unwrap();
+        assert_eq!(chosen_in(Some(&home)), [Agent::Claude, Agent::Codex]);
+        assert_eq!(chosen_with(&codex::Installed::Stale(vec!["hooks/hooks.json"])), [Agent::Claude, Agent::Codex], "an out-of-date plugin is still a choice, for setup to bring along");
+        assert_eq!(chosen_with(&codex::Installed::UnderOldId(home.clone())), [Agent::Claude, Agent::Codex]);
+        assert_eq!(chosen_with(&codex::Installed::Replaced(vec![home.clone()])), [Agent::Claude, Agent::Codex]);
+        assert_eq!(Agent::Codex.not_set_up(), "Codex is not set up: kebbie setup codex");
+        std::fs::remove_dir_all(home).unwrap();
     }
 }

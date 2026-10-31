@@ -283,7 +283,7 @@ impl Answers {
         sources.extend(Source::ALL.into_iter().filter(|source| !facts.sources.contains(source)).map(|source| (source, false)));
         Answers {
             name: facts.name.clone(),
-            codex: facts.codex_plugin != Installed::Missing,
+            codex: crate::agent::chosen_with(&facts.codex_plugin).contains(&Agent::Codex),
             keys: 0,
             sources,
             vault: facts.vault_choice(),
@@ -751,7 +751,7 @@ impl Guide {
             });
             rows.push(self.vault_row());
         }
-        if self.scope == Scope::All && !self.codex_shown() && facts.codex.is_some() && facts.codex_plugin != Installed::Missing && !self.skipped(Step::Agents) {
+        if self.scope == Scope::All && !self.codex_shown() && facts.codex.is_some() && crate::agent::chosen_with(&facts.codex_plugin).contains(&Agent::Codex) && !self.skipped(Step::Agents) {
             rows.push(row("plugin", "to do", "kebbie's plugin out of Codex".to_string(), Act::CodexPlugin(false)));
         }
         if self.codex_shown() {

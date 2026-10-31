@@ -493,7 +493,7 @@ pub fn to_json(profile: &Profile) -> Value {
 }
 
 // codex_model is the model Codex's own config.toml names, which a Codex profile without model runs.
-pub fn describe(profiles: &[Profile], errors: &[String], codex: Option<&str>, codex_model: Option<&str>) -> String {
+pub fn describe(profiles: &[Profile], errors: &[String], chosen: &[Agent], codex: Option<&str>, codex_model: Option<&str>) -> String {
     let mut lines = Vec::new();
     for profile in profiles {
         let source = match (&profile.file, built_in(&profile.name).is_some()) {
@@ -515,7 +515,9 @@ pub fn describe(profiles: &[Profile], errors: &[String], codex: Option<&str>, co
         runs.extend((profile.sandbox.enabled == Some(false)).then(|| "sandbox off".to_string()));
         runs.extend((!profile.sandbox.excluded.is_empty()).then(|| format!("outside the sandbox: {}", profile.sandbox.excluded.join(", "))));
         lines.push(format!("  runs: {}", runs.join(" · ")));
-        if let Some(codex) = codex.filter(|_| profile.agent == Agent::Codex) {
+        if !chosen.contains(&profile.agent) {
+            lines.push(format!("  ⚠ {}", profile.agent.not_set_up()));
+        } else if let Some(codex) = codex.filter(|_| profile.agent == Agent::Codex) {
             lines.push(format!("  codex: {codex}"));
         }
     }
@@ -526,8 +528,12 @@ pub fn describe(profiles: &[Profile], errors: &[String], codex: Option<&str>, co
 pub fn print(json: bool) -> Result<String> {
     let (profiles, errors) = list_in(&dir());
     let codex = profiles.iter().any(|profile| profile.agent == Agent::Codex).then(codex_availability).flatten();
+    let chosen = crate::agent::chosen();
     if json {
         let mut shown: Vec<Value> = profiles.iter().map(to_json).collect();
+        for (item, profile) in shown.iter_mut().zip(&profiles) {
+            item["set_up"] = json!(chosen.contains(&profile.agent));
+        }
         for item in shown.iter_mut().filter(|item| item["agent"] == "codex") {
             item["codex"] = json!(codex);
         }
@@ -535,7 +541,7 @@ pub fn print(json: bool) -> Result<String> {
         return serde_json::to_string_pretty(&shown).map_err(|error| error.to_string());
     }
     let model = crate::agent::codex::home().and_then(|home| crate::agent::codex::configured_model(&home));
-    Ok(describe(&profiles, &errors, codex.as_deref(), model.as_deref()))
+    Ok(describe(&profiles, &errors, &chosen, codex.as_deref(), model.as_deref()))
 }
 
 fn codex_availability() -> Option<String> {
@@ -655,7 +661,7 @@ mod tests {
         let (profiles, errors) = list_in(&dir);
         assert_eq!(profiles.iter().map(|profile| profile.name.as_str()).collect::<Vec<_>>(), ["task", "reviewer", "ops", "designer"]);
         assert_eq!(errors.len(), 1);
-        let shown = describe(&profiles, &errors, Some("codex-cli 0.163.0 at /bin/codex · kebbie's plugin installed"), None);
+        let shown = describe(&profiles, &errors, &Agent::ALL, Some("codex-cli 0.163.0 at /bin/codex · kebbie's plugin installed"), None);
         assert!(shown.starts_with("task  (built in)\n  for: any task no other profile fits\n"), "{shown}");
         assert!(shown.contains(&format!("designer  ({})\n  for: UI, CSS\n  about: UI work\n  runs: claude · model opus", dir.join("designer.toml").display())), "{shown}");
         assert!(shown.contains("ignored: ") && shown.contains("broken.toml: agent: \"gemini\" is not an agent kebbie runs"), "{shown}");
@@ -714,11 +720,13 @@ mod tests {
         let dir = folder("profile-codex", &[("coder.toml", "about = \"Codex on GPT\"\nfor = \"a second opinion\"\nagent = \"codex\"\nmodel = \"gpt-5.5\"\neffort = \"xhigh\"\npermission_mode = \"acceptEdits\"\n[sandbox]\nenabled = true\n")]);
         let coder = load_in(&dir, "coder").unwrap();
         assert_eq!((coder.agent, coder.model.as_deref(), coder.effort.as_deref(), coder.sandbox.enabled), (Agent::Codex, Some("gpt-5.5"), Some("xhigh"), Some(true)));
-        let shown = describe(&[built_in(TASK).unwrap(), coder.clone()], &[], Some("codex-cli 0.163.0 at /bin/codex · kebbie's plugin installed"), Some("gpt-5.1-codex-max"));
+        let shown = describe(&[built_in(TASK).unwrap(), coder.clone()], &[], &Agent::ALL, Some("codex-cli 0.163.0 at /bin/codex · kebbie's plugin installed"), Some("gpt-5.1-codex-max"));
         assert!(shown.contains("coder  (") && shown.contains("  runs: codex · model gpt-5.5 · effort xhigh · mode acceptEdits\n  codex: codex-cli 0.163.0 at /bin/codex · kebbie's plugin installed"), "{shown}");
         let unset = Profile { model: None, ..coder.clone() };
-        assert!(describe(&[unset], &[], None, Some("gpt-5.1-codex-max")).contains("  runs: codex · model gpt-5.1-codex-max from Codex's config.toml · effort xhigh"), "a profile without model names the one Codex runs");
+        assert!(describe(&[unset], &[], &Agent::ALL, None, Some("gpt-5.1-codex-max")).contains("  runs: codex · model gpt-5.1-codex-max from Codex's config.toml · effort xhigh"), "a profile without model names the one Codex runs");
         assert!(shown.starts_with("task  (built in)\n") && shown.contains("nothing added\n  runs: claude\ncoder"), "the built-in profiles stay Claude: {shown}");
+        let unchosen = describe(std::slice::from_ref(&coder), &[], &[Agent::Claude], Some("codex-cli 0.163.0 at /bin/codex · kebbie's plugin not installed: kebbie setup codex"), None);
+        assert!(unchosen.ends_with("  runs: codex · model gpt-5.5 · effort xhigh · mode acceptEdits\n  ⚠ Codex is not set up: kebbie setup codex"), "a Codex profile on a machine that did not choose Codex is marked: {unchosen}");
         assert_eq!(to_json(&coder)["agent"], "codex");
         let refused = |text: &str| { std::fs::write(dir.join("x.toml"), format!("agent = \"codex\"\n{text}")).unwrap(); load_in(&dir, "x").unwrap_err() };
         for (text, key) in [("deny = [\"Bash(rm:*)\"]\n", "deny"), ("allow = [\"Read\"]\n", "allow"), ("[claude]\nplugins = [\"a@b\"]\n", "claude"), ("[sandbox]\nallowed_domains = [\"x.org\"]\n", "sandbox.allowed_domains")] {
