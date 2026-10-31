@@ -712,7 +712,7 @@ The Profiles section, on the This machine tab, lists every [profile](configurati
 - **FROM KEBBIE**: `task`, `reviewer` and `ops`. They come with kebbie and follow its updates. A model, effort or role you set on one goes in your own `~/.config/kebbie/profiles/<name>.toml`, which an update never writes.
 - **YOURS**: every other file in `~/.config/kebbie/profiles`. An update never writes there.
 
-Each row shows the profile's name, its agent, model and effort, and its role. A model shown dim is the agent's own default, Claude's from `~/.claude/settings.json` and Codex's from `~/.codex/config.toml`. A `⚠` marks a Codex profile whose model Codex's own list for your account does not offer, and the line under the page names it when that profile is selected; otherwise that line sums the profile up, its role and the file your settings on it are in.
+Each row shows the profile's name, its agent, model and effort, and its role. In a window too narrow for the role column it gives way, and the selected row still names the role. A model shown dim is the agent's own default, Claude's from `~/.claude/settings.json` and Codex's from `~/.codex/config.toml`. A `⚠` marks a Codex profile whose model Codex's own list for your account does not offer, and the line under the page names it when that profile is selected; otherwise that line sums the profile up, its role and the file your settings on it are in.
 
 The selected row shows its role in its two layers: kebbie's own role, from the installed kebbie, which an update replaces, and the profile's role file, which is yours and is read after kebbie's. A role file can be shared: several profiles may name the same one.
 

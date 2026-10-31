@@ -241,7 +241,7 @@ pub fn hints(keys: &[(&str, &str)]) -> Line<'static> {
     Line::from(keys.iter().flat_map(|(key, label)| [Span::styled(key.to_string(), style(MAUVE)), Span::styled(format!(" {label}    "), style(MUTED))]).collect::<Vec<_>>())
 }
 
-pub(super) fn fit(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
+pub fn fit(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
     note_lines(&[Line::from(spans.clone())]);
     let mut left = width;
     let mut out = Vec::new();

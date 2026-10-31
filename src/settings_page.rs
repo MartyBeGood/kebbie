@@ -9,7 +9,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::agent::Agent;
 use crate::agent::codex::CachedModel;
-use crate::board::widgets::{self, Answer, BLUE, FAINT, GREEN, MANTLE, MAUVE, MUTED, PEACH, RED, SUBTEXT, SURFACE, Spot, TEAL, TEXT, YELLOW, answer_lines, bold, cut, group_line, hint_line, modal, modal_spots, options_lines, style, text_width, wrap};
+use crate::board::widgets::{self, Answer, BLUE, FAINT, GREEN, MANTLE, MAUVE, MUTED, PEACH, RED, SUBTEXT, SURFACE, Spot, TEAL, TEXT, YELLOW, answer_lines, bold, cut, fit, group_line, hint_line, modal, modal_spots, options_lines, style, text_width, wrap};
 use crate::config::{self, Entry, Kind, Layer, Scope};
 use crate::config_edit::{self, Set};
 use crate::profile_wizard::{self, Pick, Wizard};
@@ -1286,13 +1286,16 @@ impl Page {
         let name_width = agents.profiles.iter().map(|profile| text_width(&profile.name)).max().unwrap_or(0).min(width / 4) + 2;
         let adapters: Vec<Vec<Span<'static>>> = agents.profiles.iter().enumerate().map(|(at, profile)| self.adapter(profile, at == self.row)).collect();
         let adapter_width = adapters.iter().map(|spans| spans.iter().map(Span::width).sum::<usize>()).max().unwrap_or(0) + 3;
+        let role_width = agents.profiles.iter().map(|profile| self.role_spans(profile).iter().map(Span::width).sum::<usize>()).max().unwrap_or(0);
+        let roles = 2 + name_width + adapter_width + role_width <= width;
+        let muted = |text: &str, color: Color| wrap(text, width.saturating_sub(2), 4).into_iter().map(|text| Line::from(Span::styled(format!("  {}", cut(&text, width.saturating_sub(2))), style(color)))).collect::<Vec<_>>();
         let (mut lines, mut selected) = (Vec::new(), 0);
         let kebbies = agents.profiles.iter().filter(|profile| profiles::built_in(&profile.name).is_some()).count();
         let heading = |lines: &mut Vec<Line<'static>>, title: &str, about: String| {
             let mut line = group_line(title, if title == "YOURS" { agents.profiles.len() - kebbies } else { kebbies }, TEAL);
             line.spans.insert(0, Span::raw(" "));
             lines.push(line);
-            lines.push(Line::from(Span::styled(format!("  {about}"), style(MUTED))));
+            lines.extend(muted(&about, MUTED));
         };
         heading(&mut lines, "FROM KEBBIE", "follow kebbie's updates; your settings on them are kept".to_string());
         let mut yours = false;
@@ -1309,9 +1312,11 @@ impl Page {
                 Span::styled(format!(" {:<name_width$}", cut(&profile.name, name_width - 2)), if chosen { bold(TEXT) } else { style(TEXT) }),
             ];
             spans.extend(adapters[at].clone());
-            spans.push(Span::raw(" ".repeat(adapter_width.saturating_sub(used))));
-            spans.extend(self.role_spans(profile));
-            let line = Line::from(spans);
+            if roles {
+                spans.push(Span::raw(" ".repeat(adapter_width.saturating_sub(used))));
+                spans.extend(self.role_spans(profile));
+            }
+            let line = fit(spans, width);
             if !chosen {
                 lines.push(line);
                 continue;
@@ -1319,14 +1324,21 @@ impl Page {
             selected = lines.len();
             lines.push(line.style(Style::new().bg(SURFACE)));
             let kebbies = profiles::kebbie_role(&profile.name).0;
-            lines.push(Line::from(vec![Span::styled("    role:  ", style(SUBTEXT)), Span::styled(format!("{kebbies}, from kebbie {}, updates with kebbie", agents.version), style(SUBTEXT))]));
-            if let Some(role) = profiles::role_name(&self.paths.profiles, profile) {
-                lines.push(Line::from(vec![Span::raw("         "), Span::styled(format!("+ {role}"), style(BLUE)), Span::styled(", yours: read after kebbie's role", style(SUBTEXT))]));
+            for (number, text) in wrap(&format!("{kebbies}, from kebbie {}, updates with kebbie", agents.version), width.saturating_sub(11), 4).into_iter().enumerate() {
+                lines.push(Line::from(vec![Span::styled(if number == 0 { "    role:  " } else { "           " }, style(SUBTEXT)), Span::styled(text, style(SUBTEXT))]));
             }
-            let mut keys = vec![Span::raw("    ")];
+            if let Some(role) = profiles::role_name(&self.paths.profiles, profile) {
+                lines.push(fit(vec![Span::raw("         "), Span::styled(format!("+ {role}"), style(BLUE)), Span::styled(", yours: read after kebbie's role", style(SUBTEXT))], width));
+            }
             let last = if profiles::built_in(&profile.name).is_some() { ("d", "default") } else { ("x", "delete") };
-            for (number, (key, word)) in [("m", "model"), ("e", "effort"), ("r", "role"), ("n", "new profile"), ("⏎", "open file"), last].into_iter().enumerate() {
-                keys.extend([Span::raw(if number == 0 { "" } else { "  " }), Span::styled(key, style(MAUVE)), Span::styled(format!(" {word}"), style(SUBTEXT))]);
+            let mut keys = vec![Span::raw("    ")];
+            for (key, word) in [("m", "model"), ("e", "effort"), ("r", "role"), ("n", "new profile"), ("⏎", "open file"), last] {
+                let shown = format!(" {word}");
+                let fits = keys.iter().map(Span::width).sum::<usize>() + 2 + text_width(key) + text_width(&shown) <= width;
+                if keys.len() > 1 && !fits {
+                    lines.push(Line::from(std::mem::replace(&mut keys, vec![Span::raw("    ")])));
+                }
+                keys.extend([Span::raw(if keys.len() == 1 { "" } else { "  " }), Span::styled(key, style(MAUVE)), Span::styled(shown, style(SUBTEXT))]);
             }
             lines.push(Line::from(keys));
             lines.push(Line::default());
@@ -1334,16 +1346,16 @@ impl Page {
         if !yours {
             lines.push(Line::default());
             heading(&mut lines, "YOURS", format!("{} · an update never writes here", home_relative(&self.paths.profiles)));
-            lines.push(Line::from(Span::styled("  none yet: n makes one", style(MUTED))));
+            lines.extend(muted("none yet: n makes one", MUTED));
         }
         for error in &agents.ignored {
             let error = error.replace(&self.paths.profiles.display().to_string(), "profiles");
             lines.extend(wrap(&format!("ignored: {error}"), width.saturating_sub(2), 3).into_iter().map(|text| Line::from(Span::styled(format!("  {text}"), style(RED)))));
         }
         lines.push(Line::default());
-        lines.push(Line::from(Span::styled("  dim = the agent's own default:", style(MUTED))));
+        lines.extend(muted("dim = the agent's own default:", MUTED));
         let (claude, codex) = (home_relative(&self.paths.claude_home.join("settings.json")), home_relative(&self.paths.codex_home.join("config.toml")));
-        lines.push(Line::from(Span::styled(format!("  Claude's from {claude}, Codex's from {codex}"), style(MUTED))));
+        lines.extend(muted(&format!("Claude's from {claude}, Codex's from {codex}"), MUTED));
         (lines, selected)
     }
 
@@ -1893,7 +1905,7 @@ mod tests {
         assert_eq!(color_of(&buffer, " task ", "opus"), Some(MUTED), "the agent's own default shows dim");
         assert_eq!(color_of(&buffer, " reviewer ", "opus"), Some(TEXT), "the profile's own model does not");
         assert_eq!(color_of(&buffer, " codex  ", "gpt-5.1-codex-max"), Some(RED));
-        assert!(shown.contains("dim = the agent's own default:") && shown.contains("Claude's from "), "{shown}");
+        assert!(shown.contains("dim = the agent's own default:") && shown.contains("Claude's from"), "{shown}");
         go_to_profile(&mut fixture.page, "codex");
         let (shown, _) = screen_at(&mut fixture.page, 100, 30);
         assert!(shown.contains("⚠ codex runs gpt-5.1-codex-max from Codex's config.toml, which Codex does not offer") && shown.contains("account; pick a model for it with m."), "the selected profile's ⚠ comes first: {shown}");
@@ -1903,6 +1915,22 @@ mod tests {
         assert!(line_of(&shown, "role:  ").ends_with("kebbie's task role, from kebbie 0.30.0, updates with kebbie") && !shown.contains("yours: read after") && shown.contains("  task: claude, opus by Claude's default"), "kebbie's role alone: {shown}");
         press(&mut fixture.page, &[KeyCode::Tab]);
         assert!(!fixture.page.sections().iter().any(|(name, _)| name == PROFILES), "profiles are this machine's, never a repo's");
+    }
+
+    #[test]
+    fn the_profiles_section_fits_a_narrow_window_dropping_the_role_column_and_wrapping_the_keys() {
+        let mut fixture = agents_fixture("settings-profiles-narrow");
+        go_to_profile(&mut fixture.page, "codex-build");
+        let (shown, _) = screen_at(&mut fixture.page, 60, 40);
+        let rows: Vec<String> = shown.lines().map(|line| line.chars().skip(24).collect::<String>()).collect();
+        let row = |text: &str| rows.iter().find(|line| line.contains(text)).cloned().unwrap_or_else(|| panic!("{text}: {shown}"));
+        assert!(rows.iter().all(|line| line.chars().count() <= 34), "nothing runs past the rows: {shown}");
+        assert!(!row("▌ codex-b…").contains("codex.md") && row(" codex  ").ends_with('…'), "the role column goes, a name or a row too long ends in …: {shown}");
+        assert!(row("+ codex.md, yours").starts_with("         + codex.md"), "the selected row still names its role: {shown}");
+        assert!(rows.iter().any(|line| line.trim_start().starts_with("m model  e effort")) && rows.iter().any(|line| line.contains("x delete")), "the keys wrap onto a second line: {shown}");
+        assert!(row(" YOURS  3").starts_with(" YOURS") && rows.iter().any(|line| line.starts_with("  ") && line.ends_with('…') && line.contains('/')), "the folder's path is cut, not run off: {shown}");
+        let (wide, _) = screen_at(&mut fixture.page, 100, 40);
+        assert!(line_of(&wide, " codex-build ").ends_with("codex-build  codex · gpt-6.1-sol · medium           + codex.md") && wide.contains("    m model  e effort  r role  n new profile  ⏎ open file  x delete"), "{wide}");
     }
 
     #[test]
