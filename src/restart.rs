@@ -1511,7 +1511,7 @@ mod tests {
         assert!(run.contains("tasks::codex_restart_refusal(") && run.find("tasks::codex_restart_refusal(").unwrap() < run.find("perform(").unwrap(), "a Codex task whose profile no longer loads is skipped before anything ends it");
         assert!(run.contains("Agent::Codex => changes.codex_reasons(") && run.contains("pane.agent.session_transcript("), "a Codex is judged by its own binary and its rollout");
         assert!(run.contains("|| pane.agent == Agent::Claude && transcript"), "Claude's background-work check reads a Claude transcript only");
-        assert!(run.find("lacks_role(argv)").unwrap() < run.find("held_back(").unwrap(), "a Codex task started on the plugin's first id or without its hooks is stale like a Claude without its role");
+        assert!(run.find("lacks_role(argv)").unwrap() < run.find("held_back(").unwrap(), "a Codex task started on kebbie@kebbie or without its hooks is stale like a Claude without its role");
         let perform = &source[source.find("\nfn perform(").unwrap()..];
         assert!(perform.find("codex::ready_to_start(").unwrap() < perform.find(".end(&pane.pane)").unwrap(), "a Codex is ended only when kebbie's plugin is the one it writes, so the resumed session reports");
     }

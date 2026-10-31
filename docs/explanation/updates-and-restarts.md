@@ -90,7 +90,7 @@ A Codex task keeps the role and hooks it started with too. It is stale when:
 
 - a newer `codex` is on `PATH` than the one its process runs. Codex never updates a running session, and its standalone installer keeps the old release beside the new one, so the process runs on until it restarts,
 - `kebbie update` ran after it started, or
-- it runs without kebbie's plugin enabled and its hooks trusted, as a Codex started on the plugin's first id, `kebbie@kebbie`.
+- it runs without kebbie's plugin enabled and its hooks trusted, as a Codex started on `kebbie@kebbie`, an id a repo's marketplace named kebbie replaces.
 
 kebbie restarts a Codex only in a task: the lead is Claude, and your own Codex sessions are left as they run.
 

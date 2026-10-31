@@ -485,6 +485,7 @@ impl Guide {
         let codex = match &facts.codex_plugin {
             Installed::Stale(files) => Some(format!("kebbie's plugin in Codex is out of date ({})", files.join(", "))),
             Installed::Replaced(_) => Some("Codex replaced kebbie's plugin with a copy of its own".to_string()),
+            Installed::UnderOldId(_) => Some("kebbie's plugin in Codex is under kebbie@kebbie, which a repo's marketplace replaces".to_string()),
             _ => None,
         };
         let parts: Vec<String> = facts.claude_stale.iter().cloned().chain(codex).collect();
@@ -1261,6 +1262,25 @@ mod tests {
         assert_eq!(crate::agent::codex::installed(&lab.dir.join("codex"), "/opt/kebbie"), Installed::Current);
         let rerun = Guide::new(Facts::read(&lab.env()), Step::Agents);
         assert!(screen(&rerun).contains("✓ in place: kebbie's plugin is in Claude Code and in Codex"));
+    }
+
+    #[test]
+    fn a_machine_with_kebbies_codex_plugin_under_kebbie_at_kebbie_keeps_codex_on_and_apply_moves_it() {
+        let lab = Lab::new("guide-old-id-codex");
+        let plugins = lab.machine.claude_dir.join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::write(plugins.join("installed_plugins.json"), json!({ "plugins": { "kebbie@kebbie": [{ "version": "0.27.0" }] } }).to_string()).unwrap();
+        let home = lab.dir.join("codex");
+        crate::agent::codex::install(&home, "/opt/kebbie").unwrap();
+        std::fs::create_dir_all(home.join("plugins/cache/kebbie/kebbie")).unwrap();
+        std::fs::rename(home.join("plugins/cache/kebbie-tasks/kebbie/local"), home.join("plugins/cache/kebbie/kebbie/local")).unwrap();
+        let mut guide = fresh(&lab);
+        press(&mut guide, &[KeyCode::Enter]);
+        assert!(guide.answers.codex, "an opted-in machine is not shown Codex off");
+        assert!(screen(&guide).contains("to update: kebbie's plugin in Codex is under kebbie@kebbie"), "{}", screen(&guide));
+        let rows = apply(&guide.plan(), &lab.env(), &mut Fake { drawn: 0 });
+        assert!(rows.iter().any(|(step, outcome)| step == "plugin" && outcome.verb == "done"), "{rows:?}");
+        assert!(!home.join("plugins/cache/kebbie/kebbie/local").exists());
     }
 
     #[test]

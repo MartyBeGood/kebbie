@@ -83,7 +83,7 @@ Each line is `ok`, `warn` or `fail`. Every `warn` and `fail` carries a `fix:` li
 | `vault` | The vault plugin: on, missing (fine, it is optional) or too old. |
 | `codex`, `codex plugin`, `codex hooks`, `codex login` | Codex at 0.163.0 or later, kebbie's plugin in it, its hooks on, and `codex login status` logged in. |
 | `codex model` | The model in Codex's `config.toml`, which a Codex profile without `model` runs. Shown only when the file names one. |
-| `codex old plugin` | A copy Codex installed under the plugin id kebbie used before, which nothing turns on; the fix removes it. |
+| `codex old plugin` | An unused copy under `kebbie@kebbie`, which Codex installed from a repo's marketplace named kebbie and nothing turns on; the fix removes it. |
 | `backlog …` | Each backlog source can be read, and an installed source not in use. |
 
 - `docs` suggests turning `docs.required` on when `gh` says the repo is public on GitHub. Without `gh` or a GitHub remote the line is left out.

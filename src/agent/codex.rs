@@ -61,9 +61,13 @@ pub fn foreign_copies(home: &Path, marketplace: &str) -> Vec<PathBuf> {
     found
 }
 
-// The plugin an older kebbie wrote under its first id, which a repo's marketplace named "kebbie" replaces.
+// Copies under kebbie@kebbie, the id a repo's marketplace named "kebbie" replaces; nothing turns them on.
 pub fn old_copies(home: &Path) -> Vec<PathBuf> {
     foreign_copies(home, OLD_MARKETPLACE)
+}
+
+fn old_local(home: &Path) -> PathBuf {
+    plugin_base(home, OLD_MARKETPLACE).join("local")
 }
 
 fn ours(dir: &Path) -> bool {
@@ -78,9 +82,9 @@ fn remove_empty_above(dir: &Path, levels: usize) {
     }
 }
 
-// Only kebbie's own "local" under the first id goes; a copy Codex installed there is left for doctor to name.
+// Only kebbie's own "local" under kebbie@kebbie goes; a copy Codex installed there is left for doctor to name.
 fn remove_old(home: &Path) -> Result<bool> {
-    let old = plugin_base(home, OLD_MARKETPLACE).join("local");
+    let old = old_local(home);
     if !ours(&old) {
         return Ok(false);
     }
@@ -174,13 +178,17 @@ pub enum Installed {
     Current,
     Stale(Vec<&'static str>),
     Replaced(Vec<PathBuf>),
+    UnderOldId(PathBuf),
 }
 
 pub fn installed(home: &Path, kebbie: &str) -> Installed {
     let root = plugin_root(home);
     if !root.join(HOOKS_FILE).is_file() {
         let copies = foreign_copies(home, MARKETPLACE);
-        return if copies.is_empty() { Installed::Missing } else { Installed::Replaced(copies) };
+        if !copies.is_empty() {
+            return Installed::Replaced(copies);
+        }
+        return if ours(&old_local(home)) { Installed::UnderOldId(old_local(home)) } else { Installed::Missing };
     }
     let stale: Vec<&'static str> = plugin_files(kebbie).into_iter().filter(|(file, text, _)| std::fs::read_to_string(root.join(file)).ok().as_deref() != Some(text.as_str())).map(|(file, _, _)| file).collect();
     if stale.is_empty() { Installed::Current } else { Installed::Stale(stale) }
@@ -204,6 +212,7 @@ pub fn ready_to_start(home: Option<&Path>, kebbie: &str) -> Result<()> {
         Installed::Missing => Err(format!("kebbie's Codex plugin is not installed in {}, so the task would neither report nor get its role; run kebbie setup codex", plugin_root(home).display())),
         Installed::Stale(files) => Err(format!("kebbie's Codex plugin in {} is not what this kebbie writes ({}); run kebbie setup codex", plugin_root(home).display(), files.join(", "))),
         Installed::Replaced(copies) => Err(format!("Codex replaced kebbie's plugin with {}, a copy from a marketplace of the same name; run kebbie setup codex", shown_paths(&copies))),
+        Installed::UnderOldId(old) => Err(format!("kebbie's Codex plugin is at {}, under the id kebbie@kebbie, which a repo's marketplace replaces; run kebbie setup codex", old.display())),
     }
 }
 
@@ -230,10 +239,9 @@ pub fn install(home: &Path, kebbie: &str) -> Result<Vec<&'static str>> {
 pub fn refresh(home: Option<&Path>, kebbie: &str) -> Option<Result<Vec<&'static str>>> {
     let home = home?;
     match installed(home, kebbie) {
-        Installed::Missing if ours(&plugin_base(home, OLD_MARKETPLACE).join("local")) => Some(install(home, kebbie)),
         Installed::Missing => None,
         Installed::Current => Some(Ok(Vec::new())),
-        Installed::Stale(_) | Installed::Replaced(_) => Some(install(home, kebbie)),
+        Installed::Stale(_) | Installed::Replaced(_) | Installed::UnderOldId(_) => Some(install(home, kebbie)),
     }
 }
 
@@ -789,6 +797,7 @@ impl Availability {
             Installed::Missing => "kebbie's plugin not installed: kebbie setup codex".to_string(),
             Installed::Stale(_) => "kebbie's plugin out of date: kebbie setup codex".to_string(),
             Installed::Replaced(_) => "kebbie's plugin replaced by a copy Codex installed: kebbie setup codex".to_string(),
+            Installed::UnderOldId(_) => "kebbie's plugin under kebbie@kebbie: kebbie setup codex".to_string(),
         }
     }
 }
@@ -998,14 +1007,15 @@ mod tests {
     }
 
     #[test]
-    fn the_plugin_under_the_first_id_moves_to_the_new_one_and_a_copy_codex_made_there_stays_for_doctor() {
+    fn kebbies_plugin_under_kebbie_at_kebbie_moves_to_kebbie_tasks_and_a_copy_codex_made_there_stays_for_doctor() {
         let home = crate::sh::test_dir("codex-old-id");
         let old = home.join("plugins/cache/kebbie/kebbie/local");
         for (file, text, _) in plugin_files("/opt/kebbie") {
             write(&old.join(file), &text);
         }
-        assert_eq!(installed(&home, "/opt/kebbie"), Installed::Missing);
-        assert_eq!(refresh_line(Some(&home), "/opt/kebbie").as_deref(), Some("Codex plugin: updated .codex-plugin/plugin.json, hooks/hooks.json, bin/kebbie-hook"), "an update moves an opted-in plugin to the new id");
+        assert_eq!(installed(&home, "/opt/kebbie"), Installed::UnderOldId(old.clone()), "a machine with kebbie's plugin under kebbie@kebbie has opted in");
+        assert!(ready_to_start(Some(&home), "/opt/kebbie").unwrap_err().contains("under the id kebbie@kebbie, which a repo's marketplace replaces; run kebbie setup codex"));
+        assert_eq!(refresh_line(Some(&home), "/opt/kebbie").as_deref(), Some("Codex plugin: updated .codex-plugin/plugin.json, hooks/hooks.json, bin/kebbie-hook"), "an update moves an opted-in plugin to kebbie@kebbie-tasks");
         assert!(!home.join("plugins/cache/kebbie").exists() && installed(&home, "/opt/kebbie") == Installed::Current);
         write(&home.join("plugins/cache/kebbie/kebbie/0.30.0/src/main.rs"), "fn main() {}\n");
         install(&home, "/opt/kebbie").unwrap();
@@ -1219,7 +1229,7 @@ mod tests {
         let fixed = with_role(&argv[1..]);
         assert!(!lacks_role(&fixed) && fixed.last().map(String::as_str) == Some("old-id"), "{fixed:?}");
         assert_eq!(fixed.iter().filter(|word| *word == "plugins.kebbie@kebbie-tasks.enabled=true").count(), 1);
-        assert!(!fixed.iter().any(|word| word == "plugins.kebbie@kebbie.enabled=true"), "the first id, which a repo's marketplace replaces, goes: {fixed:?}");
+        assert!(!fixed.iter().any(|word| word == "plugins.kebbie@kebbie.enabled=true"), "kebbie@kebbie, which a repo's marketplace replaces, goes: {fixed:?}");
     }
 
     #[test]

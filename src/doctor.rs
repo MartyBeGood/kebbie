@@ -701,10 +701,11 @@ pub fn codex(found: &crate::agent::codex::Availability, config: Option<&toml::Ta
         Installed::Missing => missing("codex plugin", "kebbie's plugin is not installed, so a Codex task neither reports nor gets its role".to_string(), one("kebbie setup codex")),
         Installed::Stale(files) => missing("codex plugin", format!("kebbie's plugin is out of date ({})", files.join(", ")), one("kebbie setup codex")),
         Installed::Replaced(copies) => missing("codex plugin", format!("Codex replaced kebbie's plugin with {}, a copy from a repo's marketplace of the same name", crate::agent::codex::shown_paths(copies)), one("kebbie setup codex")),
+        Installed::UnderOldId(old) => missing("codex plugin", format!("kebbie's plugin is at {}, under kebbie@kebbie, which a repo's marketplace named kebbie replaces; kebbie setup codex moves it to {}", old.display(), root.display()), one("kebbie setup codex")),
     });
     let old = crate::agent::codex::old_copies(home);
     if !old.is_empty() {
-        checks.push(warn("codex old plugin", format!("{} is a copy Codex installed from a repo's marketplace named kebbie under the id kebbie used before; kebbie no longer turns kebbie@kebbie on", crate::agent::codex::shown_paths(&old)), old.iter().map(|path| format!("rm -rf {}", crate::sh::quote(&path.to_string_lossy()))).collect()));
+        checks.push(warn("codex old plugin", format!("{} is an unused copy under kebbie@kebbie, which Codex installed from a repo's marketplace named kebbie; kebbie runs its own plugin as kebbie@kebbie-tasks", crate::agent::codex::shown_paths(&old)), old.iter().map(|path| format!("rm -rf {}", crate::sh::quote(&path.to_string_lossy()))).collect()));
     }
     let blocked = crate::agent::codex::hooks_blocked(config);
     checks.push(if blocked.is_empty() {
@@ -1436,7 +1437,7 @@ mod tests {
     }
 
     #[test]
-    fn doctor_names_a_copy_codex_installed_in_place_of_kebbies_plugin_and_one_left_under_the_first_id() {
+    fn doctor_names_a_copy_codex_installed_in_place_of_kebbies_plugin_and_one_left_under_kebbie_at_kebbie() {
         use crate::agent::codex::{Availability, Installed};
         let home = crate::sh::test_dir("doctor-codex-copies");
         let copy = home.join("plugins/cache/kebbie-tasks/kebbie/0.30.0");
@@ -1450,6 +1451,9 @@ mod tests {
         let named = codex(&current, None, true, &home, None).into_iter().find(|check| check.name == "codex old plugin").unwrap();
         assert_eq!(named.level, Level::Warn);
         assert!(named.fact.contains("plugins/cache/kebbie/kebbie/0.30.0") && named.fix[0].starts_with("rm -rf "), "{named:?}");
+        let moved = Availability { plugin: Installed::UnderOldId(home.join("plugins/cache/kebbie/kebbie/local")), ..current };
+        let plugin = codex(&moved, None, true, &home, None).remove(1);
+        assert!(plugin.level == Level::Fail && plugin.fact.contains("under kebbie@kebbie") && plugin.fix == ["kebbie setup codex"], "an opted-in plugin under kebbie@kebbie is named, not called not installed: {plugin:?}");
         std::fs::remove_dir_all(home).unwrap();
     }
 

@@ -742,7 +742,7 @@ Under `Next steps`, what needs you outside setup, a command and why:
 
 ### `kebbie setup codex`
 
-Installs kebbie's Codex plugin in `$CODEX_HOME/plugins/cache/kebbie/kebbie/local/`, or rewrites the files of it that are out of date, without asking: running it is the yes. It is the fix `kebbie doctor` names for a missing or out-of-date plugin. Yours alone: a task cannot run it. See [Run a task with Codex](../how-to/run-a-task-with-codex.md).
+Installs kebbie's Codex plugin in `$CODEX_HOME/plugins/cache/kebbie-tasks/kebbie/local/`, or rewrites the files of it that are out of date, without asking: running it is the yes. A plugin kebbie wrote under `kebbie@kebbie` moves there. It is the fix `kebbie doctor` names for a missing or out-of-date plugin. Yours alone: a task cannot run it. See [Run a task with Codex](../how-to/run-a-task-with-codex.md).
 
 | It finds | It prints |
 | --- | --- |
