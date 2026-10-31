@@ -11,9 +11,10 @@ use crate::permit::Caller;
 use crate::sh::Result;
 
 pub const REVIEWER_BIN: &str = "KEBBIE_REVIEWER_BIN";
+pub const REVIEWER_CODEX_BIN: &str = "KEBBIE_REVIEWER_CODEX_BIN";
 
 const KEPT_ENV: [&str; 12] = ["HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "PATH", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME"];
-const KEPT_PREFIXES: [&str; 4] = ["KEBBIE_", "CLAUDE_", "ANTHROPIC_", "HERDR_"];
+const KEPT_PREFIXES: [&str; 6] = ["KEBBIE_", "CLAUDE_", "ANTHROPIC_", "HERDR_", "CODEX_", "OPENAI_"];
 
 // The child's environment is the keeper's own, never a task's, and claude is the absolute path kebbie resolved from it.
 pub fn reviewer_env(own: impl Iterator<Item = (String, String)>) -> Vec<(String, String)> {
@@ -25,14 +26,25 @@ pub fn claude_path(env: &[(String, String)]) -> Option<PathBuf> {
     if Path::new(&named).is_absolute() {
         return Some(PathBuf::from(named));
     }
-    let path = env.iter().find(|(name, _)| name == "PATH").map(|(_, value)| value.split(':').filter(|dir| Path::new(dir).is_absolute()).map(PathBuf::from).collect::<Vec<_>>()).unwrap_or_default();
-    crate::doctor::which(&named, &path)
+    crate::doctor::which(&named, &absolute_path(env))
+}
+
+fn absolute_path(env: &[(String, String)]) -> Vec<PathBuf> {
+    env.iter().find(|(name, _)| name == "PATH").map(|(_, value)| value.split(':').filter(|dir| Path::new(dir).is_absolute()).map(PathBuf::from).collect::<Vec<_>>()).unwrap_or_default()
+}
+
+// A review profile that runs Codex finds codex where the keeper's own PATH has it, as Claude's reviewer finds claude.
+pub fn codex_path(env: &[(String, String)]) -> Option<PathBuf> {
+    crate::doctor::which("codex", &absolute_path(env))
 }
 
 pub fn command(kebbie: &Path, cwd: &Path, args: &[&str], env: &[(String, String)], claude: &Path) -> Command {
     let mut command = Command::new(kebbie);
-    command.args(args).env_clear().envs(env.iter().map(|(name, value)| (name, value))).env(REVIEWER_BIN, claude)
+    command.args(args).env_clear().envs(env.iter().map(|(name, value)| (name, value))).env_remove(REVIEWER_CODEX_BIN).env(REVIEWER_BIN, claude)
         .current_dir(cwd).stdin(Stdio::piped()).process_group(0);
+    if let Some(codex) = codex_path(env) {
+        command.env(REVIEWER_CODEX_BIN, codex);
+    }
     command
 }
 
@@ -62,6 +74,10 @@ pub fn presented() -> String {
 
 pub fn claude_from_keeper() -> Result<PathBuf> {
     std::env::var(REVIEWER_BIN).ok().map(PathBuf::from).filter(|bin| bin.is_absolute()).ok_or_else(|| "the keeper gave no claude path".to_string())
+}
+
+pub fn codex_from_keeper() -> Result<PathBuf> {
+    std::env::var(REVIEWER_CODEX_BIN).ok().map(PathBuf::from).filter(|bin| bin.is_absolute()).ok_or_else(|| "the keeper found no codex on its PATH".to_string())
 }
 
 fn nonce() -> Result<String> {
@@ -304,6 +320,20 @@ mod tests {
         QUEUED.forget(&state, "fresh@app");
         assert!(QUEUED.dead(&state).is_empty() && QUEUED.asked(&state, "billing@app").is_none());
         fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn the_keeper_hands_its_own_codex_to_a_reviewer_and_never_one_from_the_environment_it_was_given() {
+        let dir = crate::sh::test_dir("trusted-codex");
+        crate::executable::write(dir.join("codex"), "#!/bin/sh\n").unwrap();
+        let env = vec![("PATH".to_string(), format!("relative:{}", dir.display())), (REVIEWER_CODEX_BIN.to_string(), "/tmp/evil/codex".to_string()), ("CODEX_HOME".to_string(), "/home/ada/.codex".to_string())];
+        assert_eq!(codex_path(&env), Some(dir.join("codex")));
+        let built = command(Path::new("/bin/kebbie"), &dir, &["review", "--second-opinion"], &reviewer_env(env.clone().into_iter()), Path::new("/opt/claude"));
+        let envs: Vec<(String, Option<String>)> = built.get_envs().map(|(name, value)| (name.to_string_lossy().to_string(), value.map(|value| value.to_string_lossy().to_string()))).collect();
+        assert!(envs.contains(&(REVIEWER_CODEX_BIN.to_string(), Some(dir.join("codex").display().to_string()))), "{envs:?}");
+        assert!(!envs.contains(&(REVIEWER_CODEX_BIN.to_string(), Some("/tmp/evil/codex".to_string()))), "{envs:?}");
+        assert!(reviewer_env(env.into_iter()).iter().any(|(name, _)| name == "CODEX_HOME"), "Codex's sign-in stays where its home is");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

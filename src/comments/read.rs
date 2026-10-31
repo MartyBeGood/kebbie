@@ -118,7 +118,7 @@ fn ask(state: &Path, comment: &Comment) -> Result<String> {
     let settings = crate::config::resolve(Some(&comment.repo))?.settings;
     let root = crate::lead::install_root()?;
     let input = brief(comment, &commit_text(&comment.repo, &comment.commit), &comment.repo);
-    crate::review::ask_reviewer(&crate::review::Ask { address: &format!("comment-{}", comment.id), worktree: &comment.repo, settings: &settings, rules_file: None, docs: false, input: &input, timeout: Some(TIMEOUT), role: "comment", program: Some(&claude), group_file: Some(&file(state, comment.id, "claude")), prompt: Some(&root.join("roles/comment-read.md")) })
+    crate::review::ask_reviewer(&crate::review::Ask { address: &format!("comment-{}", comment.id), worktree: &comment.repo, settings: &settings, rules_file: None, docs: false, input: &input, timeout: Some(TIMEOUT), role: "comment", program: Some(&claude), group_file: Some(&file(state, comment.id, "claude")), prompt: Some(&root.join("roles/comment-read.md")), profile: None })
 }
 
 fn commit_text(repo: &Path, sha: &str) -> String {

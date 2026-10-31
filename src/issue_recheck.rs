@@ -182,7 +182,7 @@ fn check(state: &Path, root: &Path, id: &str, head: &str) -> Result<String> {
     let claude = trusted_spawn::claude_from_keeper()?;
     let settings = crate::config::resolve(None)?.settings;
     let input = brief(&shown, &commits_since(root, &issue.commit, head)?, root, head);
-    crate::review::ask_reviewer(&crate::review::Ask { address: &format!("issue-{id}"), worktree: root, settings: &settings, rules_file: None, docs: false, input: &input, timeout: Some(TIMEOUT), role: "recheck", program: Some(&claude), group_file: Some(&file(state, id, "claude")), prompt: Some(&root.join("roles/issue-check.md")) })
+    crate::review::ask_reviewer(&crate::review::Ask { address: &format!("issue-{id}"), worktree: root, settings: &settings, rules_file: None, docs: false, input: &input, timeout: Some(TIMEOUT), role: "recheck", program: Some(&claude), group_file: Some(&file(state, id, "claude")), prompt: Some(&root.join("roles/issue-check.md")), profile: None })
 }
 
 fn known(root: &Path, commit: &str) -> bool {

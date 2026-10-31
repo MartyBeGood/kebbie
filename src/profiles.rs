@@ -13,9 +13,10 @@ pub const REVIEWER: &str = "reviewer";
 pub const OPS: &str = "ops";
 pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 pub const CODEX_EFFORTS: [&str; 9] = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "persistent"];
-pub const KEYS: [&str; 12] = ["about", "for", "agent", "model", "effort", "role", "skills", "permission_mode", "deny", "allow", "claude", "sandbox"];
+pub const KEYS: [&str; 13] = ["about", "for", "agent", "model", "effort", "role", "skills", "permission_mode", "deny", "allow", "claude", "sandbox", "kind"];
 const SANDBOX_KEYS: [&str; 4] = ["enabled", "allowed_domains", "allow_write", "excluded_commands"];
-const REVIEWER_KEYS: [&str; 6] = ["about", "for", "agent", "model", "effort", "role"];
+const REVIEWER_KEYS: [&str; 7] = ["about", "for", "agent", "model", "effort", "role", "kind"];
+pub const REVIEW_KIND: &str = "review";
 const GUARDED: [&str; 8] = ["push", "stage", "unstage", "approve", "choose", "away", "decide", "after"];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -34,6 +35,7 @@ pub struct Profile {
     pub plugins: Vec<String>,
     pub sandbox: Policy,
     pub file: Option<PathBuf>,
+    pub review: bool,
 }
 
 pub fn dir() -> PathBuf {
@@ -50,7 +52,7 @@ pub fn built_in(name: &str) -> Option<Profile> {
     let sandbox = if name == OPS { Policy { excluded: crate::sandbox::OPS_COMMANDS.map(str::to_string).to_vec(), ..Policy::default() } } else { Policy::default() };
     Some(Profile {
         name: name.to_string(), about: about.to_string(), fits: fits.to_string(), agent: Agent::Claude, model: None, effort: None, role: None,
-        skills: Vec::new(), permission_mode: None, deny: Vec::new(), allow: Vec::new(), plugins: Vec::new(), sandbox, file: None,
+        skills: Vec::new(), permission_mode: None, deny: Vec::new(), allow: Vec::new(), plugins: Vec::new(), sandbox, file: None, review: name == REVIEWER,
     })
 }
 
@@ -109,7 +111,20 @@ pub fn for_task(dir: &Path, wanted: &str) -> Result<Profile> {
     if wanted == REVIEWER {
         return Err(format!("\"{REVIEWER}\" is kebbie review's profile, not a task's; kebbie profiles lists the others"));
     }
-    load_in(dir, wanted)
+    let profile = load_in(dir, wanted)?;
+    if profile.review {
+        return Err(format!("\"{wanted}\" is a review profile, which kebbie review runs, not a task's; kebbie profiles lists the others"));
+    }
+    Ok(profile)
+}
+
+// The profile review.profile or review.second names: one with kind = "review", or the built-in reviewer.
+pub fn for_review(dir: &Path, wanted: &str) -> Result<Profile> {
+    let profile = load_in(dir, wanted)?;
+    if !profile.review {
+        return Err(format!("\"{wanted}\" is a task's profile; a reviewer is a profile with kind = \"review\", as the built-in reviewer"));
+    }
+    Ok(profile)
 }
 
 fn strings(table: &Table, key: &str, source: &str) -> Result<Vec<String>> {
@@ -176,14 +191,22 @@ pub fn parse(contents: &str, name: &str, file: &Path, base: Option<Profile>) -> 
     let source = file.display().to_string();
     let table: Table = contents.parse().map_err(|error: toml::de::Error| format!("{source}: {}", error.to_string().trim()))?;
     let reviewer = name == REVIEWER;
-    let known: &[&str] = if reviewer { &REVIEWER_KEYS } else { &KEYS };
-    if reviewer && let Some(key) = table.keys().find(|key| !known.contains(&key.as_str()) && KEYS.contains(&key.as_str())) {
+    let base_review = base.as_ref().is_some_and(|base| base.review);
+    let review = match text(&table, "kind", &source)?.as_deref() {
+        None => base_review,
+        Some(REVIEW_KIND) if base.is_none() || base_review => true,
+        Some("task") if !base_review => false,
+        Some(kind @ ("task" | REVIEW_KIND)) => return Err(format!("{source}: kind: \"{name}\" is kebbie's own {} profile, so its kind is not \"{kind}\"", if base_review { "review" } else { "task" })),
+        Some(kind) => return Err(format!("{source}: kind: \"{kind}\" is not a kind; use \"task\" or \"review\"")),
+    };
+    let known: &[&str] = if review { &REVIEWER_KEYS } else { &KEYS };
+    if review && let Some(key) = table.keys().find(|key| !known.contains(&key.as_str()) && KEYS.contains(&key.as_str())) {
         return Err(format!("{source}: {key}: the reviewer only reads, so its profile takes {}", REVIEWER_KEYS.join(", ")));
     }
     config::unknown_keys(&table, "", known).map_err(|error| format!("{source}: {error}"))?;
     let mut profile = base.unwrap_or(Profile {
         name: name.to_string(), about: String::new(), fits: String::new(), agent: Agent::Claude, model: None, effort: None, role: None,
-        skills: Vec::new(), permission_mode: None, deny: Vec::new(), allow: Vec::new(), plugins: Vec::new(), sandbox: Policy::default(), file: None,
+        skills: Vec::new(), permission_mode: None, deny: Vec::new(), allow: Vec::new(), plugins: Vec::new(), sandbox: Policy::default(), file: None, review,
     });
     profile.file = Some(file.to_path_buf());
     if let Some(about) = text(&table, "about", &source)? {
@@ -196,7 +219,7 @@ pub fn parse(contents: &str, name: &str, file: &Path, base: Option<Profile>) -> 
         profile.agent = Agent::named(&agent).map_err(|error| format!("{source}: agent: {error}"))?;
     }
     if reviewer && profile.agent != Agent::Claude {
-        return Err(format!("{source}: agent: kebbie review runs Claude; a task's profile can name \"{}\"", profile.agent.key()));
+        return Err(format!("{source}: agent: the built-in reviewer runs Claude, as the assessor and the rules check read with it; a review profile of your own can name \"{}\"", profile.agent.key()));
     }
     if profile.agent == Agent::Codex && let Some(key) = claude_only(&table) {
         return Err(format!("{source}: {key}: Claude Code's, which a Codex task does not read; drop it from a profile with agent = \"codex\""));
@@ -336,7 +359,15 @@ pub fn load_all_in(dir: &Path) -> (Vec<Profile>, Vec<(String, PathBuf, String)>)
 
 // kebbie's own role a profile's lines are read after, in kebbie's install, which an update replaces.
 pub fn kebbie_role(name: &str) -> (&'static str, &'static str) {
-    if name == REVIEWER { ("kebbie's review role", "skills/review/SKILL.md") } else { ("kebbie's task role", "roles/task.md") }
+    role_of_kind(name == REVIEWER)
+}
+
+pub fn kebbie_role_for(profile: &Profile) -> (&'static str, &'static str) {
+    role_of_kind(profile.review)
+}
+
+fn role_of_kind(review: bool) -> (&'static str, &'static str) {
+    if review { ("kebbie's review role", "skills/review/SKILL.md") } else { ("kebbie's task role", "roles/task.md") }
 }
 
 pub fn role_name(dir: &Path, profile: &Profile) -> Option<String> {
@@ -465,6 +496,19 @@ pub fn made_from(start: &Profile, agent: Agent, model: Option<&str>, effort: Opt
     Made { text: lines.join("\n") + "\n", dropped }
 }
 
+// A new review profile's file: what a reviewer takes, kind first so the parser reads the rest as a reviewer's.
+pub fn made_review(start: &Profile, agent: Agent, model: Option<&str>, effort: Option<&str>, role: Option<&str>) -> Made {
+    let text = |value: &str| crate::config_edit::Set::Text(value.to_string()).shown();
+    let mut lines = vec![format!("kind = {}", text(REVIEW_KIND))];
+    lines.extend((!start.about.is_empty()).then(|| format!("about = {}", text(&start.about))));
+    lines.extend((!start.fits.is_empty()).then(|| format!("for = {}", text(&start.fits))));
+    lines.push(format!("agent = {}", text(agent.key())));
+    lines.extend(model.map(|model| format!("model = {}", text(model))));
+    lines.extend(effort.map(|effort| format!("effort = {}", text(effort))));
+    lines.extend(role.map(|role| format!("role = {}", text(role))));
+    Made { text: lines.join("\n") + "\n", dropped: Vec::new() }
+}
+
 // What the task's role says of its profile, after kebbie's own role; the built-in task adds nothing.
 pub fn role_section(profile: &Profile) -> Result<String> {
     let mut parts = Vec::new();
@@ -487,7 +531,7 @@ pub fn to_json(profile: &Profile) -> Value {
     json!({
         "name": profile.name, "about": profile.about, "for": profile.fits, "agent": profile.agent.key(), "model": profile.model, "effort": profile.effort,
         "permission_mode": profile.permission_mode, "skills": profile.skills, "role": profile.role, "deny": profile.deny, "allow": profile.allow,
-        "plugins": profile.plugins, "built_in": built_in(&profile.name).is_some(), "file": profile.file,
+        "plugins": profile.plugins, "built_in": built_in(&profile.name).is_some(), "file": profile.file, "kind": if profile.review { REVIEW_KIND } else { "task" },
         "sandbox": { "enabled": profile.sandbox.enabled, "allowed_domains": profile.sandbox.domains, "allow_write": profile.sandbox.writes, "excluded_commands": profile.sandbox.excluded },
     })
 }
@@ -503,6 +547,9 @@ pub fn describe(profiles: &[Profile], errors: &[String], chosen: &[Agent], codex
         };
         lines.push(format!("{}  ({source})", profile.name));
         lines.push(format!("  for: {}", if profile.fits.is_empty() { "(not said)" } else { &profile.fits }));
+        if profile.review {
+            lines.push("  kind: review, run by kebbie review (review.profile, review.second)".to_string());
+        }
         if !profile.about.is_empty() {
             lines.push(format!("  about: {}", profile.about));
         }
@@ -656,6 +703,33 @@ mod tests {
     }
 
     #[test]
+    fn a_review_profile_takes_only_a_reviewers_keys_and_is_never_a_tasks() {
+        let dir = folder("profile-review", &[("codex-review.toml", "kind = \"review\"\nagent = \"codex\"\nmodel = \"gpt-6.1-sol\"\neffort = \"high\"\n"), ("designer.toml", "model = \"opus\"\n")]);
+        let codex = load_in(&dir, "codex-review").unwrap();
+        assert!(codex.review && codex.agent == Agent::Codex && built_in(REVIEWER).unwrap().review && !built_in(TASK).unwrap().review);
+        assert_eq!(to_json(&codex)["kind"], "review");
+        assert!(describe(std::slice::from_ref(&codex), &[], &Agent::ALL, None, None).contains("  kind: review, run by kebbie review (review.profile, review.second)"));
+        for key in ["skills = [\"x\"]\n", "permission_mode = \"plan\"\n", "allow = [\"Read\"]\n", "[sandbox]\nenabled = false\n"] {
+            std::fs::write(dir.join("x.toml"), format!("kind = \"review\"\n{key}")).unwrap();
+            assert!(load_in(&dir, "x").unwrap_err().contains("the reviewer only reads, so its profile takes about, for, agent, model, effort, role, kind"), "{key}");
+        }
+        std::fs::write(dir.join("x.toml"), "kind = \"reviewer\"\n").unwrap();
+        assert!(load_in(&dir, "x").unwrap_err().contains("kind: \"reviewer\" is not a kind; use \"task\" or \"review\""));
+        std::fs::write(dir.join("task.toml"), "kind = \"review\"\n").unwrap();
+        assert!(load_in(&dir, TASK).unwrap_err().contains("kind: \"task\" is kebbie's own task profile"), "a built-in keeps its kind");
+        std::fs::remove_file(dir.join("task.toml")).unwrap();
+        assert!(for_task(&dir, "codex-review").unwrap_err().contains("\"codex-review\" is a review profile, which kebbie review runs, not a task's"));
+        assert_eq!(for_review(&dir, "codex-review").unwrap(), codex);
+        assert_eq!(for_review(&dir, REVIEWER).unwrap(), built_in(REVIEWER).unwrap());
+        assert!(for_review(&dir, "designer").unwrap_err().contains("\"designer\" is a task's profile"));
+        let made = made_review(&built_in(REVIEWER).unwrap(), Agent::Claude, Some("sonnet"), None, None);
+        assert_eq!(made.text, "kind = \"review\"\nabout = \"The read-only reviewer that kebbie review runs\"\nfor = \"kebbie review, never a task\"\nagent = \"claude\"\nmodel = \"sonnet\"\n");
+        assert!(parse(&made.text, "made", &dir.join("made.toml"), None).unwrap().review);
+        assert_eq!((kebbie_role_for(&codex).1, kebbie_role_for(&load_in(&dir, "designer").unwrap()).1), ("skills/review/SKILL.md", "roles/task.md"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn kebbie_profiles_lists_the_built_in_ones_then_each_file_and_names_a_broken_one() {
         let dir = folder("profile-list", &[("designer.toml", "about = \"UI work\"\nfor = \"UI, CSS\"\nmodel = \"opus\"\n"), ("broken.toml", "agent = \"gemini\"\n"), ("notes.txt", "x")]);
         let (profiles, errors) = list_in(&dir);
@@ -740,7 +814,7 @@ mod tests {
         std::fs::write(dir.join("x.toml"), "effort = \"ultra\"\n").unwrap();
         assert!(load_in(&dir, "x").unwrap_err().contains("effort: \"ultra\" is not an effort level; use \"low\""), "a Claude profile keeps Claude Code's five");
         std::fs::write(dir.join("reviewer.toml"), "agent = \"codex\"\n").unwrap();
-        assert!(load_in(&dir, REVIEWER).unwrap_err().contains("agent: kebbie review runs Claude"), "the reviewer stays Claude");
+        assert!(load_in(&dir, REVIEWER).unwrap_err().contains("agent: the built-in reviewer runs Claude"), "the built-in reviewer stays Claude, for the assessor and the rules check read with it");
         let ops = { std::fs::write(dir.join("ops.toml"), "agent = \"codex\"\n").unwrap(); load_in(&dir, OPS).unwrap() };
         assert_eq!(ops.agent, Agent::Codex, "a file may move a built-in profile to Codex; only its own keys are checked");
         std::fs::remove_dir_all(dir).unwrap();

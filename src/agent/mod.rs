@@ -62,6 +62,7 @@ pub struct Reviewer<'a> {
     pub prompt: &'a Path,
     pub rules: Option<&'a Path>,
     pub docs: Option<&'a Path>,
+    pub answer: &'a Path,
 }
 
 // The agents setup chose: Claude always, Codex once kebbie's plugin is in Codex's home in any state, as the setup guide reads it.
@@ -232,9 +233,19 @@ impl Agent {
         }
     }
 
-    // kebbie review runs Claude whatever the reviewer profile says; the profile refuses agent = "codex".
     pub fn reviewer_command(self, reviewer: &Reviewer) -> (&'static str, Vec<String>) {
-        ("claude", claude::reviewer_args(reviewer))
+        match self {
+            Agent::Claude => ("claude", claude::reviewer_args(reviewer)),
+            Agent::Codex => ("codex", codex::reviewer_args(reviewer)),
+        }
+    }
+
+    // Claude reads its role as a system prompt from a file; Codex's exec has none, so the role leads the brief.
+    pub fn reviewer_input(self, prompt: &Path, input: &str) -> Result<String> {
+        match self {
+            Agent::Claude => Ok(input.to_string()),
+            Agent::Codex => Ok(format!("{}\n\n---\n\n{input}", std::fs::read_to_string(prompt).map_err(|error| format!("{}: {error}", prompt.display()))?.trim_end())),
+        }
     }
 
     pub fn reviewer_settings(self, kebbie: &str, sandbox: bool) -> String {

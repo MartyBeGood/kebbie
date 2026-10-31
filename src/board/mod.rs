@@ -892,7 +892,7 @@ impl App {
                     Act::SendReview => {
                         if let Some(path) = &item.path {
                             self.about("review", &item.name);
-                            self.show(if item.awaiting_review() { crate::review::withdraw(path, None) } else { crate::review::request(path, None) });
+                            self.show(if item.awaiting_review() { crate::review::withdraw(path, None) } else { crate::review::request(path, None, crate::review::Request::Review) });
                         }
                     }
                     Act::DismissCi if item.ci.as_ref().is_some_and(|ci| !ci.running()) => {

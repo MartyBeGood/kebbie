@@ -307,7 +307,7 @@ fn check(state: &Path, repo: &Path, slot: &Slot, address: &str, upstream: &str, 
     let docs = if settings.docs_required.value { Some(review::docs_brief(&slot.path, upstream, sha, &kebbie.join("skills/keep-docs/SKILL.md"))?) } else { None };
     let quoted = review::quoted_rules(rules);
     let input = brief(address, &slot.path, upstream, sha, &commits, rules, &rules_file, quoted.as_deref(), docs.as_deref());
-    let answer = review::ask_reviewer(&review::Ask { address, worktree: &slot.path, settings: &settings, rules_file: quoted.is_none().then_some(rules_file.as_path()), docs: docs.is_some(), input: &input, timeout: Some(TIMEOUT), role: "rules", program: Some(&claude), group_file: Some(&file(state, address, "claude")), prompt: None })?;
+    let answer = review::ask_reviewer(&review::Ask { address, worktree: &slot.path, settings: &settings, rules_file: quoted.is_none().then_some(rules_file.as_path()), docs: docs.is_some(), input: &input, timeout: Some(TIMEOUT), role: "rules", program: Some(&claude), group_file: Some(&file(state, address, "claude")), prompt: None, profile: None })?;
     review::record(&answer, sha).ok_or_else(|| review::no_verdict(&answer))
 }
 

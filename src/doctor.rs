@@ -346,7 +346,7 @@ pub fn task_profiles(profiles_dir: &Path, named: &[(String, String)]) -> Option<
     if named.is_empty() {
         return None;
     }
-    let names: Vec<String> = crate::profiles::list_in(profiles_dir).0.into_iter().map(|profile| profile.name).filter(|name| name != crate::profiles::REVIEWER).collect();
+    let names: Vec<String> = crate::profiles::list_in(profiles_dir).0.into_iter().filter(|profile| !profile.review).map(|profile| profile.name).collect();
     let missing: Vec<String> = named.iter().filter(|(_, profile)| !names.contains(profile)).map(|(file, profile)| format!("task.profile = \"{profile}\" in {file} names no profile")).collect();
     if missing.is_empty() {
         let set: Vec<String> = named.iter().map(|(file, profile)| format!("\"{profile}\" in {file}")).collect();

@@ -103,6 +103,7 @@ pub struct Queued {
 pub struct Item {
     pub review: Option<(usize, usize)>,
     pub verdict: Option<crate::review::Shown>,
+    pub second: Option<crate::review::SecondShown>,
     pub rules: Option<crate::rules_check::Shown>,
     pub permit: Option<crate::permit::Permit>,
     pub follows: bool,
@@ -177,7 +178,7 @@ impl Item {
     fn queued_from(shown: tasks::WaitShown) -> Item {
         let tasks::WaitShown { wait, after, names, waiting, title, base, at } = shown;
         Item {
-            review: None, verdict: None, rules: None, permit: None, follows: false, bypass: false, profile: Some(wait.profile.clone().unwrap_or_else(|| crate::profiles::TASK.to_string())), server: false, worker: false, url: None,
+            review: None, verdict: None, second: None, rules: None, permit: None, follows: false, bypass: false, profile: Some(wait.profile.clone().unwrap_or_else(|| crate::profiles::TASK.to_string())), server: false, worker: false, url: None,
             name: wait.task.clone(), title, place: name_of(&wait.repo), repo: Some(wait.repo.clone()), path: None, workspace: None, agent: None, git: None,
             report: None, question: None, ci: None, recover: None, routine: None, push_waits: None,
             queued: Some(Queued { after, blocked: wait.blocked.clone(), waiting, names, base, at, backlog: wait.backlog.is_some() }),
@@ -544,6 +545,7 @@ impl Item {
         let mut shown = self.shown_json();
         shown["staged"] = json!(self.staged);
         shown["assessment"] = json!(self.assessment.as_ref().map(crate::assessment::Word::text));
+        shown["second_opinion"] = json!(self.second.as_ref().map(crate::review::SecondShown::to_json));
         shown["recipe"] = self.recipe.as_ref().map_or(Value::Null, crate::recipe::Recipe::to_json);
         shown["parked_until"] = self.parked.map_or(Value::Null, |parked| parked.until.map_or(json!(tasks::UNPARKED), |at| json!(at)));
         shown
@@ -885,6 +887,7 @@ pub fn gather() -> Result<Vec<Item>> {
             let mut item = Item {
                 review: review_progress(&slot.path, &upstream),
                 verdict: crate::review::shown(&address, &slot.path, &upstream),
+                second: crate::review::second_shown(&address, &slot.path, &upstream),
                 rules: state.as_deref().and_then(|state| crate::rules_check::shown(state, &address, &slot.path, &upstream)),
                 permit: crate::permit::of(&address, &name_of(repo)),
                 follows: tasks::follows(&address),
@@ -949,6 +952,7 @@ pub fn gather() -> Result<Vec<Item>> {
         items.push(Item {
             review: None,
             verdict: None,
+            second: None,
             rules: None,
             permit: None,
             follows: false,
@@ -1031,7 +1035,7 @@ pub(crate) mod tests {
 
     pub(crate) fn task(status: Option<&str>, report: Option<&str>, ahead: usize) -> Item {
         let mut item = Item {
-            review: None, verdict: None, rules: None, permit: None, follows: false, bypass: false, profile: Some(crate::profiles::TASK.to_string()), server: false, worker: false, url: None, name: "billing".to_string(), title: None, place: "web".to_string(), repo: None, path: None, workspace: None,
+            review: None, verdict: None, second: None, rules: None, permit: None, follows: false, bypass: false, profile: Some(crate::profiles::TASK.to_string()), server: false, worker: false, url: None, name: "billing".to_string(), title: None, place: "web".to_string(), repo: None, path: None, workspace: None,
             agent: status.map(|status| Agent { pane: "w1:p1".to_string(), status: status.to_string(), title: String::new(), context: None, answer: answer_in_space(crate::agent::Agent::Claude), kind: crate::agent::Agent::Claude }),
             git: Some(Git { upstream: "origin/main".to_string(), ahead, behind: 0, changed: 0, uncommitted: 0, approved: true, head: None }),
             report: report.map(|state| Message {

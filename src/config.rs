@@ -110,6 +110,52 @@ impl ReviewAuto {
     }
 }
 
+// review.second: no second opinion, one offered when a task is sent to review, or one that runs with every review.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Second {
+    #[default]
+    None,
+    Offered(String),
+    Always(String),
+}
+
+pub const ALWAYS: &str = "always";
+
+impl Second {
+    pub fn profile(&self) -> Option<&str> {
+        match self {
+            Second::None => None,
+            Second::Offered(name) | Second::Always(name) => Some(name),
+        }
+    }
+
+    pub fn always(&self) -> bool {
+        matches!(self, Second::Always(_))
+    }
+
+    pub fn key(&self) -> String {
+        match self {
+            Second::None => "none".to_string(),
+            Second::Offered(name) => name.clone(),
+            Second::Always(name) => format!("{ALWAYS} {name}"),
+        }
+    }
+
+    // A profile's name, or "always" and the name; a profile name has no space, so the two never meet.
+    pub fn parse(text: &str) -> Result<Second> {
+        let (always, name) = match text.split_once(' ') {
+            Some((ALWAYS, name)) => (true, name.trim()),
+            Some(_) => return Err(format!("review.second: \"{text}\" is not a choice; name a review profile, or \"always <profile>\" to run it with every review")),
+            None => (false, text),
+        };
+        if name == "none" && !always {
+            return Ok(Second::None);
+        }
+        crate::profiles::name(name).map_err(|error| format!("review.second: {error}"))?;
+        Ok(if always { Second::Always(name.to_string()) } else { Second::Offered(name.to_string()) })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum OngoingAt {
     #[default]
@@ -166,6 +212,8 @@ pub struct Worktree {
     pub steps: Option<bool>,
     pub review_model: Option<String>,
     pub review_auto: Option<ReviewAuto>,
+    pub review_profile: Option<String>,
+    pub review_second: Option<Second>,
     pub notify_command: Option<String>,
     pub vault_command: Option<String>,
     pub server_name: Option<String>,
@@ -288,6 +336,8 @@ pub enum Kind {
     Bool,
     Choice(Vec<&'static str>),
     Profile,
+    ReviewProfile,
+    SecondOpinion,
     Text,
     Number,
     List,
@@ -332,6 +382,8 @@ pub struct Settings {
     pub steps: Setting<bool>,
     pub review_model: Setting<Option<String>>,
     pub review_auto: Setting<ReviewAuto>,
+    pub review_profile: Setting<String>,
+    pub review_second: Setting<Second>,
     pub notify_command: Setting<Option<String>>,
     pub vault_command: Setting<Option<String>>,
     pub server_name: Setting<String>,
@@ -455,7 +507,7 @@ const SECTION_KEYS: [(&str, &[&str]); 18] = [
     ("hub", &["url"]),
     ("worktree", &["setup_skill", "setup_command", "dev_server", "dev_worker", "dev_url", "dev_route", "stage_on_main", "server_name", "worker_name", "clean_on_release"]),
     ("task", &["rules_skill", "test_commands", "also_noticed", "permission_mode", "profile", "sandbox", "steps"]),
-    ("review", &["model", "auto"]),
+    ("review", &["model", "auto", "profile", "second"]),
     ("notify", &["command"]),
     ("vault", &["command"]),
     ("ci", &["watch"]),
@@ -764,6 +816,8 @@ fn worktree(table: &Table) -> Result<Worktree> {
         steps: None,
         review_model: None,
         review_auto: None,
+        review_profile: None,
+        review_second: None,
         notify_command: None,
         vault_command: None,
         server_name: text(worktree, "server_name", "worktree.server_name")?,
@@ -821,6 +875,8 @@ fn with_review(table: &Table, mut worktree: Worktree) -> Result<Worktree> {
     if let Some(review) = subtable(table, "review", "review")? {
         worktree.review_model = text(review, "model", "review.model")?;
         worktree.review_auto = review_auto(review)?;
+        worktree.review_profile = text(review, "profile", "review.profile")?.map(|name| crate::profiles::name(&name).map(str::to_string).map_err(|error| format!("review.profile: {error}"))).transpose()?;
+        worktree.review_second = text(review, "second", "review.second")?.map(|text| Second::parse(&text)).transpose()?;
     }
     Ok(worktree)
 }
@@ -948,6 +1004,8 @@ pub fn settings(repo: &Worktree, machine: &Machine) -> Settings {
         steps: or_default(pick(repo.steps.as_ref(), machine.worktree.steps.as_ref()), true),
         review_model: optional(pick(repo.review_model.as_ref(), machine.worktree.review_model.as_ref())),
         review_auto: or_default(pick(repo.review_auto.as_ref(), machine.worktree.review_auto.as_ref()), ReviewAuto::default()),
+        review_profile: or_default(pick(repo.review_profile.as_ref(), machine.worktree.review_profile.as_ref()), crate::profiles::REVIEWER.to_string()),
+        review_second: or_default(pick(repo.review_second.as_ref(), machine.worktree.review_second.as_ref()), Second::default()),
         notify_command: optional(pick(None, machine.worktree.notify_command.as_ref())),
         vault_command: optional(pick(None, machine.worktree.vault_command.as_ref())),
         server_name: or_default(pick(None, machine.worktree.server_name.as_ref()), DEFAULT_SERVER_NAME.to_string()),
@@ -1049,7 +1107,7 @@ fn quoted(items: &[&str]) -> String {
 
 // The one list of keys: kebbie config prints it and the Settings page edits it.
 pub fn entries(loaded: &Loaded) -> Vec<Entry> {
-    let Settings { sources, groups, ongoing, setup_skill, setup_command, dev_server, dev_worker, dev_url, dev_route, stage_on_main, rules_skill, test_commands, also_noticed, permission_mode, profile, sandbox, steps, review_model, review_auto, notify_command, vault_command, server_name, worker_name, channel, agent_updates, idle_minutes, auto_restart, ci_watch, comments_watch, comments_days, clean_on_release, docs_required, keeper, recover, machine_name, hub_url, report_signals, report_text, report_inbox, propose_issues } = &loaded.settings;
+    let Settings { sources, groups, ongoing, setup_skill, setup_command, dev_server, dev_worker, dev_url, dev_route, stage_on_main, rules_skill, test_commands, also_noticed, permission_mode, profile, sandbox, steps, review_model, review_auto, review_profile, review_second, notify_command, vault_command, server_name, worker_name, channel, agent_updates, idle_minutes, auto_restart, ci_watch, comments_watch, comments_days, clean_on_release, docs_required, keeper, recover, machine_name, hub_url, report_signals, report_text, report_inbox, propose_issues } = &loaded.settings;
     let names: Vec<&str> = sources.value.iter().map(|source| source.key()).collect();
     let (board_keys, _) = crate::keys::Keys::with(&load_machine(&loaded.machine).map(|machine| machine.keys).unwrap_or_default());
     let (server_key, worker_key) = (board_keys.char(crate::keys::Act::Server), board_keys.char(crate::keys::Act::Worker));
@@ -1101,7 +1159,11 @@ pub fn entries(loaded: &Loaded) -> Vec<Entry> {
     key("task.steps", steps.value.to_string(), steps.layer, Kind::Bool, Scope::Either,
         "Tasks work in steps, one commit each, listed with kebbie steps before they write code: you accept and push one step at a time while the task builds the next. Off, a task commits its own way and kebbie steps refuses. New tasks follow it; a running task once it restarts.");
     key("review.model", review_model.value.as_ref().map_or("none".to_string(), |model| format!("{model:?}")), review_model.layer, Kind::Text, Scope::Either,
-        "The model kebbie review's independent reviewer runs on, ahead of the reviewer profile's model; none leaves it to that profile, then to Claude's default.");
+        "The model the default reviewer (review.profile) runs on, ahead of its profile's model; none leaves it to that profile, then to its agent's default.");
+    key("review.profile", format!("{:?}", review_profile.value), review_profile.layer, Kind::ReviewProfile, Scope::Either,
+        "The review profile kebbie review runs by default, and whose verdict holds a task's push until it passes: the built-in reviewer, or a profile of yours with kind = \"review\". Only a review profile can be named; the Settings page picks from them.");
+    key("review.second", if review_second.value == Second::None { "none".to_string() } else { format!("{:?}", review_second.value.key()) }, review_second.layer, Kind::SecondOpinion, Scope::Either,
+        "A second opinion from another review profile: its name offers it with s when you send a task to review (v on the board, kebbie review --second), \"always <profile>\" runs it with every review, none offers none. It never holds the push: its points show on the task's row and go to the lead, which passes them to the task like a review's findings.");
     key("review.auto", format!("{:?}", review_auto.value.key()), review_auto.layer, Kind::Choice(ReviewAuto::ALL.map(ReviewAuto::key).to_vec()), Scope::Either,
         "What kebbie does when the assessor it runs on a ready report judges that the task's work, its pushed steps included, needs an independent review: \"suggest\" shows review suggested and its reason on the task, and nothing starts until you or the lead send it; \"run\" starts the reviewer by itself without holding the push; \"require\" starts it and holds the push, from the ready report on, until it passes. An assessment that gives no answer reads as review not assessed, a suggestion in every mode.");
     key("notify.command", notify_command.value.as_ref().map_or("none".to_string(), |command| format!("{command:?}")), notify_command.layer, Kind::Text, Scope::Machine,
@@ -1534,7 +1596,23 @@ mod tests {
         let loaded = Loaded { machine: PathBuf::from("/c.toml"), repo: None, settings: both };
         assert!(describe(&loaded).contains("review.model = \"sonnet\"  (repo config)"));
         let default = Loaded { machine: PathBuf::from("/c.toml"), repo: None, settings: settings(&Worktree::default(), &Machine::default()) };
-        assert!(describe(&default).contains("review.model = none  (default)\n  The model kebbie review"));
+        assert!(describe(&default).contains("review.model = none  (default)\n  The model the default reviewer (review.profile) runs on"));
+    }
+
+    #[test]
+    fn review_profile_names_the_default_reviewer_and_review_second_a_second_opinion_offered_or_always() {
+        let defaults = settings(&Worktree::default(), &Machine::default());
+        assert_eq!((defaults.review_profile.value.as_str(), &defaults.review_second.value), (crate::profiles::REVIEWER, &Second::None), "the built-in reviewer and no second opinion");
+        let own = settings(&repo("[review]\nprofile = \"careful-review\"\nsecond = \"codex-review\"\n"), &machine("[review]\nsecond = \"always codex-review\"\n"));
+        assert_eq!((own.review_profile.value.as_str(), own.review_profile.layer), ("careful-review", Layer::Repo));
+        assert_eq!(own.review_second, Setting { value: Second::Offered("codex-review".to_string()), layer: Layer::Repo }, "a repo wins over the machine");
+        assert_eq!(settings(&Worktree::default(), &machine("[review]\nsecond = \"always codex-review\"\n")).review_second.value, Second::Always("codex-review".to_string()));
+        assert_eq!(Second::parse("none"), Ok(Second::None));
+        assert_eq!(Second::Always("codex-review".to_string()).key(), "always codex-review");
+        assert!(Second::parse("often codex-review").unwrap_err().contains("review.second: \"often codex-review\" is not a choice"));
+        assert!(parse_repo("[review]\nprofile = \"Bad Name\"\n", "app.toml").unwrap_err().contains("review.profile: \"Bad Name\" is not a profile name"));
+        let shown = describe(&Loaded { machine: PathBuf::from("/c.toml"), repo: None, settings: own });
+        assert!(shown.contains("review.profile = \"careful-review\"  (repo config)") && shown.contains("review.second = \"codex-review\"  (repo config)\n  A second opinion from another review profile"), "{shown}");
     }
 
     #[test]
@@ -1793,7 +1871,7 @@ mod tests {
     fn each_keys_scope_is_the_files_that_take_it_and_what_its_text_says() {
         let loaded = Loaded { machine: PathBuf::from("/nowhere/config.toml"), repo: None, settings: settings(&Worktree::default(), &Machine::default()) };
         let all = entries(&loaded);
-        assert_eq!(all.len(), 40);
+        assert_eq!(all.len(), 42);
         for entry in all {
             let (section, field) = entry.key.rsplit_once('.').unwrap();
             let text = format!("[{section}]\n{field} = {}\n", sample(&entry));

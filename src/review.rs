@@ -25,6 +25,73 @@ pub fn verdict_file(state: &Path, address: &str) -> PathBuf {
 
 pub(crate) const QUEUE: crate::trusted_spawn::Queue = crate::trusted_spawn::Queue { dir, args: &["review", "--run"], is_ours: is_reviewer };
 
+fn second_dir(state: &Path) -> PathBuf {
+    state.join("second-opinions")
+}
+
+// The second opinion runs as its own keeper-started child, so its verdict never lands in verdicts/, where the push gate reads.
+pub(crate) const SECOND: crate::trusted_spawn::Queue = crate::trusted_spawn::Queue { dir: second_dir, args: &["review", "--second-opinion"], is_ours: is_second };
+
+pub fn second_file(state: &Path, address: &str) -> PathBuf {
+    second_dir(state).join(format!("{address}.md"))
+}
+
+fn second_log(state: &Path, address: &str) -> PathBuf {
+    second_dir(state).join(format!("{address}.log"))
+}
+
+pub fn is_second(args: &str) -> bool {
+    args.contains(" review --second-opinion") && args.split_whitespace().any(|word| Path::new(word).file_name().is_some_and(|name| name.to_string_lossy().starts_with("kebbie")))
+}
+
+// What the lead hears of a second opinion: the same shape as a review's verdict, and its points go to the task as findings do.
+fn second_said(address: &str, by: &str, short: &str, points: usize, file: &Path) -> String {
+    match points {
+        0 => format!("{address}'s second opinion from {by} at {short}: no points — {}", file.display()),
+        _ => format!("{address}'s second opinion from {by} at {short}: {} — {}. A second opinion never holds the push: pass the points that are bugs or broken rules to the task with kebbie tell, each with its file:line, as you pass a review's findings.", points_text(points), file.display()),
+    }
+}
+
+pub fn points_text(points: usize) -> String {
+    if points == 1 { "1 point".to_string() } else { format!("{points} points") }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SecondShown {
+    pub by: String,
+    pub points: Option<usize>,
+    pub running: bool,
+    pub stale: bool,
+    pub file: PathBuf,
+}
+
+impl SecondShown {
+    pub fn to_json(&self) -> Value {
+        json!({ "by": self.by, "points": self.points, "running": self.running, "stale": self.stale, "file": self.file })
+    }
+}
+
+pub fn second_shown(address: &str, path: &Path, upstream: &str) -> Option<SecondShown> {
+    let head = git(path, &["rev-parse", "HEAD"]).ok()?;
+    second_shown_in(&crate::lead::state_location().ok()?, address, |sha| tasks::same_code(path, upstream, sha, &head))
+}
+
+// The profile that read it is the record's by line, or the asking marker's payload while it reads.
+pub fn second_shown_in(state: &Path, address: &str, current: impl Fn(&str) -> bool) -> Option<SecondShown> {
+    let file = second_file(state, address);
+    let text = fs::read_to_string(&file).ok();
+    let verdict = text.as_deref().and_then(parse_verdict);
+    let asked = SECOND.asked(state, address);
+    let running = SECOND.pid(state, address).is_some() || SECOND.wanted(state, address).is_some();
+    if verdict.is_none() && !running {
+        return None;
+    }
+    let recorded = text.as_deref().and_then(|text| text.lines().find_map(|line| line.strip_prefix("by: ")).map(str::to_string));
+    let by = if running { asked.map(|ask| ask.payload).filter(|payload| !payload.is_empty()).or(recorded) } else { recorded }.unwrap_or_default();
+    let stale = verdict.as_ref().is_some_and(|verdict| !current(&verdict.sha));
+    Some(SecondShown { by, points: verdict.map(|verdict| verdict.findings), running, stale, file })
+}
+
 #[cfg(test)]
 fn running_file(state: &Path, address: &str) -> PathBuf {
     QUEUE.file(state, address, "running")
@@ -208,6 +275,10 @@ pub fn forget(task: &str, repo: &Path) {
 // A reviewer still running is stopped first, so no verdict lands for a task that is gone.
 pub fn forget_in(state: &Path, address: &str) {
     QUEUE.forget(state, address);
+    SECOND.forget(state, address);
+    for file in [second_file(state, address), second_log(state, address)] {
+        let _ = fs::remove_file(file);
+    }
     for file in [verdict_file(state, address), log_file(state, address), marked(state, address, "withdrawn"), marked(state, address, "advised"), marked(state, address, "required")] {
         let _ = fs::remove_file(file);
     }
@@ -248,13 +319,22 @@ pub(crate) fn stop_group(pid: &str) {
     let _ = Command::new("kill").args(["-s", "TERM", "--", &format!("-{pid}")]).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Request {
+    Review,
+    WithSecond,
+    SecondOnly,
+}
+
 // Starts the reviewer as a process of its own, so neither the board nor the caller waits for it.
-pub fn request(cwd: &Path, name: Option<&str>) -> Result<String> {
-    request_as(&state_dir()?, &crate::permit::caller(), cwd, name, &peers::own_exe()?, &crate::trusted_spawn::reviewer_env(std::env::vars()))
+pub fn request(cwd: &Path, name: Option<&str>, send: Request) -> Result<String> {
+    let second = config::resolve(Some(&main_checkout(cwd)?))?.settings.review_second.value;
+    request_as(&state_dir()?, &crate::permit::caller(), cwd, name, &peers::own_exe()?, &crate::trusted_spawn::reviewer_env(std::env::vars()), send, &second)
 }
 
 // Only your own or the lead's request starts the reviewer at once; anyone else's waits for the keeper, so no task's PATH or nonce reaches it.
-fn request_as(state: &Path, caller: &crate::permit::Caller, cwd: &Path, name: Option<&str>, kebbie: &Path, env: &[(String, String)]) -> Result<String> {
+#[allow(clippy::too_many_arguments)]
+fn request_as(state: &Path, caller: &crate::permit::Caller, cwd: &Path, name: Option<&str>, kebbie: &Path, env: &[(String, String)], send: Request, second: &config::Second) -> Result<String> {
     let repo = main_checkout(cwd)?;
     let slot = tasks::find_task(&repo, name, cwd)?;
     let task = tasks::task_of(&slot);
@@ -265,17 +345,46 @@ fn request_as(state: &Path, caller: &crate::permit::Caller, cwd: &Path, name: Op
     let address = peers::address(task, &name_of(&repo));
     let sha = git(&slot.path, &["rev-parse", "--short", "HEAD"])?;
     let now = matches!(caller, crate::permit::Caller::User | crate::permit::Caller::Lead);
-    if now {
-        start_reviewer(state, &address, kebbie, &slot.path, env)?;
-    } else if running_in(state, &address) {
-        return already_running(&address);
-    } else {
-        want(state, &address, &slot.path)?;
+    let opinion = match (send, second.profile()) {
+        (Request::Review, profile) => profile.filter(|_| second.always()),
+        (_, Some(profile)) => Some(profile),
+        (_, None) => return crate::notice::Notice::new(crate::notice::Tone::NotNow, "No second opinion is set").next("Pick a review profile for review.second on the Settings page (,).").detail("task", &address).err(),
+    };
+    if send == Request::SecondOnly && SECOND.pid(state, &address).is_some() {
+        return crate::notice::Notice::new(crate::notice::Tone::NotNow, "A second opinion is already running").next("The lead hears its points when they are in.").detail("task", &address).err();
     }
-    let _ = fs::remove_file(marked(state, &address, "withdrawn"));
-    let _ = fs::remove_file(marked(state, &address, "advised"));
-    let notice = if now { crate::notice::Notice::new(crate::notice::Tone::Moving, "Review started").next("The reviewer reads its commits in the background; the lead hears its verdict.") } else { crate::notice::Notice::new(crate::notice::Tone::Moving, "Review asked for").next("kebbie's keeper starts the reviewer within a minute; the lead hears its verdict.") };
-    notice.detail("task", &address).detail("commit", &sha).detail("verdict", verdict_file(state, &address).display().to_string()).detail("output", log_file(state, &address).display().to_string()).ok()
+    if send != Request::SecondOnly {
+        if now {
+            start_reviewer(state, &address, kebbie, &slot.path, env)?;
+        } else if running_in(state, &address) {
+            return already_running(&address);
+        } else {
+            want(state, &address, &slot.path)?;
+        }
+        let _ = fs::remove_file(marked(state, &address, "withdrawn"));
+        let _ = fs::remove_file(marked(state, &address, "advised"));
+    }
+    if let Some(profile) = opinion && SECOND.pid(state, &address).is_none() {
+        if now {
+            SECOND.start_now(state, &address, &slot.path, profile, kebbie, env, &second_log(state, &address))?;
+        } else {
+            SECOND.want(state, &address, &slot.path, profile)?;
+        }
+    }
+    let notice = match (send, now) {
+        (Request::SecondOnly, _) => crate::notice::Notice::new(crate::notice::Tone::Moving, "Second opinion started").next(format!("{} reads its commits in the background; the lead hears its points. It never holds the push.", opinion.unwrap_or_default())),
+        (_, true) => crate::notice::Notice::new(crate::notice::Tone::Moving, "Review started").next("The reviewer reads its commits in the background; the lead hears its verdict."),
+        (_, false) => crate::notice::Notice::new(crate::notice::Tone::Moving, "Review asked for").next("kebbie's keeper starts the reviewer within a minute; the lead hears its verdict."),
+    };
+    let notice = notice.detail("task", &address).detail("commit", &sha);
+    let notice = match opinion {
+        Some(profile) => notice.detail("second opinion", profile).detail("its points", second_file(state, &address).display().to_string()),
+        None => notice,
+    };
+    if send == Request::SecondOnly {
+        return notice.ok();
+    }
+    notice.detail("verdict", verdict_file(state, &address).display().to_string()).detail("output", log_file(state, &address).display().to_string()).ok()
 }
 
 fn already_running<T>(address: &str) -> Result<T> {
@@ -325,7 +434,11 @@ pub fn tick(state: &Path) -> Vec<String> {
 }
 
 fn tick_with(state: &Path, env: &[(String, String)]) -> Vec<String> {
-    QUEUE.tick(state, env, |address| log_file(state, address)).into_iter().map(|(address, _, started)| match started {
+    let seconds = SECOND.tick(state, env, |address| second_log(state, address)).into_iter().map(|(address, _, started)| match started {
+        Ok(()) => format!("review: started the second opinion for {address}"),
+        Err(error) => format!("review: {address}'s second opinion: {error}"),
+    });
+    let mut said: Vec<String> = QUEUE.tick(state, env, |address| log_file(state, address)).into_iter().map(|(address, _, started)| match started {
         Ok(()) => format!("review: started the reviewer for {address}"),
         Err(error) => {
             if let Err(told) = messages::to_lead(messages::ToLead::Findings, &format!("{address} asked for its reviewer, but it could not start: {error}. Send it again with kebbie review once that is fixed.")) {
@@ -333,28 +446,41 @@ fn tick_with(state: &Path, env: &[(String, String)]) -> Vec<String> {
             }
             format!("review: {address}: {error}")
         }
-    }).collect()
+    }).collect();
+    said.extend(seconds);
+    said
 }
 
 // The background half: runs the reviewer, saves its verdict and tells the lead, also when it fails.
 pub fn run(cwd: &Path) -> Result<String> {
+    run_as(cwd, Which::Default)
+}
+
+// The second opinion's background half: the same trusted start, its points saved apart from the verdict and told to the lead.
+pub fn run_second(cwd: &Path) -> Result<String> {
+    run_as(cwd, Which::Second)
+}
+
+fn run_as(cwd: &Path, which: Which) -> Result<String> {
     let presented = crate::trusted_spawn::presented();
     let repo = main_checkout(cwd)?;
     let slot = tasks::find_task(&repo, None, cwd)?;
     let address = peers::address(tasks::task_of(&slot), &name_of(&repo));
     let state = state_dir()?;
-    if QUEUE.take(&state, &address, &presented, &crate::permit::caller()).is_none() {
+    let queue = if which == Which::Second { SECOND } else { QUEUE };
+    if queue.take(&state, &address, &presented, &crate::permit::caller()).is_none() {
         let refused = format!("A review of {address} was not started by kebbie review or the keeper, so it gives no verdict.");
         if let Err(error) = messages::to_lead(messages::ToLead::Findings, &format!("{refused} Send it again with kebbie review if it should be reviewed.")) {
             eprintln!("Could not tell the lead: {error}");
         }
         return Err(refused);
     }
-    let result = review(&repo, &slot, &address, &state);
-    QUEUE.done(&state, &address);
+    let result = review(&repo, &slot, &address, &state, which);
+    queue.done(&state, &address);
     let (what, notice) = match &result {
         Ok((text, true)) => (messages::ToLead::ReviewPassed, text.clone()),
         Ok((text, false)) => (messages::ToLead::Findings, text.clone()),
+        Err(error) if which == Which::Second => (messages::ToLead::Findings, format!("The second opinion on {address} failed: {error} (output in {}). It held nothing; send it again with kebbie review --second-only.", second_log(&state, &address).display())),
         Err(error) => (messages::ToLead::Findings, format!("The review of {address} failed: {error} (output in {}).{}", log_file(&state, &address).display(), if required_in(&state, &address) { " Its push stays held until a review passes: send it again with kebbie review." } else { "" })),
     };
     if let Err(error) = messages::to_lead(what, &notice) {
@@ -363,7 +489,13 @@ pub fn run(cwd: &Path) -> Result<String> {
     result.map(|(text, _)| text)
 }
 
-fn review(repo: &Path, slot: &Slot, address: &str, state: &Path) -> Result<(String, bool)> {
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Which {
+    Default,
+    Second,
+}
+
+fn review(repo: &Path, slot: &Slot, address: &str, state: &Path, which: Which) -> Result<(String, bool)> {
     let upstream = default_branch(repo)?;
     let sha = git(&slot.path, &["rev-parse", "HEAD"])?;
     let settings = config::resolve(Some(repo))?.settings;
@@ -379,10 +511,19 @@ fn review(repo: &Path, slot: &Slot, address: &str, state: &Path) -> Result<(Stri
     let tests = crate::evidence::brief_for(state, address, &slot.path, &upstream, &sha);
     let docs = if settings.docs_required.value { Some(docs_brief(&slot.path, &upstream, &sha, &kebbie.join(KEEP_DOCS))?) } else { None };
     let input = brief(&Brief { address, worktree: &slot.path, upstream: &upstream, sha: &sha, commits: &commits, rules, rules_file: rules_file.as_deref(), quoted: quoted.as_deref(), said: &said, tests: &tests, also_noticed: settings.also_noticed.value, docs: docs.as_deref() });
-    let answer = ask_reviewer(&Ask { address, worktree: &slot.path, settings: &settings, rules_file: rules_file.as_deref().filter(|_| quoted.is_none()), docs: docs.is_some(), input: &input, timeout: None, role: "review", program: Some(&crate::trusted_spawn::claude_from_keeper()?), group_file: None, prompt: None })?;
+    let reviewer = match which { Which::Default => default_reviewer(&crate::profiles::dir(), &settings)?, Which::Second => second_reviewer(&crate::profiles::dir(), &settings)? };
+    let role = match which { Which::Default => "review", Which::Second => "second" };
+    let answer = ask_reviewer(&Ask { address, worktree: &slot.path, settings: &settings, rules_file: rules_file.as_deref().filter(|_| quoted.is_none()), docs: docs.is_some(), input: &input, timeout: None, role, program: Some(&crate::trusted_spawn::claude_from_keeper()?), group_file: None, prompt: None, profile: Some(&reviewer) })?;
     let recorded = record(&answer, &sha).ok_or_else(|| no_verdict(&answer))?;
+    let short = &sha[..7.min(sha.len())];
+    if which == Which::Second {
+        let recorded = recorded.split_once("\n\n").map_or_else(|| recorded.clone(), |(head, rest)| format!("{head}\nby: {}\n\n{rest}", reviewer.name));
+        let points = parse_verdict(&recorded).map_or(0, |verdict| verdict.findings);
+        crate::state::write(&second_file(state, address), &recorded)?;
+        return Ok((second_said(address, &reviewer.name, short, points, &second_file(state, address)), points == 0));
+    }
     let verdict = save(state, address, &recorded, rules_file.is_some(), || tasks::fingerprint_at(&slot.path, &upstream, &sha))?;
-    Ok((format!("{address} reviewed at {}: {} — {}", &sha[..7.min(sha.len())], verdict.summary(), file.display()), verdict.ok))
+    Ok((format!("{address} reviewed at {short}: {} — {}", verdict.summary(), file.display()), verdict.ok))
 }
 
 // A pass of a review that read the rules skill is the rules check too, kept as the approval's fingerprint, so the task is not checked twice.
@@ -423,22 +564,30 @@ pub(crate) struct Ask<'a> {
     pub program: Option<&'a Path>,
     pub group_file: Option<&'a Path>,
     pub prompt: Option<&'a Path>,
+    pub profile: Option<&'a crate::profiles::Profile>,
 }
 
 // The reviewer's answer to a brief, from the read-only Claude kebbie:review sets up; past the timeout it is stopped and gives none.
 pub(crate) fn ask_reviewer(ask: &Ask) -> Result<String> {
-    let Ask { address, worktree, settings, rules_file, docs, input, timeout, role, program: bin, group_file, prompt: skill } = *ask;
+    let Ask { address, worktree, settings, rules_file, docs, input, timeout, role, program: bin, group_file, prompt: skill, profile } = *ask;
     let kebbie = install_root()?;
-    let profile = reviewer_profile(&crate::profiles::load(crate::profiles::REVIEWER)?, settings.review_model.value.as_deref());
+    let profile = match profile {
+        Some(profile) => profile.clone(),
+        None => helper_profile(&crate::profiles::load(crate::profiles::REVIEWER)?, settings),
+    };
     let agent = profile.agent;
-    if settings.sandbox.value {
+    let codex = if agent == crate::agent::Agent::Codex { Some(crate::trusted_spawn::codex_from_keeper()?) } else { None };
+    if settings.sandbox.value && codex.is_none() {
         crate::sandbox::refusal(&crate::sandbox::missing_here())?;
     }
     let keep_docs = kebbie.join(KEEP_DOCS);
     let guard = write_settings(&roles_dir()?, &format!("{address}.{role}"), &agent.reviewer_settings(&peers::kebbie_command()?, settings.sandbox.value))?;
     let prompt = reviewer_prompt(&skill.map_or_else(|| kebbie.join("skills/review/SKILL.md"), Path::to_path_buf), &profile, &roles_dir()?.join(format!("{address}.{role}.md")))?;
-    let (program, args) = agent.reviewer_command(&Reviewer { model: profile.model.as_deref(), effort: profile.effort.as_deref(), settings: &guard, prompt: &prompt, rules: rules_file.and_then(Path::parent), docs: if docs { keep_docs.parent() } else { None } });
-    let mut command = Command::new(bin.map_or(Path::new(program), |bin| bin));
+    let answer_file = roles_dir()?.join(format!("{address}.{role}.answer"));
+    let _ = fs::remove_file(&answer_file);
+    let (program, args) = agent.reviewer_command(&Reviewer { model: profile.model.as_deref(), effort: profile.effort.as_deref(), settings: &guard, prompt: &prompt, rules: rules_file.and_then(Path::parent), docs: if docs { keep_docs.parent() } else { None }, answer: &answer_file });
+    let input = agent.reviewer_input(&prompt, input)?;
+    let mut command = Command::new(codex.as_deref().or(bin).unwrap_or(Path::new(program)));
     command.args(&args).current_dir(worktree).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if group_file.is_some() {
         command.process_group(0);
@@ -455,6 +604,9 @@ pub(crate) fn ask_reviewer(ask: &Ask) -> Result<String> {
     };
     if !output.status.success() {
         return Err(format!("{program} stopped with {}: {}", output.status, String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    if codex.is_some() {
+        return fs::read_to_string(&answer_file).map_err(|error| format!("codex left no answer in {}: {error}", answer_file.display()));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
@@ -481,9 +633,42 @@ pub(crate) fn wait_within(mut child: std::process::Child, limit: std::time::Dura
     Ok(std::process::Output { status, stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() })
 }
 
-// review.model, from the repo or machine config, is the reviewer profile's model by another name and wins over its file.
+// review.model, from the repo or machine config, is the default reviewer's model by another name and wins over its profile's file.
 pub fn reviewer_profile(profile: &crate::profiles::Profile, review_model: Option<&str>) -> crate::profiles::Profile {
     crate::profiles::Profile { model: review_model.map(str::to_string).or_else(|| profile.model.clone()), ..profile.clone() }
+}
+
+// The assessor, the rules check and the other readers run the built-in reviewer; review.model is its model only while it is the default reviewer.
+pub(crate) fn helper_profile(reviewer: &crate::profiles::Profile, settings: &config::Settings) -> crate::profiles::Profile {
+    reviewer_profile(reviewer, settings.review_model.value.as_deref().filter(|_| settings.review_profile.value == crate::profiles::REVIEWER))
+}
+
+// The profile whose verdict holds the push: review.profile, with review.model ahead of its own model.
+pub fn default_reviewer(dir: &Path, settings: &config::Settings) -> Result<crate::profiles::Profile> {
+    let profile = crate::profiles::for_review(dir, &settings.review_profile.value).map_err(|error| format!("review.profile: {error}"))?;
+    offered_agent(&profile)?;
+    Ok(reviewer_profile(&profile, settings.review_model.value.as_deref()))
+}
+
+// The profile review.second names, which never is the default reviewer.
+pub fn second_reviewer(dir: &Path, settings: &config::Settings) -> Result<crate::profiles::Profile> {
+    let Some(name) = settings.review_second.value.profile() else {
+        return crate::notice::Notice::new(crate::notice::Tone::NotNow, "No second opinion is set").next("Pick one for review.second on the Settings page (,).").err();
+    };
+    if name == settings.review_profile.value {
+        return Err(format!("review.second: \"{name}\" is the default reviewer (review.profile) already; name another review profile"));
+    }
+    let profile = crate::profiles::for_review(dir, name).map_err(|error| format!("review.second: {error}"))?;
+    offered_agent(&profile)?;
+    Ok(profile)
+}
+
+// A reviewer runs only on an agent setup chose, as a task does.
+fn offered_agent(profile: &crate::profiles::Profile) -> Result<()> {
+    if profile.agent == crate::agent::Agent::Claude || crate::agent::chosen().contains(&profile.agent) {
+        return Ok(());
+    }
+    Err(format!("the review profile {} runs {}", profile.name, profile.agent.not_set_up()))
 }
 
 fn reviewer_prompt(skill: &Path, profile: &crate::profiles::Profile, combined: &Path) -> Result<PathBuf> {
@@ -693,7 +878,7 @@ mod tests {
 
     #[test]
     fn the_reviewer_has_only_reading_tools_and_git_log_diff_show_on_the_shell() {
-        let reviewer = Reviewer { model: None, effort: None, settings: Path::new("/state/roles/billing@app.review.settings.json"), prompt: Path::new("/kebbie/skills/review/SKILL.md"), rules: None, docs: None };
+        let reviewer = Reviewer { model: None, effort: None, settings: Path::new("/state/roles/billing@app.review.settings.json"), prompt: Path::new("/kebbie/skills/review/SKILL.md"), rules: None, docs: None, answer: Path::new("/state/roles/billing@app.review.answer") };
         let args = claude_args(&reviewer);
         let after = |flag: &str| args[args.iter().position(|arg| arg == flag).unwrap() + 1].clone();
         assert_eq!(args[0], "-p");
@@ -891,12 +1076,12 @@ mod tests {
         let kebbie = fake_kebbie(&state);
         let env = [("KEBBIE_CLAUDE_BIN".to_string(), "/opt/claude/bin/claude".to_string())];
         for caller in [Caller::Task(address.clone()), Caller::Agent, Caller::Sandboxed] {
-            let asked = request_as(&state, &caller, &slot.path, None, &kebbie, &env).unwrap();
+            let asked = request_as(&state, &caller, &slot.path, None, &kebbie, &env, Request::Review, &config::Second::None).unwrap();
             assert!(asked.contains("Review asked for") && !running_in(&state, &address) && marked(&state, &address, "wanted").exists(), "{asked}");
             assert!(!marked(&state, &address, "run").exists(), "no nonce is minted in the asking process");
             forget_in(&state, &address);
         }
-        assert!(request_as(&state, &Caller::User, &slot.path, None, &kebbie, &env).unwrap().contains("Review started"));
+        assert!(request_as(&state, &Caller::User, &slot.path, None, &kebbie, &env, Request::Review, &config::Second::None).unwrap().contains("Review started"));
         assert!(running_in(&state, &address) && marked(&state, &address, "run").exists());
         assert!(withdraw_in(&state, &address));
         let review = include_str!("review.rs");
@@ -904,6 +1089,111 @@ mod tests {
         assert!(review.contains("program: Some(&crate::trusted_spawn::claude_from_keeper()?)"), "the reviewer's claude is the keeper's, never one a PATH finds");
         let _ = fs::remove_dir_all(&state);
         cleanup(dir, origin, &slot);
+    }
+
+    #[test]
+    fn a_second_opinion_never_holds_the_push_and_its_points_go_to_the_lead_as_findings() {
+        let state = crate::sh::test_dir("review-second");
+        SECOND.want(&state, "billing@app", Path::new("/wt"), "codex-review").unwrap();
+        let reading = second_shown_in(&state, "billing@app", |_| true).unwrap();
+        assert_eq!((reading.by.as_str(), reading.running, reading.points), ("codex-review", true, None));
+        assert!(!in_review(&state, "billing@app") && shown_in(&state, "billing@app", |_| true).is_none(), "a second opinion alone puts nothing in review");
+        assert_eq!(gate(shown_in(&state, "billing@app", |_| true).as_ref(), |_| false), Ok(()), "and holds no push while it reads");
+        SECOND.unwant(&state, "billing@app");
+        fs::create_dir_all(second_dir(&state)).unwrap();
+        fs::write(second_file(&state, "billing@app"), "verdict: changes\nreviewed: abc\nby: codex-review\n\n- src/vat.rs:12 — rounds per line, not per invoice.\n- src/vat.rs:40 — no test of a zero-rated line.\n").unwrap();
+        let shown = second_shown_in(&state, "billing@app", |sha| sha == "abc").unwrap();
+        assert_eq!((shown.by.as_str(), shown.points, shown.running, shown.stale), ("codex-review", Some(2), false, false));
+        assert!(second_shown_in(&state, "billing@app", |_| false).unwrap().stale);
+        assert_eq!(gate(shown_in(&state, "billing@app", |_| true).as_ref(), |_| false), Ok(()), "its changes asked hold nothing");
+        fs::create_dir_all(dir(&state)).unwrap();
+        fs::write(verdict_file(&state, "billing@app"), record("verdict: ok\n", "abc").unwrap()).unwrap();
+        assert_eq!(gate(shown_in(&state, "billing@app", |_| true).as_ref(), |sha| sha == "abc"), Ok(()), "the default reviewer's pass is what the push waits on");
+        let said = second_said("billing@app", "codex-review", "abc1234", 2, &second_file(&state, "billing@app"));
+        assert!(said.starts_with("billing@app's second opinion from codex-review at abc1234: 2 points — ") && said.contains("never holds the push: pass the points that are bugs or broken rules to the task with kebbie tell"), "{said}");
+        assert!(second_said("billing@app", "codex-review", "abc1234", 0, Path::new("/s.md")).ends_with("no points — /s.md"));
+        assert!(include_str!("../roles/lead.md").contains("second opinion from <profile> at <sha>: N points"), "the lead knows to pass them on");
+        assert!(is_second("/bin/kebbie -C /wt review --second-opinion") && !is_reviewer("/bin/kebbie -C /wt review --second-opinion"), "the push gate's reviewer never mistakes it for its own");
+        assert!(crate::permit::USER_ONLY.contains(&"review --second-opinion"), "a task's settings deny it");
+        forget_in(&state, "billing@app");
+        assert!(second_shown_in(&state, "billing@app", |_| true).is_none(), "a task that ends forgets its second opinion");
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn review_with_a_second_opinion_queues_both_trusted_starts_and_the_keeper_starts_each() {
+        use crate::permit::Caller;
+        use crate::tasks::test_support::*;
+        use crate::trusted_spawn::{REVIEWER_BIN, SPAWNED};
+        let (dir, origin, slot, _) = task_with_a_commit("billing");
+        let state = state_of(&dir);
+        let address = peers::address("billing", &name_of(&dir));
+        let kebbie = fake_kebbie(&state);
+        let env = [("KEBBIE_CLAUDE_BIN".to_string(), "/opt/claude/bin/claude".to_string())];
+        let none = request_as(&state, &Caller::Task(address.clone()), &slot.path, None, &kebbie, &env, Request::WithSecond, &config::Second::None).unwrap_err();
+        assert!(none.contains("No second opinion is set"), "{none}");
+        let offered = config::Second::Offered("codex-review".to_string());
+        let asked = request_as(&state, &Caller::Task(address.clone()), &slot.path, None, &kebbie, &env, Request::WithSecond, &offered).unwrap();
+        assert!(asked.contains("second opinion") && SECOND.wanted(&state, &address).is_some_and(|ask| ask.payload == "codex-review") && marked(&state, &address, "wanted").exists(), "{asked}");
+        SPAWNED.with(|all| all.borrow_mut().clear());
+        assert_eq!(tick_with(&state, &env).len(), 2);
+        let spawned = SPAWNED.with(|all| all.borrow_mut().drain(..).collect::<Vec<_>>());
+        let ends: Vec<String> = spawned.iter().map(|child| child.args[child.args.len() - 1].clone()).collect();
+        assert!(ends.contains(&"--run".to_string()) && ends.contains(&"--second-opinion".to_string()), "{ends:?}");
+        assert!(spawned.iter().all(|child| child.env.contains(&(REVIEWER_BIN.to_string(), "/opt/claude/bin/claude".to_string())) && !child.nonce.is_empty()), "each from the keeper's environment, with a nonce of its own");
+        forget_in(&state, &address);
+        let only = request_as(&state, &Caller::Task(address.clone()), &slot.path, None, &kebbie, &env, Request::SecondOnly, &offered).unwrap();
+        assert!(only.contains("Second opinion started") && !marked(&state, &address, "wanted").exists() && !in_review(&state, &address), "o leaves the task out of review: {only}");
+        forget_in(&state, &address);
+        request_as(&state, &Caller::Task(address.clone()), &slot.path, None, &kebbie, &env, Request::Review, &config::Second::Always("codex-review".to_string())).unwrap();
+        assert!(SECOND.wanted(&state, &address).is_some(), "review.second = \"always …\" comes with every review");
+        forget_in(&state, &address);
+        request_as(&state, &Caller::Task(address.clone()), &slot.path, None, &kebbie, &env, Request::Review, &offered).unwrap();
+        assert!(SECOND.wanted(&state, &address).is_none(), "an offered one only when asked for");
+        forget_in(&state, &address);
+        let _ = fs::remove_dir_all(&state);
+        cleanup(dir, origin, &slot);
+    }
+
+    #[test]
+    fn review_profile_names_the_reviewer_and_review_model_is_its_model() {
+        let dir = crate::sh::test_dir("review-profile-chosen");
+        fs::write(dir.join("careful-review.toml"), "kind = \"review\"\nmodel = \"sonnet\"\neffort = \"max\"\n").unwrap();
+        fs::write(dir.join("designer.toml"), "model = \"opus\"\n").unwrap();
+        let mut settings = config::settings(&config::Worktree::default(), &config::Machine::default());
+        assert_eq!(default_reviewer(&dir, &settings).unwrap(), crate::profiles::built_in(crate::profiles::REVIEWER).unwrap(), "the built-in reviewer by default");
+        settings.review_profile.value = "careful-review".to_string();
+        let chosen = default_reviewer(&dir, &settings).unwrap();
+        assert_eq!((chosen.name.as_str(), chosen.model.as_deref(), chosen.effort.as_deref()), ("careful-review", Some("sonnet"), Some("max")));
+        settings.review_model.value = Some("opus".to_string());
+        assert_eq!(default_reviewer(&dir, &settings).unwrap().model.as_deref(), Some("opus"), "review.model is the default reviewer's model, whichever profile that is");
+        let reviewer = crate::profiles::built_in(crate::profiles::REVIEWER).unwrap();
+        assert_eq!(helper_profile(&reviewer, &settings).model, None, "the assessor's reviewer keeps its own model once review.profile is another");
+        settings.review_profile.value = "designer".to_string();
+        assert!(default_reviewer(&dir, &settings).unwrap_err().contains("review.profile: \"designer\" is a task's profile"));
+        settings.review_profile.value = "careful-review".to_string();
+        settings.review_second.value = config::Second::Offered("careful-review".to_string());
+        assert!(second_reviewer(&dir, &settings).unwrap_err().contains("is the default reviewer (review.profile) already"));
+        settings.review_second.value = config::Second::Offered("reviewer".to_string());
+        assert_eq!(second_reviewer(&dir, &settings).unwrap().name, "reviewer");
+        let review = include_str!("review.rs");
+        let review = &review[review.find("\nfn review(").unwrap()..review.find("\n// A pass of a review that read").unwrap()];
+        assert!(review.contains("profile: Some(&reviewer)") && review.contains("default_reviewer(&crate::profiles::dir(), &settings)?"), "the trusted run reads with the profile review.profile names");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_codex_review_profile_reads_in_codexs_read_only_sandbox_without_the_users_config() {
+        let reviewer = Reviewer { model: Some("gpt-6.1-sol"), effort: Some("high"), settings: Path::new("/s.json"), prompt: Path::new("/kebbie/skills/review/SKILL.md"), rules: Some(Path::new("/rules")), docs: None, answer: Path::new("/state/roles/billing@app.second.answer") };
+        let (program, args) = crate::agent::Agent::Codex.reviewer_command(&reviewer);
+        assert_eq!(program, "codex");
+        assert_eq!(args, ["exec", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--color", "never", "-c", "check_for_update_on_startup=false", "--output-last-message", "/state/roles/billing@app.second.answer", "--model", "gpt-6.1-sol", "-c", "model_reasoning_effort=\"high\"", "-"]);
+        assert!(!args.iter().any(|arg| arg == "--add-dir" || arg.contains("bypass") || arg == "workspace-write"), "an --add-dir would be writable; the read-only sandbox reads the rules where they are");
+        let dir = crate::sh::test_dir("codex-reviewer-input");
+        fs::write(dir.join("SKILL.md"), "Read every commit.\n").unwrap();
+        assert_eq!(crate::agent::Agent::Codex.reviewer_input(&dir.join("SKILL.md"), "Review billing@app.").unwrap(), "Read every commit.\n\n---\n\nReview billing@app.", "Codex's exec has no system prompt file, so the role leads the brief");
+        assert_eq!(crate::agent::Agent::Claude.reviewer_input(&dir.join("SKILL.md"), "Review billing@app.").unwrap(), "Review billing@app.");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1213,7 +1503,7 @@ mod tests {
         assert_eq!(reviewer_prompt(&skill, &built_in, &combined).unwrap(), skill, "without a role of its own the reviewer reads the review skill itself");
         assert!(!combined.exists());
         let plain = reviewer_profile(&built_in, None);
-        let (program, args) = crate::agent::Agent::Claude.reviewer_command(&Reviewer { model: plain.model.as_deref(), effort: plain.effort.as_deref(), settings: Path::new("/s/review.settings.json"), prompt: &skill, rules: None, docs: None });
+        let (program, args) = crate::agent::Agent::Claude.reviewer_command(&Reviewer { model: plain.model.as_deref(), effort: plain.effort.as_deref(), settings: Path::new("/s/review.settings.json"), prompt: &skill, rules: None, docs: None, answer: Path::new("/s/answer") });
         let skill_arg = skill.to_string_lossy().to_string();
         assert_eq!(program, "claude");
         assert_eq!(args, ["-p", "--setting-sources", "", "--output-format", "text", "--no-session-persistence", "--strict-mcp-config", "--permission-mode", "dontAsk", "--tools", "Read,Grep,Glob,Bash", "--allowedTools", "Read", "Grep", "Glob", "Bash(git log:*)", "Bash(git diff:*)", "Bash(git show:*)", "--settings", "/s/review.settings.json", "--append-system-prompt-file", skill_arg.as_str()]);
@@ -1221,7 +1511,7 @@ mod tests {
         let filed = crate::profiles::Profile { model: Some("sonnet".to_string()), effort: Some("max".to_string()), ..built_in.clone() };
         assert_eq!(reviewer_profile(&filed, None).model.as_deref(), Some("sonnet"));
         assert_eq!(reviewer_profile(&filed, Some("opus")).model.as_deref(), Some("opus"), "review.model, set per repo, wins over the profile file");
-        let (_, args) = crate::agent::Agent::Claude.reviewer_command(&Reviewer { model: Some("opus"), effort: Some("max"), settings: Path::new("/s.json"), prompt: &skill, rules: None, docs: None });
+        let (_, args) = crate::agent::Agent::Claude.reviewer_command(&Reviewer { model: Some("opus"), effort: Some("max"), settings: Path::new("/s.json"), prompt: &skill, rules: None, docs: None, answer: Path::new("/s/answer") });
         assert_eq!(args[args.len() - 4..], ["--model", "opus", "--effort", "max"]);
         fs::write(dir.join("strict.md"), "Count every unwrap as a finding.\n").unwrap();
         let strict = crate::profiles::Profile { role: Some(dir.join("strict.md")), ..built_in };

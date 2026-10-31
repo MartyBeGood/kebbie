@@ -300,7 +300,7 @@ fn assess(state: &Path, repo: &Path, worktree: &Path, address: &str) -> Result<S
     let pushed = pushed_log(state, address, worktree);
     let input = brief(address, worktree, &upstream, &facts(state, address, worktree, &upstream)?, &pushed, &open);
     let root = crate::lead::install_root()?;
-    crate::review::ask_reviewer(&crate::review::Ask { address, worktree, settings: &settings, rules_file: None, docs: false, input: &input, timeout: Some(TIMEOUT), role: "assess", program: Some(&trusted_spawn::claude_from_keeper()?), group_file: Some(&marked(state, address, "claude")), prompt: Some(&root.join("roles/review-assess.md")) })
+    crate::review::ask_reviewer(&crate::review::Ask { address, worktree, settings: &settings, rules_file: None, docs: false, input: &input, timeout: Some(TIMEOUT), role: "assess", program: Some(&trusted_spawn::claude_from_keeper()?), group_file: Some(&marked(state, address, "claude")), prompt: Some(&root.join("roles/review-assess.md")), profile: None })
 }
 
 pub fn brief(address: &str, worktree: &Path, upstream: &str, facts: &Facts, pushed: &str, open: &str) -> String {

@@ -462,7 +462,7 @@ const REVIEW_ALLOWED: [&str; 6] = ["Read", "Grep", "Glob", "Bash(git log:*)", "B
 
 // Only these tools exist, only the allowed ones run, the guard hook stops any other shell command, and no user setting, hook or plugin joins in.
 pub(crate) fn reviewer_args(reviewer: &super::Reviewer) -> Vec<String> {
-    let super::Reviewer { model, effort, settings, prompt, rules, docs } = *reviewer;
+    let super::Reviewer { model, effort, settings, prompt, rules, docs, .. } = *reviewer;
     let mut args: Vec<String> = ["-p", "--setting-sources", "", "--output-format", "text", "--no-session-persistence", "--strict-mcp-config", "--permission-mode", "dontAsk", "--tools", REVIEW_TOOLS, "--allowedTools"]
         .map(str::to_string).to_vec();
     args.extend(REVIEW_ALLOWED.map(str::to_string));

@@ -208,7 +208,9 @@ const USAGE: &str = "kebbie: herding coding agents in herdr
                                   review, and push with it, until a verdict ok on its current code, which is its
                                   rules approval too, so no separate rules check runs (--withdraw
                                   takes it out of review, yours only: the reviewer stops, its verdict goes, push is
-                                  offered again)
+                                  offered again); the reviewer is the review profile review.profile names; --second
+                                  adds review.second's profile as a second opinion and --second-only runs it alone,
+                                  which never holds the push: its points go to the lead
   kebbie evidence [name] [--json] the test runs kebbie recorded for the task, newest first: the command, its result, the
                                   commit it ran on and whether the code changed since (task.test_commands adds commands)
   kebbie approve <name>           yours or the lead's word that a task's commits hold to the rules skill, an override:
@@ -671,10 +673,13 @@ fn run(arguments: &Arguments) -> Result<String> {
         Some("tidy") => tasks::tidy(&cwd, Some(name.ok_or("kebbie tidy needs a task name")?), &arguments.positionals[2..].join(" ")),
         Some("review") if arguments.flag("--run") && arguments.flag("--rules") => rules_check::run(&cwd),
         Some("review") if arguments.flag("--run") => review::run(&cwd),
+        Some("review") if arguments.flag("--second-opinion") => review::run_second(&cwd),
         Some("review") if arguments.flag("--assess") => assessment::run(&cwd),
         Some("review") if arguments.flag("--withdraw") => review::withdraw(&cwd, name),
         Some("review") if arguments.flag("--view") => board::review::run(Path::new(name.ok_or("kebbie review --view needs the review's folder")?)),
-        Some("review") => review::request(&cwd, name),
+        Some("review") if arguments.flag("--second-only") => review::request(&cwd, name, review::Request::SecondOnly),
+        Some("review") if arguments.flag("--second") => review::request(&cwd, name, review::Request::WithSecond),
+        Some("review") => review::request(&cwd, name, review::Request::Review),
         Some("evidence") => evidence::print(&cwd, name, arguments.flag("--json")),
         Some("steps") => arguments.only("steps", &["--json"]).and_then(|_| tasks::steps(&cwd, &arguments.positionals[1..], arguments.flag("--json"))),
         Some("accepted") => tasks::accepted_shown(&cwd, name, arguments.flag("--json")),

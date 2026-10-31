@@ -8,13 +8,15 @@ use crate::agent::Agent;
 use crate::board::widgets::{Answer, FAINT, MAUVE, MUTED, RED, SURFACE, Spot, TEAL, TEXT, answer_lines, bold, hint_line, style, wrap};
 use crate::profiles::{self, Made, Profile, Role};
 
-pub const STEPS: usize = 6;
+pub const STEPS: usize = 7;
 const NAME: usize = 0;
-const START: usize = 1;
-const AGENT: usize = 2;
-const MODEL: usize = 3;
-const EFFORT: usize = 4;
-const ROLE: usize = 5;
+const KIND: usize = 1;
+const START: usize = 2;
+const AGENT: usize = 3;
+pub const MODEL: usize = 4;
+pub const EFFORT: usize = 5;
+const ROLE: usize = 6;
+const KINDS: [(&str, &str); 2] = [("Tasks", "does the work in a worktree"), ("Review", "reads a task's commits and gives a verdict")];
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Pick {
@@ -31,6 +33,8 @@ pub enum Step {
 pub struct Wizard {
     pub step: usize,
     pub name: String,
+    pub review: bool,
+    pub all: Vec<Profile>,
     pub starts: Vec<Profile>,
     pub start: usize,
     pub agent: usize,
@@ -42,6 +46,7 @@ pub struct Wizard {
     pub efforts: (String, Vec<Answer<Pick>>),
     pub effort: usize,
     pub role: usize,
+    pub kind: usize,
     pub files: Vec<(String, String)>,
     pub dir: PathBuf,
     pub folder: String,
@@ -52,12 +57,23 @@ pub struct Wizard {
 
 impl Wizard {
     pub fn new(starts: Vec<Profile>, start: usize, files: Vec<(String, String)>, dir: PathBuf, folder: String, taken: Vec<String>, agents: Vec<(Agent, String)>) -> Self {
+        let review = starts.get(start).is_some_and(|profile| profile.review);
+        let from = starts.get(start).map(|profile| profile.name.clone()).unwrap_or_default();
         let mut wizard = Wizard {
-            step: NAME, name: String::new(), starts, start, agent: 0, agents, models: (String::new(), Vec::new()), model: 0, typing: None, typed: None,
-            efforts: (String::new(), Vec::new()), effort: 0, role: 0, files, dir, folder, taken, new_role: String::new(), error: None,
+            step: NAME, name: String::new(), review, all: starts, starts: Vec::new(), start: 0, agent: 0, agents, models: (String::new(), Vec::new()), model: 0, typing: None, typed: None,
+            efforts: (String::new(), Vec::new()), effort: 0, role: 0, kind: usize::from(review), files, dir, folder, taken, new_role: String::new(), error: None,
         };
+        wizard.keep_kind(&from);
         wizard.agent = wizard.start_agent();
         wizard
+    }
+
+    // A review profile starts from a review profile and a task's from a task's, the one it was opened from when it is of that kind.
+    fn keep_kind(&mut self, from: &str) {
+        let review = self.review;
+        self.starts = self.all.iter().filter(|profile| profile.review == review).cloned().collect();
+        let fallback = if review { profiles::REVIEWER } else { profiles::TASK };
+        self.start = self.starts.iter().position(|profile| profile.name == from).or_else(|| self.starts.iter().position(|profile| profile.name == fallback)).unwrap_or(0);
     }
 
     fn start_agent(&self) -> usize {
@@ -131,11 +147,13 @@ impl Wizard {
 
     pub fn made(&self) -> Option<Made> {
         let role = self.chosen_role();
-        Some(profiles::made_from(self.from()?, self.agent(), self.model().as_deref(), self.effort().as_deref(), role.file()))
+        let made = if self.review { profiles::made_review } else { profiles::made_from };
+        Some(made(self.from()?, self.agent(), self.model().as_deref(), self.effort().as_deref(), role.file()))
     }
 
     fn count(&self) -> usize {
         match self.step {
+            KIND => KINDS.len(),
             START => self.starts.len(),
             AGENT => self.agents.len(),
             MODEL => self.models.1.len(),
@@ -147,6 +165,7 @@ impl Wizard {
 
     fn index_mut(&mut self) -> Option<&mut usize> {
         match self.step {
+            KIND => Some(&mut self.kind),
             START => Some(&mut self.start),
             AGENT => Some(&mut self.agent),
             MODEL => Some(&mut self.model),
@@ -199,6 +218,12 @@ impl Wizard {
             (NAME, _) => {}
             (_, KeyCode::Left) => self.step -= 1,
             (STEPS, _) => {}
+            (KIND, KeyCode::Enter) => {
+                let from = self.from().map(|profile| profile.name.clone()).unwrap_or_default();
+                self.review = self.kind == 1;
+                self.keep_kind(&from);
+                self.step += 1;
+            }
             (START, KeyCode::Enter) => {
                 self.agent = self.start_agent();
                 self.step += 1;
@@ -241,7 +266,7 @@ impl Wizard {
         let heading = |text: &str| Line::from(Span::styled(text.to_string(), bold(MAUVE)));
         let mut lines = vec![Line::from(Span::styled(if self.step < STEPS { format!("step {} of {STEPS}", self.step + 1) } else { "check".to_string() }, style(FAINT)))];
         let choose = [("↑ ↓ choose", None), ("⏎ next", Some(KeyCode::Enter.into())), ("← back", Some(KeyCode::Left.into())), ("esc cancel", Some(KeyCode::Esc.into()))];
-        let kebbies = self.from().map_or("kebbie's task role", |profile| profiles::kebbie_role(&profile.name).0);
+        let kebbies = self.from().map_or("kebbie's task role", |profile| profiles::kebbie_role_for(profile).0);
         match self.step {
             NAME => {
                 lines.push(heading("Its name?"));
@@ -257,9 +282,18 @@ impl Wizard {
                 lines.push(Line::default());
                 hint_line(&mut lines, &mut spots, &[("⏎ next", Some(KeyCode::Enter.into())), ("esc cancel", Some(KeyCode::Esc.into()))]);
             }
+            KIND => {
+                lines.push(heading("What is it for?"));
+                lines.extend(muted("A review profile only reads: it gets no permissions, skills or sandbox keys, and kebbie review can run it."));
+                lines.push(Line::default());
+                let rows: Vec<Answer<()>> = KINDS.iter().map(|(label, about)| Answer::new(label, about, ())).collect();
+                answer_lines(&mut lines, &mut spots, &rows, self.kind, width);
+                lines.push(Line::default());
+                hint_line(&mut lines, &mut spots, &choose);
+            }
             START => {
                 lines.push(heading("Start from which profile?"));
-                lines.extend(muted("It takes that one's about, for, skills, permissions and sandbox; never kebbie's role, which every profile reads first."));
+                lines.extend(muted(if self.review { "It takes that one's about and for; never kebbie's review role, which every review reads first." } else { "It takes that one's about, for, skills, permissions and sandbox; never kebbie's role, which every profile reads first." }));
                 lines.push(Line::default());
                 let rows: Vec<Answer<()>> = self.starts.iter().map(|profile| Answer::new(&profile.name, if profile.fits.is_empty() { &profile.about } else { &profile.fits }, ())).collect();
                 answer_lines(&mut lines, &mut spots, &rows, self.start, width);
@@ -268,7 +302,7 @@ impl Wizard {
             }
             AGENT => {
                 lines.push(heading("Which agent?"));
-                lines.extend(muted("It runs the task; the model comes next."));
+                lines.extend(muted(if self.review { "It reads the commits; the model comes next." } else { "It runs the task; the model comes next." }));
                 lines.push(Line::default());
                 let answers: Vec<Answer<()>> = self.agents.iter().map(|(agent, about)| Answer::new(if *agent == Agent::Claude { "Claude Code" } else { agent.name() }, about, ())).collect();
                 answer_lines(&mut lines, &mut spots, &answers, self.agent, width);
