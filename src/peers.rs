@@ -12,7 +12,7 @@ use crate::sh::Result;
 use crate::status::LEAD_LABEL;
 use crate::tasks::slots;
 
-// A Claude that can be told things: a task in a repo (task@repo) or the lead.
+// An agent session that can be told things: a task in a repo (task@repo) or the lead; agent is the one running, or the one a task's record names while none runs.
 #[derive(Clone)]
 pub struct Session {
     pub address: String,
@@ -24,12 +24,12 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn state(&self) -> &str {
+    pub fn state(&self) -> String {
         match (&self.pane, self.status.as_deref()) {
-            (None, _) => "no Claude",
-            (Some(_), Some("blocked")) => "waiting for an answer",
-            (Some(_), Some(status)) => status,
-            (Some(_), None) => "unknown",
+            (None, _) => format!("no {}", self.agent.unwrap_or(crate::agent::Agent::Claude).name()),
+            (Some(_), Some("blocked")) => "waiting for an answer".to_string(),
+            (Some(_), Some(status)) => status.to_string(),
+            (Some(_), None) => "unknown".to_string(),
         }
     }
 }
@@ -60,7 +60,7 @@ pub fn sessions() -> Result<Vec<Session>> {
                 task: Some(task),
                 pane: agent.as_ref().and_then(|agent| text(&agent["pane_id"])),
                 status: agent.as_ref().and_then(|agent| text(&agent["agent_status"])),
-                agent: agent.as_ref().and_then(crate::agent::Agent::of),
+                agent: agent.as_ref().and_then(crate::agent::Agent::of).or_else(|| crate::lead::state_location().ok().map(|state| crate::tasks::recorded_agent(&state, &address))),
                 asks: agent.as_ref().and_then(|agent| text(&agent[crate::agent::codex::ASKS_KEY])),
                 address,
             });
@@ -628,6 +628,8 @@ mod tests {
     #[test]
     fn a_sessions_state_reads_from_its_pane_and_status() {
         assert_eq!(session("a@x", None).state(), "no Claude");
+        let codex = Session { agent: Some(crate::agent::Agent::Codex), ..session("a@x", None) };
+        assert_eq!(codex.state(), "no Codex", "a Codex task with no agent running says so by its agent's name");
         assert_eq!(session("a@x", Some("blocked")).state(), "waiting for an answer");
         assert_eq!(session("a@x", Some("working")).state(), "working");
         let unknown = Session { address: "a@x".to_string(), task: None, pane: Some("p".to_string()), status: None, agent: None, asks: None };
