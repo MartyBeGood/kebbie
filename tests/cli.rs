@@ -1743,3 +1743,44 @@ fn a_task_lists_its_steps_unless_the_setting_is_off_and_only_the_user_accepts_a_
     let dashed = lab.run_as("billing@app", &["-C", slot, "steps", "--", "Add refunds", "-1 off by one"]);
     assert!(dashed.status.success() && stdout(&dashed).contains("2. -1 off by one"), "after -- every word is a step: {}", stdout(&dashed));
 }
+
+#[test]
+fn the_lead_names_a_tasks_recipe_to_start_it_and_kebbie_keeps_it_on_the_board_and_in_its_note() {
+    let lab = Lab::new("recipe");
+    let (app, _) = lab.task_fixture();
+    let app_str = app.to_str().unwrap();
+
+    let refused = lab.run_as("lead", &["-C", app_str, "start", "search", "Add the search page"]);
+    assert!(!refused.status.success() && stderr(&refused).contains("kebbie start from the lead names the task's recipe and why: --recipe \"<recipe>: <why>\""), "{}", stderr(&refused));
+    assert!(stderr(&refused).contains("small-fix, feature-with-ui, task-after-task"), "{}", stderr(&refused));
+    let unknown = lab.run_as("lead", &["-C", app_str, "start", "search", "Add the search page", "--recipe", "big bang: all at once"]);
+    assert!(!unknown.status.success() && stderr(&unknown).contains("--recipe: \"big bang\" is no recipe"), "{}", stderr(&unknown));
+    assert!(!lab.state.join("recipes").exists(), "a refused start keeps no recipe");
+
+    let listed = lab.run(&["recipe"]);
+    assert!(listed.status.success() && stdout(&listed).contains("small-fix  (small fix)") && stdout(&listed).contains("same-files  (same files)"), "{}", stdout(&listed));
+    assert!(stdout(&lab.run(&["-C", app_str, "recipe", "billing"])).contains("billing@app has no recipe"));
+
+    let set = lab.run(&["-C", app_str, "recipe", "billing", "small fix: one function and its test"]);
+    assert!(set.status.success() && stdout(&set).contains("Recipe set"), "{}{}", stdout(&set), stderr(&set));
+    let shown = stdout(&lab.run(&["-C", app_str, "recipe", "billing"]));
+    assert!(shown.starts_with("billing@app: recipe: small fix, because one function and its test ("), "{shown}");
+    let note = fs::read_to_string(lab.state.join("notes/billing@app.md")).unwrap();
+    assert!(note.starts_with("# billing@app\n\n## Decisions\n\n- ") && note.contains(": recipe: small fix, because one function and its test ("), "without the vault kebbie keeps the decision in its own note: {note}");
+    let bad = lab.run(&["-C", app_str, "recipe", "billing", "small fix"]);
+    assert!(!bad.status.success() && stderr(&bad).contains("name the recipe and why"), "{}", stderr(&bad));
+    let other = lab.run_as("search@app", &["-C", app_str, "recipe", "billing", "research: which queue"]);
+    assert!(!other.status.success() && stderr(&other).contains("the task search@app names its own recipe, not billing@app's"), "{}", stderr(&other));
+
+    let queued = lab.run_as("lead", &["-C", app_str, "start", "search", "Add the search page", "--after", "billing", "--why", "it reads the refunds", "--recipe", "task-after-task: it builds on the refunds"]);
+    assert!(queued.status.success(), "{}{}", stdout(&queued), stderr(&queued));
+    let wait = fs::read_to_string(lab.state.join("after/search@app.json")).unwrap();
+    assert!(wait.contains("Add the search page\\n\\nRecipe: task after task, because it builds on the refunds."), "the task's prompt carries its recipe: {wait}");
+    assert!(fs::read_to_string(lab.state.join("notes/search@app.md")).unwrap().contains(": recipe: task after task, because it builds on the refunds (the lead)"));
+
+    let status: serde_json::Value = serde_json::from_str(&stdout(&lab.run(&["status", "--json"]))).unwrap();
+    let search = status["items"].as_array().unwrap().iter().find(|item| item["name"] == "search").unwrap().clone();
+    assert_eq!(search["recipe"]["name"], "task-after-task", "a queued task shows its recipe too: {search}");
+    let task = status["items"].as_array().unwrap().iter().find(|item| item["name"] == "billing").unwrap().clone();
+    assert_eq!((task["recipe"]["name"].as_str(), task["recipe"]["shown"].as_str(), task["recipe"]["why"].as_str()), (Some("small-fix"), Some("small fix"), Some("one function and its test")), "{task}");
+}

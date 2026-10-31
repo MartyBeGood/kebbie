@@ -327,6 +327,7 @@ pub(super) fn forget_address(state: &Path, address: &str) {
     super::intent::forget_left(state, address);
     crate::phase::forget(state, address);
     crate::task_note::forget(state, address);
+    crate::recipe::forget_in(state, address);
     super::landed::forget(state, address);
     super::stage::forget(state, address);
     crate::status::forget_title(state, address);

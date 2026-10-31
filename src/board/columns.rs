@@ -145,14 +145,19 @@ fn wanted_lines(wanted: &str, color: Color, highlighted: bool, width: usize) -> 
     }).collect()
 }
 
-// How the task is done, under its row: whether the assessor says its work needs a review, and why.
-pub(super) fn how_line(item: &Item, highlighted: bool, width: usize) -> Option<Line<'static>> {
-    let parts: Vec<String> = review_part(item).into_iter().collect();
+// How the task is done, under its row: its recipe, whole with its why on the open task, and whether the assessor says its work needs a review.
+pub(super) fn how_lines(item: &Item, highlighted: bool, width: usize) -> Vec<Line<'static>> {
+    let recipe = item.recipe.as_ref().map(|recipe| if highlighted { format!("{}, because {}", recipe.shown(), recipe.why) } else { recipe.shown() });
+    let parts: Vec<String> = recipe.into_iter().chain(review_part(item)).collect();
     if parts.is_empty() {
-        return None;
+        return Vec::new();
     }
-    let line = Line::from(vec![Span::raw("   "), Span::styled(cut(&parts.join(" · "), width.saturating_sub(4)), style(MUTED))]);
-    Some(if highlighted { line.style(Style::new().bg(SURFACE)) } else { line })
+    let text = parts.join(" · ");
+    let shown = if highlighted { wrap(&text, width.saturating_sub(4), 4) } else { vec![cut(&text, width.saturating_sub(4))] };
+    shown.into_iter().map(|text| {
+        let line = Line::from(vec![Span::raw("   "), Span::styled(text, style(MUTED))]);
+        if highlighted { line.style(Style::new().bg(SURFACE)) } else { line }
+    }).collect()
 }
 
 // A suggested review names the key that sends it; once sent, the suggestion is the review.
@@ -271,7 +276,7 @@ pub(super) fn work_lines(app: &mut App, width: usize, unfold: bool) -> (Vec<Line
             line.spans.extend([Span::raw(" "), Span::styled("●", style(GREEN))]);
         }
         lines.push(line);
-        lines.extend(how_line(item, selected && on_task && unfold, width));
+        lines.extend(how_lines(item, selected && on_task && unfold, width));
         lines.extend(step_lines(item, selected && on_task && unfold, width));
         if let Some(wanted) = item.wanted(&keys::key(Act::Go).to_string()).or_else(|| accept_wanted(item)) {
             lines.extend(wanted_lines(&wanted, PEACH, selected && on_task && unfold, width));
@@ -425,6 +430,7 @@ mod tests {
         let mut item = crate::status::tests::task(Some("idle"), Some("ready"), 2);
         item.review_rule = Some("review: changes how VAT is rounded".to_string());
         let mut app = test_app(vec![item.clone()]);
+        app.work_selected = 9;
         let (rows, buffer) = render(&mut app, 120, 30);
         let screen = rows.join("\n");
         let at = find(&rows, "billing")[0].1;
@@ -454,6 +460,29 @@ mod tests {
         let mut app = test_app(vec![item]);
         let (rows, _) = render(&mut app, 120, 30);
         assert!(!rows.join("\n").contains("review: "), "{}", rows.join("\n"));
+    }
+
+    #[test]
+    fn a_tasks_recipe_leads_the_line_under_its_row_and_the_open_task_says_why() {
+        let mut item = crate::status::tests::task(Some("idle"), Some("ready"), 2);
+        item.recipe = Some(crate::recipe::Recipe { name: "small-fix".to_string(), why: "one function and its test".to_string(), by: "the lead".to_string() });
+        item.review_rule = Some("review: changes VAT rounding".to_string());
+        let mut app = test_app(vec![item.clone()]);
+        let (open, _) = render(&mut app, 120, 30);
+        let at = find(&open, "billing")[0].1;
+        assert_eq!((open[at + 1].trim(), open[at + 2].trim()), ("recipe: small fix, because one function and its test ·", "review: changes VAT rounding"), "the open task shows the why whole: {}", open.join("\n"));
+        app.work_selected = 9;
+        let (rows, _) = render(&mut app, 120, 30);
+        assert_eq!(rows[at + 1].trim(), "recipe: small fix · review: changes VAT rounding", "{}", rows.join("\n"));
+        item.review_rule = None;
+        let mut app = test_app(vec![item.clone()]);
+        app.work_selected = 9;
+        let (rows, _) = render(&mut app, 120, 30);
+        assert_eq!(rows[find(&rows, "billing")[0].1 + 1].trim(), "recipe: small fix", "{}", rows.join("\n"));
+        item.recipe = None;
+        let mut app = test_app(vec![item]);
+        let (rows, _) = render(&mut app, 120, 30);
+        assert!(!rows.join("\n").contains("recipe:"), "a task started by hand without a recipe shows none: {}", rows.join("\n"));
     }
 
     #[test]

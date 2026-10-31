@@ -130,6 +130,7 @@ pub struct Item {
     pub steps: tasks::Steps,
     pub parked: Option<tasks::Parked>,
     pub review_rule: Option<String>,
+    pub recipe: Option<crate::recipe::Recipe>,
 }
 
 impl Item {
@@ -165,7 +166,7 @@ impl Item {
             name: wait.task.clone(), title, place: name_of(&wait.repo), repo: Some(wait.repo.clone()), path: None, workspace: None, agent: None, git: None,
             report: None, question: None, ci: None, recover: None, routine: None, push_waits: None,
             queued: Some(Queued { after, blocked: wait.blocked.clone(), waiting, names, base, at, backlog: wait.backlog.is_some() }),
-            held_by_draft: None, phase: None, landed: None, ci_outside: None, ci_dismissed: Vec::new(), unrecorded: None, push_left: None, staged: false, steps: tasks::Steps::default(), parked: None, review_rule: None,
+            held_by_draft: None, phase: None, landed: None, ci_outside: None, ci_dismissed: Vec::new(), unrecorded: None, push_left: None, staged: false, steps: tasks::Steps::default(), parked: None, review_rule: None, recipe: None,
         }
     }
 
@@ -527,6 +528,7 @@ impl Item {
         let mut shown = self.shown_json();
         shown["staged"] = json!(self.staged);
         shown["review_rule"] = json!(self.review_rule);
+        shown["recipe"] = self.recipe.as_ref().map_or(Value::Null, crate::recipe::Recipe::to_json);
         shown["parked_until"] = self.parked.map_or(Value::Null, |parked| parked.until.map_or(json!(tasks::UNPARKED), |at| json!(at)));
         shown
     }
@@ -902,6 +904,7 @@ pub fn gather() -> Result<Vec<Item>> {
                 steps,
                 parked: state.as_deref().and_then(|state| tasks::park_of(state, &address, began)),
                 review_rule: state.as_deref().and_then(|state| crate::review_rule::reason_in(state, &address)),
+                recipe: state.as_deref().and_then(|state| crate::recipe::load(state, &address)),
                 phase: None,
                 title: state.as_deref().and_then(|state| title_of(state, &address, agent_title.as_deref(), &name_of(repo), &task, &name_of(&slot.path))),
                 name: task,
@@ -919,7 +922,8 @@ pub fn gather() -> Result<Vec<Item>> {
     }
     name_push_fronts(&mut items);
     if let Some(state) = state.as_deref() {
-        let queued: Vec<Item> = tasks::waits_shown(state, &items).into_iter().map(Item::queued_from).collect();
+        let queued: Vec<Item> = tasks::waits_shown(state, &items).into_iter().map(Item::queued_from)
+            .map(|item| Item { recipe: crate::recipe::load(state, &peers::address(&item.name, &item.place)), ..item }).collect();
         items.extend(queued);
     }
     for agent in &agents {
@@ -966,6 +970,7 @@ pub fn gather() -> Result<Vec<Item>> {
             steps: tasks::Steps::default(),
             parked: None,
             review_rule: None,
+            recipe: None,
         });
     }
     // A task's halves in different repos sit together within a group, after what needs you most.
@@ -1036,6 +1041,7 @@ pub(crate) mod tests {
             steps: tasks::Steps::default(),
             parked: None,
             review_rule: None,
+            recipe: None,
         };
         rederive(&mut item);
         item

@@ -1,6 +1,6 @@
 # Run without the vault
 
-Run kebbie with no vault: the backlog comes from the local file and tasks keep no notes.
+Run kebbie with no vault: the backlog comes from the local file and each task's decisions go to kebbie's own note for it.
 
 When the vault plugin is not installed, there is nothing to do. When it is installed and you want kebbie to work without it:
 
@@ -33,5 +33,5 @@ When the vault plugin is not installed, there is nothing to do. When it is insta
 
 ## What you keep and what goes
 
-- **You keep** the board, tasks, the lead, review and pushes, with the [local backlog file](../reference/files.md#the-local-backlog-file).
-- **What goes:** task notes, the Problem gate, push log lines and the Areas page, which lists the vault's system notes.
+- **You keep** the board, tasks, the lead, review and pushes, with the [local backlog file](../reference/files.md#the-local-backlog-file), and a note per task in kebbie's state, `notes/<task>@<repo>.md`, with its recipe and the assessor's word on its review as dated decisions.
+- **What goes:** vault task notes, the Problem gate, push log lines and the Areas page, which lists the vault's system notes.

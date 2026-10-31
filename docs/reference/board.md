@@ -84,6 +84,7 @@ A task row shows its commits, uncommitted and untracked files, and how far it is
 | `you:` | Your next step, from the task's last report. |
 | `web` | While its dev server runs: the server's address as a link. |
 | `push waits for tests · you` | A push waits for the task's Claude to test the files the default branch changed under it. `· lead` when the lead pushed. kebbie pushes once the task reports ready with the same commits. |
+| `recipe: small fix`, muted | Under the row: how the task is done, by the [recipe](commands.md#kebbie-recipe-task-recipe-why) the lead named; the open task adds its why. The assessor's word follows it on the same line. |
 | `review suggested: changes how VAT is rounded · v`, muted | Under the row, from the [assessor](../explanation/review-gate.md#an-assessor-judges-whether-the-work-needs-a-review) on its last ready report: the work needs a review, and `v` sends it. Under `review.auto = "run"` or `"require"` it reads `review: …`, and the reviewer is already on it. |
 | `no review: wording in two templates`, muted | Under the row: the assessor judged the work needs no review. |
 | `review being assessed`, `review not assessed · v`, muted | The assessor is at work, or gave no answer, which counts as a suggestion. |

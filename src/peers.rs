@@ -227,7 +227,7 @@ pub fn vault_section(note: Option<&str>, kebbie: &str) -> String {
         "\n\n## Your note in the vault\n\n\
          This task's note is `{note}` in the vault: kebbie opened it when the task started and keeps it tied to this task. Read and write it with the vault MCP tools.\n\n\
          1. Before your first change to a file, write the note's Problem section: what is wrong or missing, for whom, and what done looks like, in your own clear words, from the user's prompt and what you read. Rewrite the prompt rather than pasting it: the user writes rough notes, the vault keeps clear ones. Edits, and shell commands that write a file in the worktree, wait until Problem is written.\n\
-         2. Keep its solution section (what changes, from the user's side) and its decisions section (each choice made, with its reason) current as the work goes, in the note's own headings.\n\
+         2. Keep its solution section (what changes, from the user's side) and its decisions section (each choice made, with its reason) current as the work goes, in the note's own headings. A `Recipe:` line in your prompt is the lead's choice of how this task is done: write it, with its reason, as the first decision, and each decision kebbie hands you later as it gives it.\n\
          3. kebbie writes the repo's log line after each push from your commit subjects, so write subjects that read well on their own.\n\n\
          `{kebbie} done` waits until the solution and decisions are written, then closes the note; a reset puts it back in the backlog."
     )
@@ -543,7 +543,7 @@ mod tests {
         let off = fill(include_str!("../roles/task.md"), &[("vault", &vault_section(None, "/bin/kebbie"))]);
         assert!(!off.contains("vault") && !off.contains("{vault}"), "without the vault plugin no vault concept shows");
         let on = fill(include_str!("../roles/task.md"), &[("vault", &vault_section(Some("Projects/kebbie-billing.md"), "/bin/kebbie"))]);
-        for needed in ["## Your note in the vault", "`Projects/kebbie-billing.md`", "write the note's Problem section", "Rewrite the prompt rather than pasting it", "decisions section", "`/bin/kebbie done` waits until the solution and decisions are written"] {
+        for needed in ["## Your note in the vault", "`Projects/kebbie-billing.md`", "write the note's Problem section", "Rewrite the prompt rather than pasting it", "decisions section", "A `Recipe:` line in your prompt is the lead's choice", "`/bin/kebbie done` waits until the solution and decisions are written"] {
             assert!(on.contains(needed), "{needed}: {on}");
         }
         assert!(on.find("## Your note in the vault").unwrap() < on.find("## Probes").unwrap());

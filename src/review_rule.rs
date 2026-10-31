@@ -265,11 +265,23 @@ pub fn brief(address: &str, worktree: &Path, upstream: &str, facts: &Facts, push
     )
 }
 
+fn tell_task(address: &str, text: &str) -> Result<()> {
+    let sessions = peers::sessions()?;
+    let task = peers::resolve(address, "kebbie", &sessions)?;
+    crate::messages::tell_from_kebbie(&task, text, &sessions)
+}
+
 // What an assessment, or none, does under review.auto, said to the lead too when it suggests or starts a review.
 fn settle(state: &Path, address: &str, worktree: &Path, auto: ReviewAuto, assessment: Option<&Assessment>) -> String {
     let reason = reason_text(assessment, auto);
     let _ = crate::state::write(&file(state, address), &reason);
     let _ = fs::remove_file(marked(state, address, "running"));
+    match crate::decisions::write(state, address, &reason, crate::messages::now()) {
+        Ok(note) => if let Some(line) = crate::decisions::for_the_task(&note, &reason) && let Err(error) = tell_task(address, &line) {
+            eprintln!("kebbie: {address} was not told to note its review: {error}");
+        },
+        Err(error) => eprintln!("kebbie: {address}'s note did not take its review: {error}"),
+    }
     let started = match (assessment, auto) {
         (Some(Assessment { needed: true, .. }), ReviewAuto::Run) => crate::review::advise(state, address, worktree).map(|_| " The reviewer reads it now; its push is not held."),
         (Some(Assessment { needed: true, .. }), ReviewAuto::Require) => crate::review::want(state, address, worktree).map(|_| " The reviewer reads it now, and its push waits for the pass."),
@@ -372,6 +384,8 @@ mod tests {
         assert_eq!(held("require@app"), Some((true, true)), "require holds the push for the pass");
         settle(&state, "no@app", &slot.path, ReviewAuto::Require, Some(&Assessment { needed: false, reason: "wording".to_string() }));
         assert_eq!((held("no@app"), reason_in(&state, "no@app").as_deref()), (None, Some("no review: wording")));
+        let note = std::fs::read_to_string(crate::decisions::local_file(&state, "no@app")).unwrap();
+        assert!(note.ends_with(": no review: wording\n"), "the assessment goes to the task's note: {note}");
         let said = settle(&state, "silent@app", &slot.path, ReviewAuto::Require, None);
         assert_eq!((held("silent@app"), reason_in(&state, "silent@app").as_deref()), (None, Some("review not assessed")), "no answer reads as a suggestion: {said}");
         cleanup(dir, origin, &slot);

@@ -10,6 +10,7 @@ mod ci;
 mod comments;
 mod config;
 mod config_edit;
+mod decisions;
 mod doctor;
 mod docs;
 mod evidence;
@@ -39,6 +40,7 @@ mod permit;
 mod profiles;
 mod push_block;
 mod questions;
+mod recipe;
 mod recover;
 mod release;
 mod repo;
@@ -94,7 +96,9 @@ const USAGE: &str = "kebbie: herding coding agents in herdr
                                   where kebbie watches CI, its CI is green; the user's or the lead's;
                                   --at <time> queues it to start at that time (15:00, tomorrow 09:00, fri 09:00,
                                   24 oct 09:00, 2026-10-24 09:00, in 2h), with --after once both hold;
-                                  --why <reason> says on its Queued row why it waits)
+                                  --why <reason> says on its Queued row why it waits;
+                                  --recipe \"<recipe>: <why>\" names how it is done, from the lead's playbook, required
+                                  when the lead starts a task)
   kebbie after [name]             the queued tasks: what each waits for, with that task's state; one blocked because
                                   a task it waited for was dropped, reset or is gone waits for you (--now starts it
                                   anyway and tells its Claude what was not done, --drop drops the wait,
@@ -188,6 +192,9 @@ const USAGE: &str = "kebbie: herding coding agents in herdr
                                   09:00), by default tomorrow at 09:00; --until unparked keeps it until you unpark it; yours, or
                                   the lead's on your word
   kebbie unpark [name]            bring a parked task back to its group now
+  kebbie recipe [task] [\"<recipe>: <why>\"]
+                                  the playbook's recipes; a task's recipe and why; or a new one for it, shown under its
+                                  row on the board and written to its note
   kebbie tidy <name> [note]       ask the task's Claude to reshape its commits by the rules skill (task.rules_skill)
   kebbie review [name]            send the task to review: a separate, read-only Claude reviews its commits in the
                                   background, by the skill kebbie:review and the rules skill; the task waits under To
@@ -398,7 +405,7 @@ impl Arguments {
                 arguments.positionals.extend(input.by_ref());
                 break;
             }
-            if ["--pane", "-C", "--repo", "--from", "--mode", "--state", "--next", "--backlog", "--option", "--recommend", "--plan", "--card", "--through", "--priority", "--get", "--title", "--id", "--at", "--every", "--kind", "--prompt", "--after", "--profile", "--why", "--name", "--until"].contains(&argument.as_str()) {
+            if ["--pane", "-C", "--repo", "--from", "--mode", "--state", "--next", "--backlog", "--option", "--recommend", "--plan", "--card", "--through", "--priority", "--get", "--title", "--id", "--at", "--every", "--kind", "--prompt", "--after", "--profile", "--why", "--name", "--until", "--recipe"].contains(&argument.as_str()) {
                 arguments.values.push((argument, input.next().unwrap_or_default()));
             } else if argument.starts_with('-') {
                 arguments.flags.push(argument);
@@ -506,12 +513,27 @@ fn run(arguments: &Arguments) -> Result<String> {
         Some("version") => Ok(shown_kebbie()),
         Some("start") => {
             let name = name.ok_or("kebbie start needs a task name")?;
-            let prompt = arguments.positionals[2..].join(" ");
-            let prompt = (!prompt.is_empty()).then_some(prompt.as_str());
             let mut repos = arguments.values_of("--repo").into_iter().map(repo::locate).collect::<Result<Vec<_>>>()?;
             if repos.is_empty() {
                 repos.push(cwd);
             }
+            let caller = permit::caller();
+            let state = lead::state_dir()?;
+            let addresses = tasks::slug(name).map(|task| repos.iter().map(|repo| peers::address(&task, &repo::name_of(repo))).collect::<Vec<_>>())?;
+            let recipe = recipe::asked_of(&caller, arguments.value("--recipe"), addresses.iter().all(|address| recipe::load(&state, address).is_some()))?;
+            let mut prompt = arguments.positionals[2..].join(" ");
+            if let Some((recipe, why)) = recipe.as_ref().filter(|_| !prompt.trim().is_empty()) {
+                prompt = format!("{prompt}\n\n{}", recipe::prompt_line(recipe, why)).trim_start().to_string();
+            }
+            let prompt = (!prompt.is_empty()).then_some(prompt.as_str());
+            let keep = |started: &[bool]| {
+                let Some((name, why)) = &recipe else { return };
+                for (address, _) in addresses.iter().zip(started).filter(|(_, started)| **started) {
+                    if let Err(error) = recipe::record(&state, address, name, why, &caller, messages::now()) {
+                        eprintln!("kebbie: the recipe of {address} was not kept: {error}");
+                    }
+                }
+            };
             let after = arguments.values_of("--after");
             let starts_at = arguments.value("--at").map(|text| crate::when::parse(text, messages::now(), &crate::recover::local_offset)).transpose().map_err(|error| format!("--at: {error}"))?;
             if !after.is_empty() || starts_at.is_some() {
@@ -519,6 +541,7 @@ fn run(arguments: &Arguments) -> Result<String> {
                     return Err("kebbie start --after and --at start from the default branch, so they take no --from".to_string());
                 }
                 if let Some(queued) = tasks::queue(&repos, &tasks::QueueAsked { name, prompt: prompt.unwrap_or_default(), after: &after, mode: arguments.value("--mode"), profile: arguments.value("--profile"), backlog: arguments.value("--backlog"), title: None, why: arguments.value("--why"), starts_at })? {
+                    keep(&vec![true; repos.len()]);
                     return Ok(queued);
                 }
             }
@@ -528,6 +551,7 @@ fn run(arguments: &Arguments) -> Result<String> {
             let started: Vec<Result<String>> = repos.iter().enumerate()
                 .map(|(index, repo)| tasks::start(repo, name, &tasks::Start { focus: options.focus && index == 0, ..options }))
                 .collect();
+            keep(&started.iter().map(Result::is_ok).collect::<Vec<_>>());
             let report = started.iter().map(|result| match result { Ok(text) | Err(text) => text.as_str() }).collect::<Vec<_>>().join("\n");
             if started.iter().any(Result::is_err) { Err(report) } else { Ok(report) }
         }
@@ -621,6 +645,7 @@ fn run(arguments: &Arguments) -> Result<String> {
         Some("land") => tasks::land(&cwd, name),
         Some("follow") => tasks::follow(&cwd, &arguments.positionals[1..]),
         Some("park") => tasks::park(&cwd, name, arguments.value("--until")),
+        Some("recipe") => arguments.only("recipe", &[]).and_then(|_| recipe::command(&cwd, &arguments.positionals[1..])),
         Some("unpark") => tasks::unpark(&cwd, name),
         Some("push") if arguments.flag("--cancel") => tasks::cancel_push(&cwd, name),
         Some("push") => tasks::push(&cwd, name, arguments.value("--through"), arguments.value("--through").is_some()),

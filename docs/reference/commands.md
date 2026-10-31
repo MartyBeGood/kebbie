@@ -25,6 +25,7 @@ Without a name, `land`, `follow`, `review`, `evidence`, `push`, `stage`, `unstag
 | [`kebbie land`](#kebbie-land-name) | Rebase a task onto the default branch without pushing. |
 | [`kebbie follow`](#kebbie-follow-name-onoff) | Keep a task rebased on the default branch. |
 | [`kebbie park`](#kebbie-park-name---until-when), [`unpark`](#kebbie-unpark-name) | Set a task aside until later, or bring it back now. |
+| [`kebbie recipe`](#kebbie-recipe-task-recipe-why) | The recipes, or how a task is done and why. |
 | [`kebbie push`](#kebbie-push-name) | Put a task in its repo's push line. |
 | [`kebbie stage`](#kebbie-stage-name), [`unstage`](#kebbie-unstage-name) | Put a ready task's commits on local main to try them, or take them off. |
 | [`kebbie ci`](#kebbie-ci---json) | The CI watches of pushed tasks. |
@@ -61,6 +62,7 @@ Start a task in a pooled worktree, in its own herdr Space, with Claude.
 | `--after <task[@repo]>` | Queue the task until that task has ended as done. Repeat it to wait for several. See [`kebbie after`](#kebbie-after-name). |
 | `--at <time>` | Queue the task to start at that local time. |
 | `--why <reason>` | With `--after`: why the task waits, in a few words for the user, shown on the board's Queued row. |
+| `--recipe "<recipe>: <why>"` | How the task is done and why, such as `--recipe "small-fix: one function and its test"`. Required when the lead starts a task; see [`kebbie recipe`](#kebbie-recipe-task-recipe-why). |
 
 A task you start takes you to its Space. One the lead or another task starts leaves you where you are, unless it passes `--focus`.
 
@@ -172,6 +174,25 @@ It comes back to its group by itself at that time. Yours to run, or the lead's o
 ### `kebbie unpark [name]`
 
 Bring a parked task back to its group now, as `Z` on its row does.
+
+### `kebbie recipe [task] ["<recipe>: <why>"]`
+
+How a task is done, by one of the recipes in the lead's [playbook](skills.md), and why.
+
+| Form | What it does |
+| --- | --- |
+| `kebbie recipe` | Lists the recipes: `small-fix`, `feature-with-ui`, `task-after-task`, `rollout-in-stages`, `follow-up`, `research`, `across-repos`, `waiting-on-outside`, `same-files`. |
+| `kebbie recipe <task>` | Shows the task's recipe, its why and who chose it. |
+| `kebbie recipe <task> "<recipe>: <why>"` | Sets it, such as `kebbie recipe billing "feature-with-ui: the refund needs a screen"`, and tells the task's Claude. |
+
+A recipe is named by its slug or as the board shows it (`small fix`), with a one-line why after the colon; any other name is refused with the list.
+
+- `kebbie start` takes the same text as `--recipe`. A start from the lead without it is refused, unless the task has a recipe already, as a restart does; one you start by hand needs none and shows none.
+- The task's prompt gets a line `Recipe: small fix, because one function and its test.`
+- The board shows `recipe: small fix` under the task's row, with its why on the open task. See [A task row](board.md#a-task-row).
+- The choice is written to the task's note as a decision: by the task's Claude in its vault note, or by kebbie in its own note, `notes/<task>@<repo>.md` in the state directory, when the task has none. See [Files](files.md#tasks).
+
+A task's Claude can set its own recipe, never another task's.
 
 ### `kebbie push [name]`
 
@@ -479,6 +500,8 @@ The task's commits not yet pushed are its next steps, in order. A commit beyond 
 | `push_ahead` | How many pushes of its repo go before it while it waits its turn. |
 | `profile` | The profile it started with: `task` for the built-in one, `null` for a session that is no task. |
 | `parked_until` | While it is parked: the Unix time it comes back, or `"unparked"` until you bring it back; `null` otherwise. |
+| `recipe` | How it is done: `name`, `shown`, `why` and `by` (`the lead`, `you`, `the task`), or `null` without one. |
+| `review_rule` | The assessor's word on its last ready report, such as `review suggested: changes how VAT is rounded`, `no review: wording in two templates`, `review being assessed` or `review not assessed`, or `null`. |
 | `phase` | Where it stands as kebbie keeps it, below. |
 
 `phase` holds:
