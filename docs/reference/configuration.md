@@ -168,7 +168,7 @@ An assessment with no answer reads as `review not assessed`, a suggestion in eve
 | `restart.auto` | `true` | config.toml only | Whether kebbie restarts the Claude sessions that run older code than is installed, after an update or a new Claude Code; no other session restarts. |
 | `restart.idle_minutes` | `10` | config.toml only | How long, an integer from 1 to 1440 minutes, a session on older code waits to be idle and out of focus before that restart. |
 | `keeper.enabled` | `true` | config.toml only | Whether the keeper, one background kebbie per machine, runs the routines. |
-| `recover.enabled` | `true` | config.toml only | Whether kebbie resumes a task whose Claude an API error stopped. |
+| `recover.enabled` | `true` | config.toml only | Whether kebbie resumes a task whose Claude an API error stopped, and puts a Codex task an API error stopped under Needs you. |
 
 `ci.watch` needs origin on GitHub and `gh` logged in. `false` closes the task right after the push, as for a repo without useful CI. See [Watch CI after a push](../explanation/trunk-based.md#ci-after-the-push).
 

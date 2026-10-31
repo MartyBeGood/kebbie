@@ -76,6 +76,11 @@ fn text_of(record: &Value) -> String {
     }
 }
 
+// The API's "code" names the error before any code word elsewhere in the text, such as invalid_request inside invalid_request_error.
+pub fn fatal_code_in(text: &str) -> Option<&'static str> {
+    FATAL.iter().find(|(code, _)| text.contains(&format!("\"code\":\"{code}\""))).or_else(|| FATAL.iter().find(|(code, _)| text.contains(code))).map(|(_, kind)| *kind)
+}
+
 fn reason(status: Option<u64>, lower: &str) -> &'static str {
     if status == Some(529) || ["overloaded", "at capacity", "high load"].iter().any(|word| lower.contains(word)) {
         "overload"
@@ -497,25 +502,29 @@ pub struct Task {
     pub pane: String,
     pub idle: bool,
     pub transcript: Option<PathBuf>,
+    pub agent: crate::agent::Agent,
 }
 
-// Only the Claudes kebbie started in its pooled worktrees: never the lead, never the user's own sessions.
+// Only the agents kebbie started in its pooled worktrees: never the lead, never the user's own sessions.
 fn tasks() -> Result<(Vec<String>, Vec<Task>)> {
     let workspaces = crate::herdr::workspaces()?;
-    let agents: Vec<Value> = crate::herdr::agents()?.into_iter().filter(|agent| agent["agent"] == crate::agent::Agent::Claude.kind()).collect();
+    let agents: Vec<Value> = crate::herdr::agents()?.into_iter().filter(|agent| crate::agent::Agent::of(agent).is_some()).collect();
     let repos: BTreeSet<PathBuf> = workspaces.iter().filter_map(|workspace| workspace["worktree"]["repo_root"].as_str()).map(PathBuf::from).collect();
     let home = crate::agent::claude::home();
     let mut found = Vec::new();
     let mut all = Vec::new();
     for repo in &repos {
         for slot in crate::tasks::slots(repo)? {
-            let Some(task) = slot.task else { continue };
+            let Some(task) = slot.task.clone() else { continue };
             let address = crate::peers::address(&task, &crate::repo::name_of(repo));
             all.push(address.clone());
             let Some(workspace) = workspaces.iter().find(|workspace| workspace["worktree"]["checkout_path"].as_str() == slot.path.to_str()).and_then(|workspace| workspace["workspace_id"].as_str()) else { continue };
             let Some(pane) = agents.iter().find(|agent| agent["workspace_id"].as_str() == Some(workspace)).and_then(crate::restart::Pane::from_agent) else { continue };
-            let transcript = pane.session.as_deref().zip(home.as_deref()).and_then(|(session, home)| crate::restart::transcript(home, pane.cwd.as_deref(), session));
-            found.push(Task { address, repo: repo.clone(), pane: pane.pane, idle: pane.waiting, transcript });
+            let transcript = match pane.agent {
+                crate::agent::Agent::Claude => pane.session.as_deref().zip(home.as_deref()).and_then(|(session, home)| crate::restart::transcript(home, pane.cwd.as_deref(), session)),
+                crate::agent::Agent::Codex => crate::tasks::transcript(repo, &slot).map(|(_, file)| file).filter(|file| !crate::agent::codex::compressed(file)),
+            };
+            found.push(Task { address, repo: repo.clone(), pane: pane.pane, idle: pane.waiting, transcript, agent: pane.agent });
         }
     }
     Ok((all, found))
@@ -555,7 +564,11 @@ pub fn tick(state: &Path) {
         forget(state, address);
     }
     for task in tasks.iter().filter(|task| task.idle) {
-        let Some(tail) = task.transcript.as_deref().and_then(tail_of).map(|text| observe(&text)) else { continue };
+        let read = match task.agent {
+            crate::agent::Agent::Claude => observe,
+            crate::agent::Agent::Codex => crate::agent::codex::observe,
+        };
+        let Some(tail) = task.transcript.as_deref().and_then(tail_of).map(|text| read(&text)) else { continue };
         let old = load(state, &task.address);
         let reset = tail.failure.as_ref().and_then(|failure| match &failure.error {
             ApiError::Quota { clock, window, .. } => reset_at(clock.as_ref(), *window, failure.at, usage.as_ref(), local.as_deref(), &local_offset),
@@ -590,7 +603,7 @@ fn apply(state: &Path, task: &Task, old: Option<&Record>, act: Act) {
         Act::Stop(record) => {
             let _ = save(state, &record);
             crate::phase::record(state, &record.address, "recover", &crate::phase::Event::Stopped);
-            let line = stuck_line(&record);
+            let line = stuck_line(&record, task.agent);
             if let Err(error) = messages::to_lead(messages::ToLead::TaskStopped, &line) {
                 eprintln!("Could not tell the lead that {} stopped: {error}", record.address);
             }
@@ -599,8 +612,12 @@ fn apply(state: &Path, task: &Task, old: Option<&Record>, act: Act) {
     }
 }
 
-pub fn stuck_line(record: &Record) -> String {
-    format!("{} stopped by {} and waits under Needs you; kebbie does not resume it. Claude Code said: {}", record.address, record.reason, record.text.split_whitespace().collect::<Vec<_>>().join(" "))
+pub fn stuck_line(record: &Record, agent: crate::agent::Agent) -> String {
+    let said = match agent {
+        crate::agent::Agent::Claude => "Claude Code",
+        crate::agent::Agent::Codex => "Codex",
+    };
+    format!("{} stopped by {} and waits under Needs you; kebbie does not resume it. {said} said: {}", record.address, record.reason, record.text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 #[cfg(test)]
@@ -780,7 +797,8 @@ mod tests {
         let login = error("oauth_org_not_allowed", 403, "Your organization has disabled Claude subscription access for Claude Code");
         let Act::Stop(stuck) = decide("api@web", None, &tail(login.clone()), AT_S, None) else { panic!("never retried") };
         assert_eq!(stuck.note_at(AT_S, &|_| 0), "stopped by a login problem: Your organization has disabled Claude subscription access for Claude Code");
-        assert!(stuck_line(&stuck).starts_with("api@web stopped by a login problem and waits under Needs you"), "{}", stuck_line(&stuck));
+        assert!(stuck_line(&stuck, crate::agent::Agent::Claude).starts_with("api@web stopped by a login problem and waits under Needs you"), "{}", stuck_line(&stuck, crate::agent::Agent::Claude));
+        assert!(stuck_line(&stuck, crate::agent::Agent::Codex).contains("kebbie does not resume it. Codex said: Your organization"));
         assert_eq!(decide("api@web", Some(&stuck), &tail(login.clone()), AT_S + 30, None), Act::Nothing);
         let typed = observe(&lines(&[login, user("I logged in again", AT)]));
         assert_eq!(decide("api@web", Some(&stuck), &typed, AT_S + 60, None), Act::Forget);

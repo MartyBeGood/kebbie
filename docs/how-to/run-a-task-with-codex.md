@@ -128,6 +128,6 @@ Codex can compress a session file it hasn't written to for a week to `.jsonl.zst
 - The record of test runs that `kebbie evidence` and the reviewer read.
 - The vault gate that holds edits until the task note's Problem is written.
 - Restarts after a kebbie or agent update: `kebbie restart` skips Codex sessions.
-- Recovery after an API error.
+- Resumes after an API error. An error that stops Codex's turn puts the task under Needs you with the API's message, and the lead hears it, but kebbie does not type it going again.
 
 [Profiles](../reference/configuration.md#profiles) lists every key. [`kebbie setup codex`](../reference/commands.md#setup-and-maintenance) is in the command reference.

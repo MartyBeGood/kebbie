@@ -11,6 +11,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 - kebbie doctor and the setup guide's Agents step say whether Claude Code and Codex are logged in, from claude auth status and codex login status, with claude auth login or codex login as the fix; an agent that gives no answer reads as login not checked
 
 ### Fixed
+- An API error that stops a Codex task's turn puts the task under Needs you with the API's own message, as stopped by a model that is not available: The 'gpt-5.1-codex-max' model is not supported when using Codex with a ChatGPT account., and the lead hears it, where the task showed idle · nothing yet
 - kebbie types into a Codex composer only when it shows nothing or Codex's own placeholder, and a Codex start whose composer already holds text keeps the task's prompt until it is empty, where the prompt was glued onto the text already there
 - A Codex task on one of Codex's start-up questions waits under Needs you with what Codex asks, and the lead hears it, where it showed under Waiting for work · nothing yet
 - A Codex start that meets Codex's welcome and sign-in screens, its notice of a new model or its update screen types nothing into them: the start says Codex asks you to sign in, which model to use or whether to update it first, as it does for the trust and hooks questions, and kebbie types the prompt once you have answered; the Codex sessions kebbie starts skip Codex's update check, so the update screen shows only where a managed config forces it

@@ -124,6 +124,10 @@ kebbie reads that entry and gets the task going again. Every 30 seconds the keep
 | Overload, a server error, a rate limit, a timeout or a dropped connection | Types `[from kebbie] … Carry on where you left off.` into the task 1, 2, 4 and 8 minutes after each error, one resume per error. The row says `retrying after overload (2/4, next 21:14)`. If the fifth error comes before Claude has answered once, the task stops. |
 | A login, billing, invalid request or refusal error, or one kebbie does not know | Waiting does not fix these. The task goes to Needs you at once with Claude Code's words, the lead gets a line, and `notify.command` gets an `api-error` event. The same happens to a task that kept failing through every retry. |
 
+## A Codex task's error goes to you
+
+Codex writes no error entry into its session file, but a turn it ended on an error carries the error on its `task_complete` event. kebbie reads it the same way and resumes nothing: the task goes to Needs you with the API's own message, such as `stopped by a model that is not available: The 'gpt-5.1-codex-max' model is not supported when using Codex with a ChatGPT account.`, and the lead gets a line.
+
 ## The usage limit waits for its reset
 
 kebbie reads the reset from Claude Code's message, such as `You've hit your session limit · resets 5pm (Europe/Stockholm)`, and resumes the task a minute after it. The row says `out of allowance until 17:00`.

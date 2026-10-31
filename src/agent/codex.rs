@@ -476,6 +476,68 @@ pub fn draft(screen: &str) -> Draft {
     Draft::Typed(joined)
 }
 
+// Codex 0.163 never writes its Error event to the rollout, but a turn that failed carries it on its task_complete event (core/src/tasks/mod.rs, rollout/src/policy.rs).
+pub fn observe(rollout: &str) -> crate::recover::Tail {
+    let mut tail = crate::recover::Tail::default();
+    let mut failed: Option<Value> = None;
+    for line in rollout.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()) {
+        if user_text(&line).is_some() {
+            tail.prompted = true;
+        } else if line["type"] == "event_msg" && line["payload"]["type"] == "task_complete" {
+            if line["payload"]["error"].is_object() {
+                failed = Some(line);
+                tail.prompted = false;
+                tail.replied = false;
+            } else {
+                failed = None;
+                tail.replied = true;
+            }
+        }
+    }
+    tail.failure = failed.filter(|_| !tail.prompted).and_then(|line| {
+        let error = &line["payload"]["error"];
+        let message = error["message"].as_str().unwrap_or_default();
+        Some(crate::recover::Failure {
+            id: line["payload"]["turn_id"].as_str().unwrap_or_default().to_string(),
+            at: line["timestamp"].as_str().and_then(crate::typing::iso_millis)? / 1000,
+            error: crate::recover::ApiError::Fatal { kind: error_kind(&error["codex_error_info"], message), text: short_error(message) },
+        })
+    });
+    tail
+}
+
+// The info is a word or a one-key table, as {"http_connection_failed":{"http_status_code":400}}; the API's own code in the message says more.
+fn error_kind(info: &Value, message: &str) -> &'static str {
+    if let Some(kind) = crate::recover::fatal_code_in(message) {
+        return kind;
+    }
+    let (word, status) = match info {
+        Value::String(word) => (word.as_str(), None),
+        Value::Object(table) => table.iter().next().map_or(("", None), |(word, fields)| (word.as_str(), fields["http_status_code"].as_u64())),
+        _ => ("", None),
+    };
+    match (word, status) {
+        ("usage_limit_exceeded", _) => "the usage limit",
+        ("rate_limit_exceeded", _) => "a rate limit",
+        ("unauthorized", _) | (_, Some(401 | 403)) => "a login problem",
+        ("context_window_exceeded", _) => "a full context window",
+        ("bad_request" | "invalid_prompt", _) | (_, Some(400..=499)) => "an invalid request",
+        ("server_overloaded", _) => "overload",
+        ("internal_server_error", _) | (_, Some(500..)) => "a server error",
+        ("http_connection_failed" | "response_stream_connection_failed" | "response_stream_disconnected", _) => "a dropped connection",
+        _ => "an error Codex reported",
+    }
+}
+
+// Codex's message for a status it did not expect carries the API's JSON body, whose own message is the readable part.
+fn short_error(message: &str) -> String {
+    let readable = message.find('{').and_then(|at| serde_json::Deserializer::from_str(&message[at..]).into_iter::<Value>().next()?.ok())
+        .and_then(|body| [&body["error"]["message"], &body["message"], &body["detail"]].into_iter().find_map(|text| text.as_str().map(str::to_string)));
+    let text = readable.unwrap_or_else(|| message.split(", url: ").next().unwrap_or(message).to_string());
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() > 200 { format!("{}…", text.chars().take(200).collect::<String>()) } else { text }
+}
+
 // Codex's own record of the folders the user trusted, in its config.toml's [projects] table; read, never written.
 pub fn trusted_by_user(dir: &Path) -> bool {
     let config = home().and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok()).and_then(|text| text.parse::<toml::Table>().ok());
@@ -937,6 +999,25 @@ mod tests {
     fn a_codex_past_its_first_prompt_is_never_read_for_start_up_questions_whatever_its_screen_shows() {
         let past = with_question(json!({ "agent": "codex", "pane_id": "w1:p1", "agent_status": "idle" }), || false, |_| panic!("a Codex past its first prompt has no screen read for start-up questions"));
         assert_eq!((past["agent_status"].as_str(), past.get(ASKS_KEY)), (Some("idle"), None), "a task working in kebbie's own repo shows these words in codex.rs or a diff, which is no question of Codex's");
+    }
+
+    #[test]
+    fn a_turn_codex_ended_on_an_api_error_is_read_from_its_task_complete_with_the_apis_own_words() {
+        let failed = r#"{"timestamp":"2026-10-31T14:40:02.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":null,"error":{"message":"unexpected status 400 Bad Request: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5.1-codex-max' model is not supported when using Codex with a ChatGPT account.\",\"code\":\"model_not_found\"}}, url: https://chatgpt.com/backend-api/codex/responses","codex_error_info":{"http_connection_failed":{"http_status_code":400}}}}}"#;
+        let rollout = [ROLLOUT.lines().next().unwrap(), r#"{"timestamp":"2026-10-31T14:40:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"add the hub's leave message","images":[]}}"#, failed].join("\n");
+        let tail = observe(&rollout);
+        let failure = tail.failure.clone().expect("the error stops the turn");
+        assert_eq!(failure.id, "t1");
+        assert_eq!(failure.error, crate::recover::ApiError::Fatal { kind: "a model that is not available", text: "The 'gpt-5.1-codex-max' model is not supported when using Codex with a ChatGPT account.".to_string() });
+        let crate::recover::Act::Stop(stuck) = crate::recover::decide("hub-leave-message@kebbie", None, &tail, failure.at, None) else { panic!("a Codex error is never resumed") };
+        assert_eq!(stuck.note_at(failure.at, &|_| 0), "stopped by a model that is not available: The 'gpt-5.1-codex-max' model is not supported when using Codex with a ChatGPT account.");
+        assert_eq!(observe(&format!("{rollout}\n{}", r#"{"timestamp":"2026-10-31T14:41:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"use gpt-5.5","images":[]}}"#)).failure, None, "a new prompt after it ends the episode");
+        let done = r#"{"timestamp":"2026-10-31T14:42:00.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t2","last_agent_message":"Done."}}"#;
+        let replied = observe(&format!("{rollout}\n{done}"));
+        assert!(replied.failure.is_none() && replied.replied);
+        assert_eq!(error_kind(&json!("usage_limit_exceeded"), "You've hit your usage limit."), "the usage limit");
+        assert_eq!(error_kind(&json!({ "http_connection_failed": { "http_status_code": 502 } }), "unexpected status 502"), "a server error");
+        assert_eq!(short_error("stream disconnected before completion, url: https://x"), "stream disconnected before completion");
     }
 
     #[test]

@@ -143,7 +143,7 @@ Claude is the one agent behind it today. The rest of kebbie, from the pool and t
 
 A task's [profile](../reference/configuration.md#profiles) names its agent, and the task's session record keeps it, so a restart reaches the same one.
 
-Two things are Claude's alone and stay outside the seam: reading a Claude's screen for its own menus, its input box and its API errors, and the staleness checks on Claude Code's binary, plugins and MCP config.
+Two things are Claude's alone and stay outside the seam: reading a Claude's screen for its own menus, and the staleness checks on Claude Code's binary, plugins and MCP config.
 
 ## Configuration lives in your home only
 
