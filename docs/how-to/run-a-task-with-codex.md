@@ -155,7 +155,7 @@ Codex can compress a session file it hasn't written to for a week to `.jsonl.zst
 ## What a Codex task doesn't get
 
 - The record of test runs that `kebbie evidence` and the reviewer read.
-- The vault gate that holds edits until the task note's Problem is written.
+- The vault's tools. A Codex session gets no vault MCP server, so the lead keeps the task's note: the task's role has it send the lead the note's Problem before its first change, and its decisions and solution as it goes, with `kebbie tell lead`. Nothing holds its edits until the Problem is written.
 - Resumes after an API error. An error that stops Codex's turn puts the task under Needs you with the API's message, and the lead hears it, but kebbie does not type it going again.
 
 [Profiles](../reference/configuration.md#profiles) lists every key. [`kebbie setup codex`](../reference/commands.md#setup-and-maintenance) is in the command reference.

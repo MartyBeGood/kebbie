@@ -241,6 +241,10 @@ fn awaits_first_prompt_in(state: &Path, address: &str) -> bool {
     })
 }
 
+pub(crate) fn recorded_agent(state: &Path, address: &str) -> Agent {
+    parse_record(&std::fs::read_to_string(session_file_in(state, address)).unwrap_or_default()).agent()
+}
+
 pub(super) fn open_space(repo: &Path, slot: &Slot, task: &str, focus: bool) -> Result<herdr::Space> {
     let space = herdr::open_worktree(repo, &slot.path, task, focus)?;
     herdr::rename_workspace(&space.workspace_id, task)?;

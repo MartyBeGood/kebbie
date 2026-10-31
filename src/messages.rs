@@ -858,8 +858,7 @@ pub enum ToLead {
     TaskStopped,
     Permission,
     Away,
-    // A task's own `kebbie tell lead`, typed as any tell is.
-    #[allow(dead_code)]
+    // A task's own `kebbie tell lead`, typed as any tell is, and what kebbie tells the lead to write for a Codex task.
     TaskMessage,
     QuestionCopy,
 }
