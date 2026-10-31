@@ -141,7 +141,7 @@ impl Facts {
             codex: codex.binary.as_ref().map(|_| codex.version.as_deref().and_then(|text| text.split_whitespace().find(|word| word.starts_with(|character: char| character.is_ascii_digit()))).unwrap_or_default().to_string()),
             codex_bin: codex.binary.clone(),
             claude_login: login::claude(crate::doctor::which(&env.machine.claude, &env.machine.path).as_deref(), login::TIMEOUT),
-            codex_login: login::codex(codex.binary.as_deref(), login::TIMEOUT),
+            codex_login: if codex.plugin == Installed::Missing { Login::Unknown } else { login::codex(codex.binary.as_deref(), login::TIMEOUT) },
             codex_plugin: codex.plugin.clone(),
             keys: setup::key_plan(&env.machine.herdr_config),
             sources: machine.sources.clone().unwrap_or_else(|| vec![Source::Local]),
@@ -453,7 +453,12 @@ impl Guide {
 
     fn toggle(&mut self, at: usize) {
         match self.step {
-            Step::Agents if at == 1 && self.facts.codex.is_some() => self.answers.codex = !self.answers.codex,
+            Step::Agents if at == 1 && self.facts.codex.is_some() => {
+                self.answers.codex = !self.answers.codex;
+                if self.answers.codex && self.facts.codex_login == Login::Unknown {
+                    self.facts.codex_login = login::codex(self.facts.codex_bin.as_deref(), login::TIMEOUT);
+                }
+            }
             Step::Backlog => {
                 if let Some((_, on)) = self.answers.sources.get_mut(at) {
                     *on = !*on;
@@ -987,7 +992,7 @@ fn ask(env: &Env, at: Step) -> Result<(Next, Guide)> {
                         let planned = guide.plan();
                         guide.applied = Some(Vec::new());
                         let rows = apply(&planned, env, &mut Screen { terminal: &mut terminal, guide: &mut guide });
-                        let codex = (guide.answers.codex && !guide.skipped[Step::Agents.index()]).then_some(guide.facts.codex_login);
+                        let codex = (guide.answers.codex && !guide.skipped[Step::Agents.index()]).then(|| login::codex(guide.facts.codex_bin.as_deref(), login::TIMEOUT));
                         guide.ending = ending(codex, &crate::doctor::checks(&crate::doctor::Env::current()), &std::env::var("SHELL").unwrap_or_default());
                         guide.applied = Some(rows);
                     }
@@ -1145,8 +1150,12 @@ mod tests {
         assert!(shown.contains("found 2.1.3 · not logged in: run claude auth login") && shown.contains("found 0.163.0 · not logged in: run codex login"), "{shown}");
         press(&mut guide, &[KeyCode::Char(' ')]);
         assert!(!guide.answers.codex, "space on Claude Code changes nothing: it stays on");
-        press(&mut guide, &[KeyCode::Down, KeyCode::Char(' '), KeyCode::Enter]);
-        assert!(guide.answers.codex);
+        let codex = lab.dir.join("codex");
+        crate::executable::write(&codex, "#!/bin/sh\necho 'Logged in using ChatGPT'\n").unwrap();
+        (guide.facts.codex_bin, guide.facts.codex_login) = (Some(codex), Login::Unknown);
+        press(&mut guide, &[KeyCode::Down, KeyCode::Char(' ')]);
+        assert!(guide.answers.codex && guide.facts.codex_login == Login::In, "Codex's login is checked once you choose it");
+        press(&mut guide, &[KeyCode::Enter]);
         let shown = screen(&guide);
         assert!(shown.contains("+ prefix+space  go to the lead, or back") && shown.contains("+ prefix+t      open the board") && !shown.contains("prefix+u"), "{shown}");
         assert!(shown.contains("(•) Add them  · to the end of") && shown.contains("( ) Skip"), "{shown}");
