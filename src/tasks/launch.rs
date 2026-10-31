@@ -113,6 +113,7 @@ pub(crate) struct Record {
     pub profile: Option<String>,
     pub agent: Option<String>,
     pub awaits_prompt: bool,
+    pub rollout: Option<String>,
 }
 
 impl Record {
@@ -125,14 +126,14 @@ impl Record {
 pub(crate) fn parse_record(text: &str) -> Record {
     if let Ok(value) = serde_json::from_str::<Value>(text) && value.is_object() {
         let field = |key: &str| value[key].as_str().map(str::trim).filter(|text| !text.is_empty()).map(str::to_string);
-        return Record { session: field("session"), mode: field("mode"), profile: field("profile"), agent: field("agent"), awaits_prompt: value["awaits_prompt"] == true };
+        return Record { session: field("session"), mode: field("mode"), profile: field("profile"), agent: field("agent"), awaits_prompt: value["awaits_prompt"] == true, rollout: field("rollout") };
     }
     let mut lines = text.lines().map(str::trim).map(|line| (!line.is_empty()).then(|| line.to_string()));
-    Record { session: lines.next().flatten(), mode: lines.next().flatten(), profile: Some(profiles::TASK.to_string()), agent: Some(Agent::Claude.key().to_string()), awaits_prompt: false }
+    Record { session: lines.next().flatten(), mode: lines.next().flatten(), profile: Some(profiles::TASK.to_string()), agent: Some(Agent::Claude.key().to_string()), awaits_prompt: false, rollout: None }
 }
 
 pub(crate) fn record_text(record: &Record) -> String {
-    json!({ "session": record.session, "mode": record.mode, "profile": record.profile, "agent": record.agent, "awaits_prompt": record.awaits_prompt }).to_string()
+    json!({ "session": record.session, "mode": record.mode, "profile": record.profile, "agent": record.agent, "awaits_prompt": record.awaits_prompt, "rollout": record.rollout }).to_string()
 }
 
 pub(crate) fn codex_restart_refusal(task: &str, repo: &Path) -> Option<String> {
@@ -205,14 +206,36 @@ fn previous_session(agent: Agent, repo: &Path, slot: &Slot, task: &str, home: &P
         .or_else(|| agent.latest_session(home, &slot.path, branch_created(repo, task)?))
 }
 
-// The task's own conversation, where the user's prompt and later word to it are.
+// The task's own conversation, where the user's prompt and later word to it are. Finding a Codex rollout walks all of Codex's sessions, so the one of the recorded session is kept in the record.
 pub fn transcript(repo: &Path, slot: &Slot) -> Option<(Agent, PathBuf)> {
     let task = slot.task.as_deref()?;
-    let record = recorded_session(task, repo);
+    let file = session_file(task, repo).ok()?;
+    transcript_in(&file, repo, slot, task)
+}
+
+fn transcript_in(file: &Path, repo: &Path, slot: &Slot, task: &str) -> Option<(Agent, PathBuf)> {
+    let record = parse_record(&std::fs::read_to_string(file).unwrap_or_default());
     let agent = record.agent();
+    if let Some(kept) = record.rollout.as_deref().map(PathBuf::from).filter(|path| path.is_file()) {
+        return Some((agent, kept));
+    }
     let home = agent.home()?;
-    let id = previous_session(agent, repo, slot, task, &home, record.session)?;
+    if let Some(found) = record.session.as_deref().and_then(|id| agent.session_transcript(&home, Some(&slot.path), id)) {
+        if agent == Agent::Codex {
+            let _ = keep_rollout(file, record.session.as_deref().unwrap_or_default(), &found);
+        }
+        return Some((agent, found));
+    }
+    let id = agent.latest_session(&home, &slot.path, branch_created(repo, task)?)?;
     Some((agent, agent.session_transcript(&home, Some(&slot.path), &id)?))
+}
+
+fn keep_rollout(file: &Path, session: &str, rollout: &Path) -> Result<()> {
+    let record = parse_record(&std::fs::read_to_string(file).map_err(|error| error.to_string())?);
+    if record.session.as_deref() != Some(session) {
+        return Ok(());
+    }
+    crate::state::write(file, record_text(&Record { rollout: Some(rollout.to_string_lossy().to_string()), ..record }))
 }
 
 // Codex picks its own session id, so its SessionStart hook writes it into the task's record; a task on Claude keeps the id kebbie gave it.
@@ -227,7 +250,8 @@ fn record_session_in(state: &Path, address: &str, session: &str) -> Result<()> {
     if record.agent() != Agent::Codex || (record.session.as_deref() == Some(session) && !record.awaits_prompt) {
         return Ok(());
     }
-    crate::state::write(&file, record_text(&Record { session: Some(session.to_string()), awaits_prompt: false, ..record }))
+    let rollout = record.rollout.clone().filter(|_| record.session.as_deref() == Some(session));
+    crate::state::write(&file, record_text(&Record { session: Some(session.to_string()), awaits_prompt: false, rollout, ..record }))
 }
 
 // A Codex task kebbie starts again in place shows its start-up screens before its first turn, as a new one does.
@@ -533,7 +557,7 @@ fn launch(place: &Launch, pane: &str, session: Session) -> Result<(String, Resul
     if let Ok(started) = &started {
         let id = started_session(agent, &session);
         let mode = if *started == Started::BypassDisabled { None } else { mode.map(str::to_string) };
-        let record = Record { session: id, mode, profile: Some(profile.name.clone()), agent: Some(agent.key().to_string()), awaits_prompt: agent == Agent::Codex };
+        let record = Record { session: id, mode, profile: Some(profile.name.clone()), agent: Some(agent.key().to_string()), awaits_prompt: agent == Agent::Codex, rollout: None };
         crate::state::write(&session_file(task, repo)?, record_text(&record))?;
     }
     Ok((agent_name, started))
@@ -926,6 +950,26 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_tasks_rollout_is_found_once_and_read_from_its_record_after() {
+        let state = crate::sh::test_dir("codex-rollout-kept");
+        let rollout = state.join("rollout-2026-10-22T11-15-02-019b3136-fdf0.jsonl");
+        std::fs::write(&rollout, "").unwrap();
+        let file = session_file_in(&state, "billing@app");
+        let record = Record { session: Some("019b3136-fdf0".to_string()), agent: Some("codex".to_string()), ..Record::default() };
+        crate::state::write(&file, record_text(&record)).unwrap();
+        keep_rollout(&file, "019b3136-fdf0", &rollout).unwrap();
+        let slot = Slot { number: 1, path: state.join("wt1.app"), task: Some("billing".to_string()), free: false };
+        assert_eq!(transcript_in(&file, &state, &slot, "billing"), Some((Agent::Codex, rollout.clone())), "the kept path, without a walk of Codex's sessions");
+        keep_rollout(&file, "another", &state.join("other.jsonl")).unwrap();
+        assert_eq!(parse_record(&std::fs::read_to_string(&file).unwrap()).rollout.as_deref(), rollout.to_str(), "a rollout found for a session the record no longer names is not kept");
+        record_session_in(&state, "billing@app", "019b3136-fdf0").unwrap();
+        assert!(parse_record(&std::fs::read_to_string(&file).unwrap()).rollout.is_some(), "the same session keeps its rollout");
+        record_session_in(&state, "billing@app", "019b4000-0000").unwrap();
+        assert_eq!(parse_record(&std::fs::read_to_string(&file).unwrap()).rollout, None, "a new session is looked up again");
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
     fn a_resumed_task_records_the_session_it_resumed_even_one_found_by_a_scan() {
         assert_eq!(started_session(Agent::Codex, &Session::Resume("019b3136-fdf0".to_string())).as_deref(), Some("019b3136-fdf0"), "a record that named no session, its id found among Codex's rollouts, keeps it from then on");
         assert_eq!(started_session(Agent::Claude, &Session::Resume("1f0c".to_string())).as_deref(), Some("1f0c"));
@@ -936,7 +980,7 @@ mod tests {
     #[test]
     fn the_session_codex_picked_is_written_into_a_codex_tasks_record_and_never_a_claude_tasks() {
         let state = crate::sh::test_dir("codex-record");
-        let codex = Record { session: None, mode: Some("acceptEdits".to_string()), profile: Some("coder".to_string()), agent: Some("codex".to_string()), awaits_prompt: true };
+        let codex = Record { session: None, mode: Some("acceptEdits".to_string()), profile: Some("coder".to_string()), agent: Some("codex".to_string()), awaits_prompt: true, rollout: None };
         crate::state::write(&session_file_in(&state, "billing@app"), record_text(&codex)).unwrap();
         assert!(awaits_first_prompt_in(&state, "billing@app"), "a new Codex start records no session, so its screen is read for start-up questions");
         record_session_in(&state, "billing@app", "019b3136-fdf0").unwrap();
@@ -1068,9 +1112,9 @@ mod tests {
 
     #[test]
     fn a_tasks_session_record_keeps_its_profile_and_an_old_two_line_record_reads_as_task_on_claude() {
-        let designer = Record { session: Some("1f0c".to_string()), mode: Some(BYPASS.to_string()), profile: Some("designer".to_string()), agent: Some("claude".to_string()), awaits_prompt: false };
+        let designer = Record { session: Some("1f0c".to_string()), mode: Some(BYPASS.to_string()), profile: Some("designer".to_string()), agent: Some("claude".to_string()), awaits_prompt: false, rollout: None };
         assert_eq!(parse_record(&record_text(&designer)), designer);
-        let old = |session: &str, mode: Option<&str>| Record { session: Some(session.to_string()), mode: mode.map(str::to_string), profile: Some("task".to_string()), agent: Some("claude".to_string()), awaits_prompt: false };
+        let old = |session: &str, mode: Option<&str>| Record { session: Some(session.to_string()), mode: mode.map(str::to_string), profile: Some("task".to_string()), agent: Some("claude".to_string()), awaits_prompt: false, rollout: None };
         assert_eq!(parse_record("1f0c\nacceptEdits\n"), old("1f0c", Some("acceptEdits")));
         assert_eq!(parse_record("1f0c\n\n"), old("1f0c", None));
         assert_eq!(parse_record("1f0c\n"), old("1f0c", None));
