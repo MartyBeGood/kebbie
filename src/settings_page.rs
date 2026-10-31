@@ -1355,7 +1355,8 @@ mod tests {
     fn a_file_that_does_not_parse_is_shown_and_left_alone() {
         let mut fixture = fixture("settings-broken", "[task]\nsandbox = \"yes\"\n", None);
         assert!(fixture.page.entries.is_empty());
-        assert!(screen(&mut fixture.page).contains("task.sandbox: must be true or false"));
+        let shown = screen(&mut fixture.page).split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(shown.contains("task.sandbox: must be true or false"), "the error shows, wherever the path before it makes it wrap: {shown}");
         press(&mut fixture.page, &[KeyCode::Char(' '), KeyCode::Char('d')]);
         assert_eq!(file(&fixture, "config.toml"), "[task]\nsandbox = \"yes\"\n");
     }
