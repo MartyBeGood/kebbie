@@ -360,6 +360,8 @@ Three are built in:
 
 A file named `task.toml`, `ops.toml` or `reviewer.toml` adds its keys to that built-in profile.
 
+The board's [Settings page](board.md#profiles) sets a profile's `model` and `effort` from the agent's own list, writing only that key.
+
 | Key | Default | What it does |
 | --- | --- | --- |
 | `about` | none | One line on what the profile does. `kebbie profiles` shows it, and the task's role opens its profile section with it. |

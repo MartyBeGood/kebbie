@@ -76,6 +76,7 @@ A Codex profile takes `about`, `for`, `agent`, `model`, `effort`, `role`, `skill
 
 - If the profile sets no `model`, Codex runs the `model` in its own `config.toml`. `kebbie profiles` shows it on the profile's `runs:` line, as `model gpt-5.5 from Codex's config.toml`, and `kebbie doctor` names it on its `codex model` line.
 - If that model is one your Codex login cannot use, such as a model a ChatGPT plan does not include, the task's first turn stops on an API error. Set `model` in the profile to one it can.
+- On the board's Settings page (`,`), the Profiles section marks such a profile with `⚠`, and `m` picks a model from the list Codex offers your account.
 
 `deny`, `allow`, `[claude]` and the other `[sandbox]` keys set Claude Code's options, which Codex doesn't read. A Codex profile that has them doesn't load, and `kebbie profiles` names the key.
 

@@ -35,6 +35,8 @@ Use a profile when a kind of work needs more than kebbie's task role: UI work th
 
 [`examples/profiles/`](../../examples/profiles) has a `designer` and a `careful` profile, each with its role file, to copy. [Profiles](../reference/configuration.md#profiles) lists every key.
 
+To change only a profile's model or effort, open the board's Settings page with `,`, go to Profiles and press `m` or `e`. See [Settings page](../reference/board.md#profiles).
+
 If you want the task to run in Codex, give the profile `agent = "codex"`. See [Run a task with Codex](run-a-task-with-codex.md).
 
 ## Start a task with it

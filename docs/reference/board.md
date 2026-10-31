@@ -703,6 +703,23 @@ Press `,` to open it, or run `kebbie config edit` for the same page on its own. 
 - Each change is checked before it is written, and a value kebbie would refuse writes nothing and says why.
 - A write changes only that key's line, keeping the file's comments and order, and goes to the tab's file.
 - After each write, kebbie doctor's check of that file shows on one line, such as `doctor: ok, config.toml parses`.
+
+### Profiles
+
+The Profiles section, on the This machine tab, lists every [profile](configuration.md#profiles) `kebbie profiles` lists: its name, agent, model, effort and where it comes from, `built in` or its file in `~/.config/kebbie/profiles`. A model shown dim is the agent's own default, Claude's from `~/.claude/settings.json` and Codex's from `~/.codex/config.toml`. A `⚠` marks a Codex profile whose model Codex's own list for your account does not offer, and the line under the page names it.
+
+| Key | Action |
+| --- | --- |
+| `m` | Pick the profile's model. For Codex, from Codex's own list for your account, `~/.codex/models_cache.json`, the list Codex's `/model` shows; for Claude, `opus`, `sonnet`, `haiku` or `fable`. Either way also the agent's default, or a model id you type. |
+| `e` | Pick its effort: the levels Codex lists for the profile's model, or Claude Code's five, or the agent's default. |
+| `⏎` | Open the profile's file in `$VISUAL` or `$EDITOR`. |
+| `d` | Remove `model` and `effort` from the profile, so the agent's defaults apply. |
+
+- A pick writes only `model` or `effort` in the profile's file, keeping its other lines and comments, and a value the profile would not load with writes nothing.
+- On a built-in profile, `task`, `reviewer` or `ops`, a pick writes `~/.config/kebbie/profiles/<name>.toml` with that key alone, and the built-in's role and rules stay. `d` removes that file again when nothing else is in it.
+- The `reviewer` row shows the model `kebbie review` runs: [`review.model`](configuration.md) when it is set, with its layer, ahead of the reviewer profile's own. `m` on it writes `review.model` in the tab's file, and its default removes the key; `e` sets the reviewer profile's effort.
+- A task already running keeps its model and effort; the next start takes the new ones.
+- Codex's list is read, never written. Without it, `m` offers Codex's default and a model you type.
 - A change to a key from a `team link` asks first: `t` changes the team's file for everyone who links it, `o` makes the link a file of this machine's own with the change.
 - `task.rules_skill` and `worktree.setup_skill` offer kebbie's skill, your skill by name, a Markdown file by path, or a copy of kebbie's skill in `~/.claude/skills/<name>` to edit, which the key then names.
 - `report.inbox_token` is never shown; set it in config.toml by hand.

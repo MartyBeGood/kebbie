@@ -274,6 +274,44 @@ fn sandbox_policy(value: &toml::Value, source: &str, policy: &mut Policy) -> Res
     Ok(())
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum Edited {
+    Wrote(PathBuf),
+    Removed(PathBuf),
+    Unchanged,
+}
+
+// Sets or removes keys in a profile's file and nothing else; a built-in profile's file that is left empty goes, and a change the parser refuses is never written.
+pub fn edit_in(dir: &Path, wanted: &str, changes: &[(&str, Option<&str>)]) -> Result<Edited> {
+    name(wanted)?;
+    let file = dir.join(format!("{wanted}.toml"));
+    let base = built_in(wanted);
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && base.is_some() => String::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(format!("No profile \"{wanted}\": {} is not there", file.display())),
+        Err(error) => return Err(format!("{}: {error}", file.display())),
+    };
+    let mut changed = text.clone();
+    for (key, value) in changes {
+        changed = match value {
+            Some(value) => crate::config_edit::set(&changed, key, &crate::config_edit::Set::Text(value.to_string())),
+            None => crate::config_edit::remove(&changed, key),
+        }.map_err(|error| format!("{}: {error}", file.display()))?;
+    }
+    if changed == text {
+        return Ok(Edited::Unchanged);
+    }
+    if base.is_some() && changed.trim().is_empty() {
+        std::fs::remove_file(&file).map_err(|error| format!("{}: {error}", file.display()))?;
+        return Ok(Edited::Removed(file));
+    }
+    parse(&changed, wanted, &file, base)?;
+    let target = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
+    crate::state::write(&target, changed)?;
+    Ok(Edited::Wrote(file))
+}
+
 pub fn list_in(dir: &Path) -> (Vec<Profile>, Vec<String>) {
     let mut names = vec![TASK.to_string(), REVIEWER.to_string(), OPS.to_string()];
     let mut files: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten()
@@ -561,6 +599,35 @@ mod tests {
         assert!(load_in(&dir, REVIEWER).unwrap_err().contains("agent: kebbie review runs Claude"), "the reviewer stays Claude");
         let ops = { std::fs::write(dir.join("ops.toml"), "agent = \"codex\"\n").unwrap(); load_in(&dir, OPS).unwrap() };
         assert_eq!(ops.agent, Agent::Codex, "a file may move a built-in profile to Codex; only its own keys are checked");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_edit_changes_only_its_key_keeping_every_comment_and_a_built_ins_file_goes_when_empty() {
+        let dir = folder("profile-edit", &[("coder.toml", "# Codex for building\nabout = \"Codex\" # short\nagent = \"codex\"\nmodel = \"gpt-5.5\" # was 5.1\n\n[sandbox]\nenabled = true\n")]);
+        let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+        assert_eq!(edit_in(&dir, "coder", &[("model", Some("gpt-6.1-sol"))]).unwrap(), Edited::Wrote(dir.join("coder.toml")));
+        assert_eq!(read("coder.toml"), "# Codex for building\nabout = \"Codex\" # short\nagent = \"codex\"\nmodel = \"gpt-6.1-sol\" # was 5.1\n\n[sandbox]\nenabled = true\n");
+        edit_in(&dir, "coder", &[("effort", Some("ultra"))]).unwrap();
+        assert_eq!(read("coder.toml"), "# Codex for building\nabout = \"Codex\" # short\nagent = \"codex\"\nmodel = \"gpt-6.1-sol\" # was 5.1\neffort = \"ultra\"\n\n[sandbox]\nenabled = true\n", "a new key joins the top of the file, before its tables");
+        assert_eq!(load_in(&dir, "coder").unwrap().effort.as_deref(), Some("ultra"));
+        let before = read("coder.toml");
+        assert!(edit_in(&dir, "coder", &[("effort", Some("huge"))]).unwrap_err().contains("effort: \"huge\" is not an effort level Codex takes"));
+        assert!(edit_in(&dir, "coder", &[("model", Some(""))]).unwrap_err().contains("model: must not be empty"));
+        assert_eq!(read("coder.toml"), before, "a value the parser refuses is never written");
+        assert_eq!(edit_in(&dir, "coder", &[("model", None), ("effort", None)]).unwrap(), Edited::Wrote(dir.join("coder.toml")));
+        assert_eq!(read("coder.toml"), "# Codex for building\nabout = \"Codex\" # short\nagent = \"codex\"\n\n[sandbox]\nenabled = true\n", "a file profile is kept without them");
+        assert_eq!(edit_in(&dir, "coder", &[("model", None)]).unwrap(), Edited::Unchanged);
+        assert_eq!(edit_in(&dir, TASK, &[("model", Some("sonnet"))]).unwrap(), Edited::Wrote(dir.join("task.toml")));
+        assert_eq!(read("task.toml"), "model = \"sonnet\"\n", "a built-in profile gets a file with that key alone");
+        assert_eq!(load_in(&dir, TASK).unwrap(), Profile { model: Some("sonnet".to_string()), file: Some(dir.join("task.toml")), ..built_in(TASK).unwrap() }, "the file adds to the built-in, its role and rules as they ship");
+        assert_eq!(edit_in(&dir, TASK, &[("model", None), ("effort", None)]).unwrap(), Edited::Removed(dir.join("task.toml")));
+        assert!(!dir.join("task.toml").exists());
+        std::fs::write(dir.join("ops.toml"), "# mine\nfor = \"the homelab\"\nmodel = \"opus\"\n").unwrap();
+        edit_in(&dir, OPS, &[("model", None), ("effort", None)]).unwrap();
+        assert_eq!(read("ops.toml"), "# mine\nfor = \"the homelab\"\n", "a file that holds something else stays");
+        assert!(edit_in(&dir, "missing", &[("model", Some("opus"))]).unwrap_err().contains("No profile \"missing\""));
+        assert!(!dir.join("missing.toml").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

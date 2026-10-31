@@ -548,6 +548,31 @@ pub fn model_in(config: &toml::Table) -> Option<String> {
     config.get("model").and_then(toml::Value::as_str).filter(|model| !model.trim().is_empty()).map(str::to_string)
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct CachedModel {
+    pub slug: String,
+    pub name: String,
+    pub listed: bool,
+    pub default_effort: Option<String>,
+    pub efforts: Vec<String>,
+}
+
+// The models Codex fetched for this login, in its models_cache.json, in the file's order; read, never written.
+pub fn cached_models(home: &Path) -> Option<Vec<CachedModel>> {
+    let cache: Value = serde_json::from_str(&std::fs::read_to_string(home.join("models_cache.json")).ok()?).ok()?;
+    let text = |value: &Value| value.as_str().map(str::trim).filter(|text| !text.is_empty()).map(str::to_string);
+    Some(cache["models"].as_array()?.iter().filter_map(|model| {
+        let slug = text(&model["slug"])?;
+        Some(CachedModel {
+            name: text(&model["display_name"]).unwrap_or_else(|| slug.clone()),
+            listed: model["visibility"] == "list",
+            default_effort: text(&model["default_reasoning_level"]),
+            efforts: model["supported_reasoning_levels"].as_array().into_iter().flatten().filter_map(|level| text(&level["effort"])).collect(),
+            slug,
+        })
+    }).collect())
+}
+
 // Codex's own record of the folders the user trusted, in its config.toml's [projects] table; read, never written.
 pub fn trusted_by_user(dir: &Path) -> bool {
     let config = home().and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok()).and_then(|text| text.parse::<toml::Table>().ok());
@@ -703,8 +728,32 @@ pub fn hooks_blocked(config: Option<&toml::Table>) -> Vec<String> {
 }
 
 #[cfg(test)]
+pub const CACHE_FIXTURE: &str = r#"{"fetched_at":"2026-10-30T08:00:00Z","etag":"W/\"1\"","client_version":"0.163.0","models":[
+{"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol","description":"Frontier","default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low","description":"Fast"},{"effort":"medium","description":"Balanced"},{"effort":"high","description":"Deep"},{"effort":"xhigh","description":"Deeper"},{"effort":"max","description":"Most"},{"effort":"ultra","description":"Agents"}],"visibility":"list","priority":1},
+{"slug":"gpt-6-astra","display_name":"GPT-6-Astra","default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low","description":""},{"effort":"medium","description":""},{"effort":"high","description":""}],"visibility":"list","priority":2},
+{"slug":"gpt-5.1-codex-max","display_name":"gpt-5.1-codex-max","default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"medium","description":""}],"visibility":"hide","priority":9},
+{"slug":"gpt-6.1-terra","display_name":"GPT-6.1 Terra","default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"medium","description":""},{"effort":"high","description":""}],"visibility":"list","priority":3}
+]}"#;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codexs_model_cache_lists_its_picker_models_in_the_files_order_with_their_efforts() {
+        let home = crate::sh::test_dir("codex-models-cache");
+        assert_eq!(cached_models(&home), None, "no cache, no list");
+        std::fs::write(home.join("models_cache.json"), "{\"models\": [").unwrap();
+        assert_eq!(cached_models(&home), None, "a cache that does not parse is no list");
+        std::fs::write(home.join("models_cache.json"), super::CACHE_FIXTURE).unwrap();
+        let models = cached_models(&home).unwrap();
+        let listed: Vec<(&str, &str)> = models.iter().filter(|model| model.listed).map(|model| (model.slug.as_str(), model.name.as_str())).collect();
+        assert_eq!(listed, [("gpt-6.1-sol", "GPT-6.1-Sol"), ("gpt-6-astra", "GPT-6-Astra"), ("gpt-6.1-terra", "GPT-6.1 Terra")]);
+        assert_eq!(models[0].efforts, ["low", "medium", "high", "xhigh", "max", "ultra"]);
+        assert_eq!(models[0].default_effort.as_deref(), Some("low"));
+        assert!(models.iter().any(|model| model.slug == "gpt-5.1-codex-max" && !model.listed), "a hidden model is known, never listed");
+        std::fs::remove_dir_all(home).unwrap();
+    }
 
     fn profile(model: Option<&str>, effort: Option<&str>) -> Profile {
         Profile { agent: super::super::Agent::Codex, model: model.map(str::to_string), effort: effort.map(str::to_string), ..crate::profiles::built_in(crate::profiles::TASK).unwrap() }

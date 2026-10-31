@@ -509,8 +509,16 @@ impl App {
                     _ => {}
                 }
             }
-            if let settings_page::Effect::Left = self.settings.handle(key) {
-                self.page = Page::Work;
+            match self.settings.handle(key) {
+                settings_page::Effect::Left => self.page = Page::Work,
+                settings_page::Effect::Open(file) => match terminal {
+                    Some(terminal) => {
+                        let status = crate::board::terminal::outside(terminal, || settings_page::open_in_editor(&file));
+                        self.settings.opened(&file, status);
+                    }
+                    None => self.settings.opened(&file, Err("no terminal to open it in".to_string())),
+                },
+                settings_page::Effect::Handled => {}
             }
             return;
         }
@@ -1339,7 +1347,7 @@ mod tests {
         let dir = crate::sh::test_dir("board-settings");
         std::fs::write(dir.join("config.toml"), "[task]\nsandbox = false\n").unwrap();
         let mut app = test_app(vec![crate::status::tests::task(Some("idle"), None, 0)]);
-        app.settings = settings_page::Page::new(settings_page::Paths { machine: dir.join("config.toml"), repos_dir: dir.join("repos"), claude_home: dir.join("claude"), kebbie: dir.join("kebbie") }, None);
+        app.settings = settings_page::Page::new(settings_page::Paths { machine: dir.join("config.toml"), repos_dir: dir.join("repos"), claude_home: dir.join("claude"), kebbie: dir.join("kebbie"), profiles: dir.join("profiles"), codex_home: dir.join("codex") }, None);
         press(&mut app, key(KeyCode::Char(',')));
         assert_eq!(app.page, Page::Settings);
         let (rows, _) = render(&mut app, 140, 40);

@@ -347,6 +347,12 @@ pub(crate) fn transcripts_dir(claude_home: &Path, folder: &Path) -> PathBuf {
     claude_home.join("projects").join(name)
 }
 
+// The model Claude Code runs when kebbie passes no --model: its settings.json's own, read, never written.
+pub fn configured_model(home: &Path) -> Option<String> {
+    let settings: Value = serde_json::from_str(&std::fs::read_to_string(home.join("settings.json")).ok()?).ok()?;
+    settings["model"].as_str().map(str::trim).filter(|model| !model.is_empty()).map(str::to_string)
+}
+
 pub fn home() -> Option<PathBuf> {
     std::env::var("CLAUDE_CONFIG_DIR").map(PathBuf::from).ok().or_else(|| std::env::var("HOME").ok().map(|home| Path::new(&home).join(".claude")))
 }
@@ -510,6 +516,17 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn claudes_own_model_comes_from_its_settings_json() {
+        let home = crate::sh::test_dir("claude-configured-model");
+        assert_eq!(configured_model(&home), None);
+        std::fs::write(home.join("settings.json"), "{\"model\": \"opus\", \"theme\": \"dark\"}").unwrap();
+        assert_eq!(configured_model(&home).as_deref(), Some("opus"));
+        std::fs::write(home.join("settings.json"), "{\"model\": \" \"}").unwrap();
+        assert_eq!(configured_model(&home), None);
+        std::fs::remove_dir_all(home).unwrap();
+    }
 
     #[test]
     fn ending_a_claude_sends_escape_then_ctrl_c_only_until_the_shell_is_back() {
