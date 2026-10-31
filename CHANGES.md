@@ -8,6 +8,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 - kebbie doctor and the setup guide's Agents step say whether Claude Code and Codex are logged in, from claude auth status and codex login status, with claude auth login or codex login as the fix; an agent that gives no answer reads as login not checked
 
 ### Fixed
+- A full review gives its verdict only when kebbie review or the keeper started its reviewer, with the nonce the rules check already carries, and a review a task's report or test run asks for again waits for the keeper to start it from its own environment
 - kebbie setup codex, the fix kebbie doctor names for kebbie's Codex plugin, now writes the plugin at once and says in one line what it wrote, where it opened the whole setup guide
 - The setup guide's Agents step shows an out-of-date or disabled kebbie plugin in Claude Code or Codex as to update, with kebbie doctor's reason, where it called the plugin in place while doctor said it was out of date
 - kebbie update and kebbie setup --yes bring an installed Codex plugin up to date with the new kebbie, so an update that changes its hooks no longer stops Codex tasks until you run kebbie setup codex; a machine without the plugin gets none

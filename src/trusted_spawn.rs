@@ -35,7 +35,16 @@ pub fn command(kebbie: &Path, cwd: &Path, args: &[&str], env: &[(String, String)
     command
 }
 
-pub fn launch(mut command: Command, log: &Path, run_file: &Path, tail: &str) -> Result<u32> {
+pub fn launch(command: Command, log: &Path, run_file: &Path, tail: &str) -> Result<u32> {
+    launch_by(command, log, run_file, tail, spawn)
+}
+
+// For a child the user's or the lead's own command starts and waits for nobody: it runs in tests too.
+pub fn launch_now(command: Command, log: &Path, run_file: &Path, tail: &str) -> Result<u32> {
+    launch_by(command, log, run_file, tail, spawn_now)
+}
+
+fn launch_by(mut command: Command, log: &Path, run_file: &Path, tail: &str, spawn: fn(Command, &str) -> Result<u32>) -> Result<u32> {
     let output = crate::state::create(log).map_err(|error| format!("{}: {error}", log.display()))?;
     let errors = output.try_clone().map_err(|error| error.to_string())?;
     command.stdout(output).stderr(errors);
@@ -69,9 +78,13 @@ pub fn trusted(caller: &Caller, presented: &str, recorded: Option<&str>) -> bool
     !matches!(caller, Caller::Task(_) | Caller::Sandboxed | Caller::LeadSandboxed) && !presented.trim().is_empty() && recorded.and_then(|record| record.lines().next()).is_some_and(|hash| hash.trim() == digest(presented))
 }
 
-// The nonce goes over stdin, which no other process can read.
 #[cfg(not(test))]
-fn spawn(mut command: Command, nonce: &str) -> Result<u32> {
+fn spawn(command: Command, nonce: &str) -> Result<u32> {
+    spawn_now(command, nonce)
+}
+
+// The nonce goes over stdin, which no other process can read.
+fn spawn_now(mut command: Command, nonce: &str) -> Result<u32> {
     use std::io::Write;
     let program = command.get_args().map(|arg| arg.to_string_lossy().to_string()).collect::<Vec<_>>().join(" ");
     let mut child = command.spawn().map_err(|error| format!("kebbie {program}: {error}"))?;

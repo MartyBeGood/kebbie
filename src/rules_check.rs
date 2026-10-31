@@ -180,7 +180,7 @@ fn tick_with(state: &Path, env: &[(String, String)]) -> Vec<String> {
 }
 
 // The folder a ready report named is read again by kebbie, so only that task's own worktree is checked.
-fn worktree_is(path: &Path, address: &str) -> bool {
+pub(crate) fn worktree_is(path: &Path, address: &str) -> bool {
     main_checkout(path).ok().and_then(|repo| tasks::find_task(&repo, None, path).ok().map(|slot| peers::address(tasks::task_of(&slot), &name_of(&repo)))).as_deref() == Some(address)
 }
 

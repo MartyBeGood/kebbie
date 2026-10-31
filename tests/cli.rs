@@ -441,6 +441,8 @@ fn a_task_reports_asks_and_messages_through_the_log_and_the_fake_herdr_sees_only
     assert!(lab.state.join("rules/billing@app.wanted").exists(), "the report only asks; the keeper starts the reviewer");
     let forged = lab.command().env("PATH", format!("{}:{}", task_bin.display(), lab.path())).args(["-C", slot_str, "review", "--run", "--rules"]).output().unwrap();
     assert!(!forged.status.success() && stderr(&forged).contains("approves nothing"), "a reviewer the task starts with a fake claude on its PATH: {}", stderr(&forged));
+    let forged_review = lab.command().env("PATH", format!("{}:{}", task_bin.display(), lab.path())).args(["-C", slot_str, "review", "--run"]).output().unwrap();
+    assert!(!forged_review.status.success() && stderr(&forged_review).contains("gives no verdict"), "a full review the task starts itself: {}", stderr(&forged_review));
     assert!(!lab.root.join("reviewer.args").exists(), "the fake claude never ran");
     let reported = lab.run_with_stdin(&["hook"], &format!(r#"{{"hook_event_name":"Stop","cwd":"{slot_str}","stop_hook_active":false}}"#));
     assert_eq!(stdout(&reported), "", "a turn with a report stops freely");

@@ -31,6 +31,10 @@ fn log_file(state: &Path, address: &str) -> PathBuf {
     dir(state).join(format!("{address}.log"))
 }
 
+fn marked(state: &Path, address: &str, kind: &str) -> PathBuf {
+    dir(state).join(format!("{address}.{kind}"))
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Verdict {
     pub ok: bool,
@@ -106,7 +110,7 @@ pub fn shown(address: &str, path: &Path, upstream: &str) -> Option<Shown> {
 pub fn shown_in(state: &Path, address: &str, current: impl Fn(&str) -> bool) -> Option<Shown> {
     let file = verdict_file(state, address);
     let verdict = fs::read_to_string(&file).ok().and_then(|text| parse_verdict(&text));
-    let running = running_in(state, address);
+    let running = running_in(state, address) || marked(state, address, "wanted").exists();
     if verdict.is_none() && !running {
         return None;
     }
@@ -158,7 +162,7 @@ fn again(cwd: &Path, stale_too: bool) -> Result<Option<String>> {
     if !review_again(shown.as_ref(), tests) {
         return Ok(None);
     }
-    request(cwd, None).map(Some)
+    want(&state_dir()?, &address, &slot.path).map(|_| Some(format!("{address} goes back to the reviewer")))
 }
 
 pub fn again_if_stale(cwd: &Path) -> Result<Option<String>> {
@@ -206,7 +210,7 @@ pub fn forget_in(state: &Path, address: &str) {
     if let Some(pid) = running_pid(state, address) {
         stop_group(&pid);
     }
-    for file in [verdict_file(state, address), running_file(state, address), log_file(state, address)] {
+    for file in [verdict_file(state, address), running_file(state, address), log_file(state, address), marked(state, address, "wanted"), marked(state, address, "run")] {
         let _ = fs::remove_file(file);
     }
 }
@@ -269,22 +273,69 @@ fn start_reviewer(state: &Path, address: &str, kebbie: &Path, worktree: &Path) -
         return crate::notice::Notice::new(crate::notice::Tone::NotNow, "A review is already running").next("The lead hears its verdict when it is in.").detail("task", address).err();
     }
     let log = log_file(state, address);
-    let output = crate::state::create(&log).map_err(|error| format!("{}: {error}", log.display()))?;
-    let errors = output.try_clone().map_err(|error| error.to_string())?;
-    let child = Command::new(kebbie).arg("-C").arg(worktree).args(["review", "--run"])
-        .stdin(Stdio::null()).stdout(output).stderr(errors).process_group(0)
-        .spawn().map_err(|error| format!("kebbie review: {error}"))?;
-    let pid = crate::sh::reap(child);
+    let mut command = Command::new(kebbie);
+    command.arg("-C").arg(worktree).args(["review", "--run"]).stdin(Stdio::piped()).process_group(0);
+    let pid = crate::trusted_spawn::launch_now(command, &log, &marked(state, address, "run"), "")?;
     crate::state::write(&running_file(state, address), pid.to_string())?;
     Ok(log)
 }
 
+// A task asks from its own process, so the keeper starts the reviewer from its own environment; the task waits in review meanwhile.
+pub fn want(state: &Path, address: &str, worktree: &Path) -> Result<()> {
+    crate::state::write(&marked(state, address, "wanted"), format!("{}\n", worktree.display()))
+}
+
+pub fn tick(state: &Path) -> Vec<String> {
+    tick_with(state, &crate::trusted_spawn::reviewer_env(std::env::vars()))
+}
+
+fn tick_with(state: &Path, env: &[(String, String)]) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir(state)) else { return Vec::new() };
+    let wanted: Vec<String> = entries.flatten().filter_map(|entry| entry.file_name().to_string_lossy().strip_suffix(".wanted").map(str::to_string)).collect();
+    let mut notes = Vec::new();
+    for address in wanted {
+        if running_in(state, &address) {
+            let _ = fs::remove_file(marked(state, &address, "wanted"));
+            continue;
+        }
+        let worktree = fs::read_to_string(marked(state, &address, "wanted")).ok().map(|text| PathBuf::from(text.trim()));
+        let Some(worktree) = worktree.filter(|path| crate::rules_check::worktree_is(path, &address)) else {
+            let _ = fs::remove_file(marked(state, &address, "wanted"));
+            continue;
+        };
+        match begin(state, &address, &worktree, env) {
+            Ok(()) => notes.push(format!("review: started the reviewer for {address}")),
+            Err(error) => {
+                if let Err(told) = messages::to_lead(messages::ToLead::Findings, &format!("{address} asked for its reviewer, but it could not start: {error}. Send it again with kebbie review once that is fixed.")) {
+                    eprintln!("Could not tell the lead: {told}");
+                }
+                notes.push(format!("review: {address}: {error}"));
+            }
+        }
+        let _ = fs::remove_file(marked(state, &address, "wanted"));
+    }
+    notes
+}
+
+fn begin(state: &Path, address: &str, worktree: &Path, env: &[(String, String)]) -> Result<()> {
+    let claude = crate::trusted_spawn::claude_path(env).ok_or("kebbie found no claude on the keeper's PATH")?;
+    let command = crate::trusted_spawn::command(&peers::own_exe()?, worktree, &["-C", &worktree.to_string_lossy(), "review", "--run"], env, &claude);
+    let pid = crate::trusted_spawn::launch(command, &log_file(state, address), &marked(state, address, "run"), "")?;
+    crate::state::write(&running_file(state, address), pid.to_string())
+}
+
 // The background half: runs the reviewer, saves its verdict and tells the lead, also when it fails.
 pub fn run(cwd: &Path) -> Result<String> {
+    let presented = crate::trusted_spawn::presented();
     let repo = main_checkout(cwd)?;
     let slot = tasks::find_task(&repo, None, cwd)?;
     let address = peers::address(tasks::task_of(&slot), &name_of(&repo));
     let state = state_dir()?;
+    let record = fs::read_to_string(marked(&state, &address, "run")).ok();
+    let _ = fs::remove_file(marked(&state, &address, "run"));
+    if !crate::trusted_spawn::trusted(&crate::permit::caller(), &presented, record.as_deref()) {
+        return Err(format!("This review of {address} was not started by kebbie review or the keeper, so it gives no verdict."));
+    }
     let marker = running_file(&state, &address);
     crate::state::write(&marker, std::process::id().to_string())?;
     let result = review(&repo, &slot, &address, &state);
@@ -595,6 +646,32 @@ fn scope(also_noticed: config::AlsoNoticed) -> String {
 mod tests {
     use super::*;
     use crate::agent::claude::{reviewer_args as claude_args, reviewer_settings as guard_settings, user_messages};
+
+    #[test]
+    fn the_keeper_starts_a_wanted_review_from_its_own_environment_and_drops_one_for_another_folder() {
+        use crate::tasks::test_support::*;
+        use crate::trusted_spawn::{REVIEWER_BIN, SPAWNED, digest};
+        let (dir, origin, slot, _) = task_with_a_commit("billing");
+        let state = state_of(&dir);
+        let address = peers::address("billing", &name_of(&dir));
+        want(&state, &address, &slot.path).unwrap();
+        assert!(shown_in(&state, &address, |_| true).is_some_and(|shown| shown.running && shown.pending()), "the task waits in review, its push held, before the reviewer starts");
+        assert!(gate(shown_in(&state, &address, |_| true).as_ref(), |_| true).is_err());
+        SPAWNED.with(|all| all.borrow_mut().clear());
+        let env = [("KEBBIE_CLAUDE_BIN".to_string(), "/opt/claude/bin/claude".to_string()), ("HOME".to_string(), "/home/ada".to_string())];
+        assert_eq!(tick_with(&state, &env).len(), 1);
+        let spawned = SPAWNED.with(|all| all.borrow_mut().drain(..).collect::<Vec<_>>());
+        assert_eq!(spawned.len(), 1);
+        assert!(spawned[0].args.ends_with(&["review".to_string(), "--run".to_string()]), "a full review, not the rules check: {:?}", spawned[0].args);
+        assert!(spawned[0].env.contains(&(REVIEWER_BIN.to_string(), "/opt/claude/bin/claude".to_string())) && !spawned[0].env.iter().any(|(name, _)| name == "KEBBIE_ADDRESS"), "{:?}", spawned[0].env);
+        let record = fs::read_to_string(marked(&state, &address, "run")).unwrap();
+        assert!(record.starts_with(&digest(&spawned[0].nonce)) && !record.contains(&spawned[0].nonce), "the record keeps only the nonce's hash");
+        assert!(!marked(&state, &address, "wanted").exists() && running_file(&state, &address).exists());
+        want(&state, "billing@elsewhere", &slot.path).unwrap();
+        assert!(tick_with(&state, &env).is_empty() && !marked(&state, "billing@elsewhere", "wanted").exists(), "a request naming another task's folder starts nothing");
+        forget_in(&state, &address);
+        cleanup(dir, origin, &slot);
+    }
 
     #[test]
     fn the_reviewer_has_only_reading_tools_and_git_log_diff_show_on_the_shell() {

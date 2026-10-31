@@ -56,6 +56,8 @@ The folder is `0700` and its files `0600`. Each file is replaced whole on write.
 | --- | --- |
 | `reviews/` | Review split marks. |
 | `verdicts/<task>@<repo>.md` | The reviewer's latest verdict for a task. See [The verdict file](#the-verdict-file). |
+| `verdicts/<task>@<repo>.wanted` | A review asked for from the task's own process, until the keeper starts the reviewer. |
+| `verdicts/<task>@<repo>.run` | The hash of the nonce handed to the reviewer that runs. |
 | `approved/` | The rules approvals: the reviewer's pass or `kebbie approve`. |
 | `rules/` | The reviewer's rules checks, per `<task>@<repo>`, by extension below. |
 

@@ -41,7 +41,13 @@ The same process-tree check decides who may:
 
 A ready report only asks for the check. The keeper, or the board while the keeper is off, starts the rules reviewer from its own environment, never the task's, with claude by an absolute path kebbie resolves. It hands the reviewer a nonce on stdin; kebbie's state holds only the nonce's hash.
 
-A reviewer without that nonce, or with a task in its process chain, approves nothing. With the sandbox off, a task's shell can read and write kebbie's state, and the limits named under [Where it ends](#where-it-ends) for a sandbox-off task apply.
+A reviewer without that nonce, or with a task in its process chain, approves nothing.
+
+## A task cannot pass its own review
+
+A full review holds a task's push, so its reviewer is held to the same nonce. `kebbie review`, yours or the lead's, hands the reviewer one; a review a task's own report or test run asks for again only waits as wanted, until the keeper starts the reviewer from its own environment. A review without the nonce, or with a task in its process chain, gives no verdict.
+
+With the sandbox off, a task's shell can read and write kebbie's state, and the limits named under [Where it ends](#where-it-ends) for a sandbox-off task apply.
 
 ## Only kebbie's recheck closes a kebbie issue
 
