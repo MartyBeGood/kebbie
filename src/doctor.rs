@@ -355,6 +355,17 @@ pub fn task_profiles(profiles_dir: &Path, named: &[(String, String)]) -> Option<
     Some(warn("task profile", format!("{}; the profiles are {}", missing.join("; "), names.join(", ")), one("pick it on the Settings page (,) under Tasks")))
 }
 
+const CLAUDE_ALIASES: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
+
+// A Claude profile that pins a full model id stays on it after Claude Code moves on; an alias follows each new model.
+pub fn claude_models(profiles: &[crate::profiles::Profile]) -> Vec<Check> {
+    profiles.iter().filter(|profile| profile.agent == crate::agent::Agent::Claude && profile.file.is_some()).filter_map(|profile| {
+        let model = profile.model.as_deref()?;
+        let base = model.split('[').next().unwrap_or(model);
+        (!CLAUDE_ALIASES.contains(&base)).then(|| warn("claude model", format!("profile {} pins {model}, a full model id, so its tasks stay on that model; an alias ({}) follows Claude Code to each new one", profile.name, CLAUDE_ALIASES.join(", ")), one("pick one with m on the Settings page")))
+    }).collect()
+}
+
 pub(crate) fn named_profiles(machine: Option<&Machine>, config: &Path, repos_dir: &Path) -> Vec<(String, String)> {
     let mut named: Vec<(String, String)> = machine.and_then(|machine| machine.worktree.profile.clone()).map(|profile| (crate::area_page::home_relative(config), profile)).into_iter().collect();
     let mut files: Vec<PathBuf> = std::fs::read_dir(repos_dir).into_iter().flatten().flatten().map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|extension| extension == "toml")).collect();
@@ -803,6 +814,7 @@ pub fn checks(env: &Env) -> Vec<Check> {
     let (repo_checks, own) = repo_files(&env.repos_dir, env.repo_config.as_deref());
     checks.extend(repo_checks);
     checks.extend(task_profiles(&env.profiles_dir, &named_profiles(machine.as_ref(), &env.config, &env.repos_dir)));
+    checks.extend(claude_models(&crate::profiles::list_in(&env.profiles_dir).0));
     checks.extend(env.repo.as_deref().map(push_block));
     let repos = known_repos();
     checks.push(kelpie_leftovers(&crate::push_block::kelpie_era_worktrees(&repos), &sessions_with_gone_hooks(&env.kebbie_state.join("roles"), &open_addresses(&repos))));
@@ -1515,6 +1527,10 @@ mod tests {
         assert!(task_profiles(&profiles, &[("config.toml".to_string(), "reviewer".to_string())]).unwrap().level == Level::Warn, "the reviewer is never a task's profile");
         assert_eq!(task_profiles(&profiles, &named[..1]).unwrap().level, Level::Ok);
         assert_eq!(task_profiles(&profiles, &[]), None, "nothing to say when no file sets it");
+        let claude = |name: &str, model: &str| crate::profiles::Profile { name: name.to_string(), model: Some(model.to_string()), file: Some(PathBuf::from(format!("/p/{name}.toml"))), ..crate::profiles::built_in(crate::profiles::TASK).unwrap() };
+        let pinned = claude_models(&[claude("designer", "claude-opus-4-5-20251101"), claude("writer", "sonnet"), claude("long", "opus[1m]"), crate::profiles::Profile { agent: crate::agent::Agent::Codex, ..claude("coder", "gpt-6.1-sol") }]);
+        assert_eq!(pinned.len(), 1, "an alias, an alias with its context suffix and a Codex model are fine: {pinned:?}");
+        assert_eq!((pinned[0].level, pinned[0].fact.as_str(), pinned[0].fix[0].as_str()), (Level::Warn, "profile designer pins claude-opus-4-5-20251101, a full model id, so its tasks stay on that model; an alias (opus, sonnet, haiku, fable) follows Claude Code to each new one", "pick one with m on the Settings page"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
