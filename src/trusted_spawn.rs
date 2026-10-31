@@ -106,6 +106,8 @@ impl Ask {
     }
 }
 
+const STARTING: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl Queue {
     pub fn file(&self, state: &Path, address: &str, kind: &str) -> PathBuf {
         (self.dir)(state).join(format!("{address}.{kind}"))
@@ -140,6 +142,15 @@ impl Queue {
     pub fn pid(&self, state: &Path, address: &str) -> Option<String> {
         let pid = self.read(state, address, "running")?.pid?.to_string();
         crate::sh::run("ps", &["-p", &pid, "-o", "args="], None).ok().filter(|args| (self.is_ours)(args)).map(|_| pid)
+    }
+
+    // A marker whose child is gone, or that never got its pid within a minute of the start.
+    pub fn dead(&self, state: &Path) -> Vec<(String, Ask)> {
+        self.addresses(state, "running").into_iter().filter_map(|address| {
+            let ask = self.read(state, &address, "running")?;
+            let starting = ask.pid.is_none() && fs::metadata(self.file(state, &address, "running")).and_then(|meta| meta.modified()).ok().and_then(|at| at.elapsed().ok()).is_some_and(|age| age < STARTING);
+            (!starting && self.pid(state, &address).is_none()).then_some((address, ask))
+        }).collect()
     }
 
     pub fn done(&self, state: &Path, address: &str) {
@@ -278,9 +289,12 @@ mod tests {
         let nonce = begin();
         assert_eq!(QUEUED.take(&state, "billing@app", &nonce, &Caller::User).as_deref(), Some("require"), "the child reads what the keeper recorded, not the marker beside it");
         assert_eq!(QUEUED.take(&state, "billing@app", &nonce, &Caller::User), None, "a record is taken once");
-        assert_eq!(QUEUED.pid(&state, "billing@app"), None, "its pid is no child of this queue");
+        assert_eq!(QUEUED.dead(&state).iter().map(|(address, _)| address.as_str()).collect::<Vec<_>>(), ["billing@app"], "its pid is no child of this queue");
+        QUEUED.write(&state, "fresh@app", "running", &Ask::default()).unwrap();
+        assert!(!QUEUED.dead(&state).iter().any(|(address, _)| address == "fresh@app"), "a child just starting has no pid yet");
         QUEUED.forget(&state, "billing@app");
-        assert!(QUEUED.asked(&state, "billing@app").is_none());
+        QUEUED.forget(&state, "fresh@app");
+        assert!(QUEUED.dead(&state).is_empty() && QUEUED.asked(&state, "billing@app").is_none());
         fs::remove_dir_all(state).unwrap();
     }
 

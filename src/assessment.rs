@@ -241,14 +241,20 @@ pub fn tick(state: &Path) -> Vec<String> {
     tick_with(state, &trusted_spawn::reviewer_env(std::env::vars()))
 }
 
+// An assessor that died settles as not assessed, so under require its task's push is not held for good.
 fn tick_with(state: &Path, env: &[(String, String)]) -> Vec<String> {
-    QUEUE.tick(state, env, |address| marked(state, address, "log")).into_iter().map(|(address, ask, started)| match started {
+    let mut notes: Vec<String> = QUEUE.dead(state).into_iter().map(|(address, ask)| {
+        settle(state, &address, &ask.worktree, mode_of(&ask.payload), None);
+        format!("review: {address}: the assessor stopped without an answer")
+    }).collect();
+    notes.extend(QUEUE.tick(state, env, |address| marked(state, address, "log")).into_iter().map(|(address, ask, started)| match started {
         Ok(()) => format!("review: assessing whether {address} needs a review"),
         Err(error) => {
             settle(state, &address, &ask.worktree, mode_of(&ask.payload), None);
             format!("review: {address}: the assessor could not start ({error})")
         }
-    }).collect()
+    }));
+    notes
 }
 
 // The background half, `kebbie review --assess`: only the keeper's own start with its nonce settles anything.
@@ -401,6 +407,8 @@ mod tests {
         assert!(spawned.len() == 1 && spawned[0].args.ends_with(&["review".to_string(), "--assess".to_string()]), "{:?}", spawned.iter().map(|one| &one.args).collect::<Vec<_>>());
         assert!(std::fs::read_to_string(marked(&state, &address, "run")).unwrap().starts_with(&digest(&spawned[0].nonce)));
         assert!(holds_push(&state, &address).is_some(), "the running assessment keeps its mode");
+        assert_eq!(tick_with(&state, &env), [format!("review: {address}: the assessor stopped without an answer")], "the test's own pid is no assessor");
+        assert!(holds_push(&state, &address).is_none() && word_in(&state, &address) == Some(Word::NotAssessed), "an assessor that died holds no push and reads as not assessed");
         forget_in(&state, &address);
         assert!(ask(&state, &address, &slot.path, ReviewAuto::Suggest).unwrap() && holds_push(&state, &address).is_none(), "suggest never holds the push");
         crate::review::want(&state, &address, &slot.path).unwrap();
