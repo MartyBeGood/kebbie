@@ -140,7 +140,7 @@ A [hub](../how-to/see-your-board-on-your-phone.md) you join is a relay, not a pa
 - The machine pins that key when you connect it from its link. The browser commits to the key with a secret the link carries past the hub, and the machine pins it only when the commitment matches, so a hub cannot slip in a key of its own.
 ## The board holds no local detail
 
-- The board holds what the protocol lists: task and repo names, summaries, questions and their options, git and CI state, and a task's step titles with their state and commit. Never a local path, a pane, a Space, a host name, a dev server address or a commit's message.
+- The board holds what the protocol lists: task and repo names and titles, summaries, questions and an agent's prompt with its options and the command it asks to run, each task's agent, model, profile and recipe, the review's assessment and verdict, Next and the queued and parked tasks, routines, git and CI state, and a task's step titles with their state and commit. Paths in a prompt go out relative to the task, with your home as `~`. Never a local path, a pane, a Space, a host name, a dev server address or a commit's message.
 - The phone only reads: kebbie applies no command from the hub, so nothing the hub or a phone sends starts, answers or pushes anything on the machine.
 
 ## What the hub does see

@@ -88,6 +88,13 @@ pub fn answer_in_space(agent: crate::agent::Agent) -> String {
 
 const IN_SPACE: &str = " in its Space or through the lead";
 
+// The board's own texts name its keys; what goes to the phone, which has none, says what waits instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    Board,
+    Phone,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Queued {
     pub after: Vec<(String, String)>,
@@ -222,8 +229,16 @@ impl Item {
         self.git.as_ref().is_some_and(|git| git.ahead > 0) && self.verdict.as_ref().is_some_and(|shown| shown.held && shown.pending())
     }
 
-    // A pushed task's review is of code already out, so CI running shows none; nothing is left on the branch for it to match.
     pub fn review_note(&self) -> Option<String> {
+        self.review_note_on(Surface::Board)
+    }
+
+    // A pushed task's review is of code already out, so CI running shows none; nothing is left on the branch for it to match.
+    pub fn review_note_on(&self, surface: Surface) -> Option<String> {
+        let withdraw = match surface {
+            Surface::Board => "withdraw with v to push without a pass",
+            Surface::Phone => "the push waits for a pass",
+        };
         if matches!(self.phase(), Some(Phase::CiRunning { .. })) {
             return None;
         }
@@ -235,8 +250,8 @@ impl Item {
             Some(_) if shown.stale => "review stale".to_string(),
             Some(verdict) if verdict.ok => "reviewed".to_string(),
             Some(verdict) if self.turn_under_way() || !shown.held => format!("review: {}", verdict.summary()),
-            Some(verdict) => format!("review: {} · withdraw with v to push without a pass", verdict.summary()),
-            None if shown.held => "review gave no verdict · withdraw with v to push without a pass".to_string(),
+            Some(verdict) => format!("review: {} · {withdraw}", verdict.summary()),
+            None if shown.held => format!("review gave no verdict · {withdraw}"),
             None => return None,
         })
     }
@@ -513,13 +528,17 @@ impl Item {
     }
 
     pub fn summary(&self) -> String {
+        self.summary_on(Surface::Board)
+    }
+
+    pub fn summary_on(&self, surface: Surface) -> String {
         if let Some(note) = self.queued_note() {
             return note;
         }
         let Some(git) = &self.git else {
             return format!("{} session outside a task worktree", self.agent.as_ref().map_or("Agent", |agent| agent.kind.name()));
         };
-        let work = self.work(git);
+        let work = self.work(git, surface);
         match (&self.workspace, &self.agent) {
             (None, None) => format!("no Space · {work}"),
             (Some(_), None) => format!("no agent · {work}"),
@@ -527,7 +546,7 @@ impl Item {
         }
     }
 
-    fn work(&self, git: &Git) -> String {
+    fn work(&self, git: &Git, surface: Surface) -> String {
         if let (Group::ReadyToPush, Some(note)) = (self.group(), self.push_note()) {
             return if git.ahead == 0 { note } else { format!("{} · {note}", plural(git.ahead, "commit")) };
         }
@@ -535,7 +554,7 @@ impl Item {
             return format!("{} · {STAGED}", plural(git.ahead, "commit"));
         }
         if self.group() == Group::ReadyToPush {
-            let review: String = self.rules_note().into_iter().chain(self.review_note()).chain(self.unrecorded.clone()).map(|note| format!(" · {note}")).collect();
+            let review: String = self.rules_note().into_iter().chain(self.review_note_on(surface)).chain(self.unrecorded.clone()).map(|note| format!(" · {note}")).collect();
             let behind = if git.behind > 0 { format!(" · {} behind {}", git.behind, git.upstream.trim_start_matches("origin/")) } else { String::new() };
             let turn = if self.turn_under_way() { format!(" · its {} is taking a turn", self.agent_name()) } else { String::new() };
             let dirty = if git.uncommitted > 0 { format!(" · {}", plural(git.uncommitted, "uncommitted file")) } else { String::new() };
@@ -558,7 +577,7 @@ impl Item {
             parts.push(format!("{} behind {}", git.behind, git.upstream.trim_start_matches("origin/")));
         }
         parts.extend(self.rules_note());
-        parts.extend(self.review_note());
+        parts.extend(self.review_note_on(surface));
         parts.extend(self.unrecorded.clone());
         if parts.is_empty() { "nothing yet".to_string() } else { parts.join(" · ") }
     }

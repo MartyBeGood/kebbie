@@ -148,7 +148,7 @@ fn before_dot(text: &str) -> String {
     text.split(" · ").next().unwrap_or(text).to_string()
 }
 
-fn waits_wide(waits: &[String]) -> Option<String> {
+pub fn waits_wide(waits: &[String]) -> Option<String> {
     match waits {
         [] => None,
         [one] => Some(format!("{one} waits on it")),

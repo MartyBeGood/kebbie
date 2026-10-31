@@ -54,7 +54,7 @@ fn now() -> u64 {
 }
 
 fn board_of(items: &[crate::status::Item]) -> Board {
-    build(items, &[], Vec::new(), None)
+    build(items, &[], Vec::new(), None, &super::board::Seen::default())
 }
 
 #[test]

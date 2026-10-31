@@ -42,7 +42,7 @@ fn row(line: &str, focus: char) -> Row {
 }
 
 // tab opens the notes of a Codex question's option, so it is no key that chooses one.
-fn key_of(label: &str, agent: Agent) -> Option<&str> {
+pub fn key_of(label: &str, agent: Agent) -> Option<&str> {
     let inner = label.strip_suffix(')')?.rsplit_once(" (")?.1;
     (agent.screens().keyed && !inner.is_empty() && inner != "tab" && inner.len() <= 5 && inner.chars().all(|character| character.is_ascii_alphanumeric() || character == '-')).then_some(inner)
 }

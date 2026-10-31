@@ -78,7 +78,15 @@ Change `[machine] name`, or press `n` in the board's `H` window. The keeper rena
 
 The phone shows the board of every machine your account connected. Nothing is added on the machine: any phone or browser you sign in on reads the boards.
 
-A task that works in [steps](work-in-steps.md) lists them under its row as on the board: the pushed ones as a count, then each step with its number, title and state, planned, in progress, committed or accepted. The row says how many commits wait for your accept and which one is next, and the top of the board counts them across tasks as `◆ N to accept`. You accept on the machine, with `kebbie accept` or in the review split; the phone only shows it.
+Above the groups, Next lists what needs you in the order `N` on the board and `kebbie next` give it, one list per machine, with how long each has waited and a line counting what is working, queued and parked; with nothing waiting it says Nothing needs you. Each task shows its title, its agent with the model its profile names, its recipe and the review assessment, and a line says when a machine is in away mode. Below the groups, Queued and Parked list the tasks set aside, a parked one with whether a question waits on it, and Routines list each routine's next run and last outcome.
+
+A prompt on a task's agent's screen, such as Codex asking to run a command, shows under Questions and counts in its badge: the question, the command apart from it, and each option with the key it takes. The phone only shows it; you answer at the machine, from Next or through the lead.
+
+The open task shows its agent, profile and recipe, its steps, and a review section: the assessment, the reviewer's verdict, whether the push waits for it, and a second opinion's points, which never hold the push.
+
+A task that works in [steps](work-in-steps.md) lists them under its row as on the board: the pushed ones as a count, then each step with its number, title and state, planned, in progress, committed or accepted. With [`task.require_accept`](work-in-steps.md#require-every-step-accepted) on, the row says how many commits wait for your accept and which one is next, and the top of the board counts them across tasks as `◆ N to accept`; without it, the phone says accepting each step is optional and push takes what is committed. You accept on the machine, with `kebbie accept` or in the review split; the phone only shows it.
+
+The board kebbie sends needs a hub whose web app reads it: an older one refuses the board, so update the hub first, then kebbie. An older kebbie keeps working with a newer hub, without Next and the rest.
 
 Reading needs a passkey that can unlock the account's key, such as one in iCloud Keychain, Google Password Manager or 1Password. A passkey that cannot signs in, and the page says it can't unlock the boards.
 
