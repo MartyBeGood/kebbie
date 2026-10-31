@@ -166,8 +166,11 @@ pub fn told(previous: Option<&Found>, found: &Found) -> Vec<String> {
 
 // Once a day, like the update check: the claim is written before the fetch so a second keeper waits.
 pub fn tick(state: &Path) -> Vec<String> {
-    tick_with(state, crate::messages::now(), &Machine::current(), codex_setup::fetch_latest)
+    tick_with(state, crate::messages::now(), &Machine::current(), |installer| std::env::var(LATEST_VAR).map_or_else(|_| codex_setup::fetch_latest(installer), Ok))
 }
+
+// The scenario suite names Codex's latest version here, so its keeper fetches nothing.
+pub const LATEST_VAR: &str = "KEBBIE_CODEX_LATEST";
 
 fn tick_with(state: &Path, now: u64, machine: &Machine, latest: impl FnOnce(Option<Installer>) -> Result<String>) -> Vec<String> {
     let previous = read(state);
