@@ -701,13 +701,25 @@ impl Availability {
             (Some(binary), None) => format!("{} (its version does not read)", binary.display()),
             (None, _) => "codex is not on PATH".to_string(),
         };
-        let plugin = match &self.plugin {
+        format!("{binary} · {}", self.plugin_line())
+    }
+
+    pub fn short_line(&self) -> String {
+        let binary = match (&self.binary, &self.version) {
+            (Some(_), Some(version)) => version.clone(),
+            (Some(_), None) => "codex, its version does not read".to_string(),
+            (None, _) => "codex is not on PATH".to_string(),
+        };
+        format!("{binary} · {}", self.plugin_line())
+    }
+
+    fn plugin_line(&self) -> String {
+        match &self.plugin {
             Installed::Current => "kebbie's plugin installed".to_string(),
             Installed::Missing => "kebbie's plugin not installed: kebbie setup codex".to_string(),
             Installed::Stale(_) => "kebbie's plugin out of date: kebbie setup codex".to_string(),
             Installed::Replaced(_) => "kebbie's plugin replaced by a copy Codex installed: kebbie setup codex".to_string(),
-        };
-        format!("{binary} · {plugin}")
+        }
     }
 }
 

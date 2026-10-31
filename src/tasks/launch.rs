@@ -61,6 +61,16 @@ fn bypasses_in(state: &Path, address: &str) -> bool {
     std::fs::read_to_string(session_file_in(state, address)).is_ok_and(|text| parse_record(&text).mode.as_deref() == Some(BYPASS))
 }
 
+// A task's record is removed when it closes, so every record left is an open task.
+pub(crate) fn on_profile(sessions: &Path, profile: &str) -> Vec<String> {
+    let mut found: Vec<String> = std::fs::read_dir(sessions).into_iter().flatten().flatten()
+        .filter(|entry| !entry.file_name().to_string_lossy().ends_with(".prompt"))
+        .filter(|entry| std::fs::read_to_string(entry.path()).is_ok_and(|text| parse_record(&text).profile.as_deref() == Some(profile)))
+        .map(|entry| entry.file_name().to_string_lossy().to_string()).collect();
+    found.sort();
+    found
+}
+
 pub fn profile_of(address: &str) -> Option<String> {
     let state = crate::lead::state_location().ok()?;
     std::fs::read_to_string(session_file_in(&state, address)).ok().and_then(|text| parse_record(&text).profile)

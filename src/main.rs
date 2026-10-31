@@ -37,6 +37,7 @@ mod notify;
 mod peers;
 mod phase;
 mod permit;
+mod profile_wizard;
 mod profiles;
 mod push_block;
 mod questions;
@@ -272,7 +273,7 @@ const USAGE: &str = "kebbie: herding coding agents in herdr
   kebbie profiles [--json]        the profiles a task can start with (kebbie start --profile, task.profile): the built-in
                                   task, reviewer and ops (ssh, scp and rsync outside the sandbox), then each file in
                                   ~/.config/kebbie/profiles, with what each is for; the board's Settings page (,) sets
-                                  a profile's model and effort
+                                  a profile's model, effort and role, and adds and deletes profiles
   kebbie config [--repo <path>]   the config layers found (the repo config ~/.config/kebbie/repos/<repo>.toml,
                                   config.toml, defaults; a symlink with its target) and every key with its value in
                                   effect, the layer it comes from and what it does (--get <key> prints one

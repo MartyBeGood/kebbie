@@ -360,7 +360,7 @@ Three are built in:
 
 A file named `task.toml`, `ops.toml` or `reviewer.toml` adds its keys to that built-in profile.
 
-The board's [Settings page](board.md#profiles) sets a profile's `model` and `effort` from the agent's own list, writing only that key.
+The board's [Settings page](board.md#profiles) sets a profile's `model` and `effort` from the agent's own list and its `role` from the role files in the folder, writing only that key, and adds and deletes profiles.
 
 | Key | Default | What it does |
 | --- | --- | --- |

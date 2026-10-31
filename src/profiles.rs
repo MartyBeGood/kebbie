@@ -352,9 +352,112 @@ pub fn role_files(dir: &Path, profiles: &[Profile]) -> Vec<(String, Vec<String>)
     }).collect()
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum Role {
+    File(String),
+    New(String),
+    Copy { from: String, to: String },
+    None,
+}
+
+impl Role {
+    pub fn file(&self) -> Option<&str> {
+        match self {
+            Role::New(file) | Role::Copy { to: file, .. } | Role::File(file) => Some(file),
+            Role::None => None,
+        }
+    }
+}
+
+pub fn role_choices(dir: &Path, profiles: &[Profile], name: &str) -> Vec<(String, String)> {
+    role_files(dir, profiles).into_iter().map(|(file, users)| { let about = role_users(&users, name); (file, about) }).collect()
+}
+
+pub fn role_users(users: &[String], name: &str) -> String {
+    match users {
+        [] => "used by none".to_string(),
+        [only] if only == name => format!("only {name}"),
+        _ => format!("shared with {}", users.join(", ")),
+    }
+}
+
+// Every file in the folder that names the role, a profile that does not load among them, so a role is never taken from one.
+pub fn role_readers(dir: &Path, role: &str) -> Vec<String> {
+    let mut readers: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten()
+        .filter_map(|entry| Some((entry.file_name().to_str()?.strip_suffix(".toml")?.to_string(), std::fs::read_to_string(entry.path()).ok()?)))
+        .filter(|(_, text)| raw_role(text).is_some_and(|named| Path::new(&named).components().eq(Path::new(role).components())))
+        .map(|(name, _)| name).collect();
+    readers.sort();
+    readers
+}
+
+fn raw_role(text: &str) -> Option<String> {
+    if let Ok(table) = text.parse::<Table>() {
+        return table.get("role").and_then(toml::Value::as_str).map(|role| role.trim().to_string());
+    }
+    text.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "role").then(|| value.split('#').next().unwrap_or_default().trim().trim_matches(['"', '\'']).trim().to_string())
+    })
+}
+
 // A role file named after the profile that no file holds yet, so a new role never overwrites one.
 pub fn free_role(dir: &Path, name: &str) -> String {
     (1..).map(|number| if number == 1 { format!("{name}.md") } else { format!("{name}-{number}.md") }).find(|file| !dir.join(file).exists()).unwrap_or_default()
+}
+
+pub struct Made {
+    pub text: String,
+    pub dropped: Vec<&'static str>,
+}
+
+// A new profile's file from the one it starts from: its about, for, skills, permissions and sandbox, never its role; a Codex profile leaves out what only Claude Code reads.
+pub fn made_from(start: &Profile, agent: Agent, model: Option<&str>, effort: Option<&str>, role: Option<&str>) -> Made {
+    use crate::config_edit::Set;
+    let text = |value: &str| Set::Text(value.to_string()).shown();
+    let list = |items: &[String]| Set::List(items.to_vec()).shown();
+    let codex = agent == Agent::Codex;
+    let mut lines = Vec::new();
+    let mut dropped = Vec::new();
+    if !start.about.is_empty() {
+        lines.push(format!("about = {}", text(&start.about)));
+    }
+    if !start.fits.is_empty() {
+        lines.push(format!("for = {}", text(&start.fits)));
+    }
+    lines.push(format!("agent = {}", text(agent.key())));
+    lines.extend(model.map(|model| format!("model = {}", text(model))));
+    lines.extend(effort.map(|effort| format!("effort = {}", text(effort))));
+    lines.extend(role.map(|role| format!("role = {}", text(role))));
+    if !start.skills.is_empty() {
+        lines.push(format!("skills = {}", list(&start.skills)));
+    }
+    lines.extend(start.permission_mode.as_deref().map(|mode| format!("permission_mode = {}", text(mode))));
+    for (key, items) in [("deny", &start.deny), ("allow", &start.allow)] {
+        match (items.is_empty(), codex) {
+            (true, _) => {}
+            (false, true) => dropped.push(key),
+            (false, false) => lines.push(format!("{key} = {}", list(items))),
+        }
+    }
+    match (start.plugins.is_empty(), codex) {
+        (true, _) => {}
+        (false, true) => dropped.push("claude.plugins"),
+        (false, false) => lines.push(format!("\n[claude]\nplugins = {}", list(&start.plugins))),
+    }
+    let sandbox = &start.sandbox;
+    let mut table: Vec<String> = sandbox.enabled.map(|on| format!("enabled = {on}")).into_iter().collect();
+    for (key, items) in [("allowed_domains", sandbox.domains.as_deref()), ("allow_write", sandbox.writes.as_deref()), ("excluded_commands", Some(sandbox.excluded.as_slice()).filter(|items| !items.is_empty()))] {
+        match (items, codex) {
+            (None, _) => {}
+            (Some(_), true) => dropped.push(match key { "allowed_domains" => "sandbox.allowed_domains", "allow_write" => "sandbox.allow_write", _ => "sandbox.excluded_commands" }),
+            (Some(items), false) => table.push(format!("{key} = {}", list(items))),
+        }
+    }
+    if !table.is_empty() {
+        lines.push(format!("\n[sandbox]\n{}", table.join("\n")));
+    }
+    Made { text: lines.join("\n") + "\n", dropped }
 }
 
 // What the task's role says of its profile, after kebbie's own role; the built-in task adds nothing.
@@ -660,6 +763,15 @@ mod tests {
     }
 
     #[test]
+    fn role_readers_finds_every_file_that_names_a_role_one_that_does_not_load_among_them() {
+        let dir = folder("profile-role-readers", &[("codex.md", "x"), ("a.toml", "role = \"codex.md\" # mine\n"), ("broken.toml", "agent = \"gemini\"\nrole = \"codex.md\"\n"), ("garbled.toml", "role = 'codex.md'\n[[[\n"), ("other.toml", "role = \"other.md\"\n")]);
+        assert!(list_in(&dir).0.iter().all(|profile| profile.name != "broken"), "broken does not load");
+        assert_eq!(role_readers(&dir, "codex.md"), ["a", "broken", "garbled"]);
+        assert_eq!((role_users(&[], "a"), role_users(&["a".to_string()], "a"), role_users(&["a".to_string(), "b".to_string()], "a")), ("used by none".to_string(), "only a".to_string(), "shared with a, b".to_string()));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn role_files_lists_each_md_file_with_the_profiles_that_read_it_and_a_new_one_takes_a_free_name() {
         let dir = folder("profile-roles", &[("codex.md", "x"), ("spare.md", ""), ("a.toml", "role = \"codex.md\"\n"), ("b.toml", "role = \"codex.md\"\n"), ("notes.txt", "")]);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
@@ -672,6 +784,25 @@ mod tests {
         for name in [TASK, OPS, REVIEWER] {
             assert!(Path::new(env!("CARGO_MANIFEST_DIR")).join(kebbie_role(name).1).is_file(), "kebbie's own role for {name} ships in its install");
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_new_profile_takes_its_starts_rules_and_never_its_role_and_a_codex_one_leaves_out_claudes_keys() {
+        let dir = folder("profile-made", &[("designer.toml", DESIGNER), ("designer.md", "Measure.\n"), ("fresh.md", "")]);
+        let designer = load_in(&dir, "designer").unwrap();
+        let made = made_from(&designer, Agent::Claude, Some("sonnet"), None, Some("fresh.md"));
+        assert_eq!(made.text, "about = \"UI work: mockup first\"\nfor = \"UI, CSS, new surfaces\"\nagent = \"claude\"\nmodel = \"sonnet\"\nrole = \"fresh.md\"\nskills = [\"impeccable\", \"frontend-design:frontend-design\"]\npermission_mode = \"acceptEdits\"\ndeny = [\"Bash(rm -rf:*)\"]\nallow = [\"Bash(npx playwright:*)\"]\n\n[claude]\nplugins = [\"design@claude-plugins\"]\n");
+        assert!(made.dropped.is_empty());
+        let parsed = parse(&made.text, "made", &dir.join("made.toml"), None).unwrap();
+        assert_eq!((parsed.skills, parsed.allow, parsed.role), (designer.skills.clone(), designer.allow.clone(), Some(dir.join("fresh.md"))));
+        let codex = made_from(&designer, Agent::Codex, None, Some("ultra"), None);
+        assert_eq!(codex.dropped, ["deny", "allow", "claude.plugins"]);
+        assert!(!codex.text.contains("role") && codex.text.contains("agent = \"codex\"\neffort = \"ultra\"\n"), "{}", codex.text);
+        assert!(parse(&codex.text, "made", &dir.join("made.toml"), None).is_ok(), "{}", codex.text);
+        let ops = made_from(&built_in(OPS).unwrap(), Agent::Claude, None, None, None);
+        assert!(ops.text.ends_with("\n[sandbox]\nexcluded_commands = [\"ssh *\", \"scp *\", \"rsync *\"]\n"), "ops's commands outside the sandbox come along: {}", ops.text);
+        assert_eq!(parse(&ops.text, "made", &dir.join("made.toml"), None).unwrap().sandbox.excluded, built_in(OPS).unwrap().sandbox.excluded);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

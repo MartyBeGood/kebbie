@@ -354,7 +354,7 @@ pub fn task_profiles(profiles_dir: &Path, named: &[(String, String)]) -> Option<
     Some(warn("task profile", format!("{}; the profiles are {}", missing.join("; "), names.join(", ")), one("pick it on the Settings page (,) under Tasks")))
 }
 
-fn named_profiles(machine: Option<&Machine>, config: &Path, repos_dir: &Path) -> Vec<(String, String)> {
+pub(crate) fn named_profiles(machine: Option<&Machine>, config: &Path, repos_dir: &Path) -> Vec<(String, String)> {
     let mut named: Vec<(String, String)> = machine.and_then(|machine| machine.worktree.profile.clone()).map(|profile| (crate::area_page::home_relative(config), profile)).into_iter().collect();
     let mut files: Vec<PathBuf> = std::fs::read_dir(repos_dir).into_iter().flatten().flatten().map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|extension| extension == "toml")).collect();
     files.sort();

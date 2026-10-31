@@ -1358,7 +1358,7 @@ mod tests {
         let dir = crate::sh::test_dir("board-settings");
         std::fs::write(dir.join("config.toml"), "[task]\nsandbox = false\n").unwrap();
         let mut app = test_app(vec![crate::status::tests::task(Some("idle"), None, 0)]);
-        app.settings = settings_page::Page::new(settings_page::Paths { machine: dir.join("config.toml"), repos_dir: dir.join("repos"), claude_home: dir.join("claude"), kebbie: dir.join("kebbie"), profiles: dir.join("profiles"), codex_home: dir.join("codex") }, None);
+        app.settings = settings_page::Page::new(settings_page::Paths { machine: dir.join("config.toml"), repos_dir: dir.join("repos"), claude_home: dir.join("claude"), kebbie: dir.join("kebbie"), profiles: dir.join("profiles"), codex_home: dir.join("codex"), path: Vec::new(), kebbie_command: "kebbie".to_string(), sessions: Some(dir.join("sessions")) }, None);
         press(&mut app, key(KeyCode::Char(',')));
         assert_eq!(app.page, Page::Settings);
         let (rows, _) = render(&mut app, 140, 40);

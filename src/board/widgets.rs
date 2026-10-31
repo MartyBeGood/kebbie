@@ -332,6 +332,40 @@ pub fn choice_lines(selected: bool, label: &str, label_width: usize, about: &str
     lines.into_iter().map(|line| if selected { line.style(Style::new().bg(SURFACE)) } else { line }).collect()
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct Answer<T> {
+    pub label: String,
+    pub about: String,
+    pub now: bool,
+    pub then: T,
+}
+
+impl<T> Answer<T> {
+    pub fn new(label: &str, about: &str, then: T) -> Self {
+        Answer { label: label.to_string(), about: about.to_string(), now: false, then }
+    }
+
+    pub fn now(mut self, now: bool) -> Self {
+        self.now = now;
+        self
+    }
+}
+
+pub fn answer_lines<T>(lines: &mut Vec<Line<'static>>, spots: &mut Vec<(usize, Spot)>, answers: &[Answer<T>], selected: usize, width: usize) {
+    let label_width = answers.iter().map(|answer| text_width(&answer.label) + 1).filter(|width| *width <= 28).max().unwrap_or(0).max(20);
+    for (at, answer) in answers.iter().enumerate() {
+        let about = match (answer.now, answer.about.is_empty()) {
+            (false, _) => answer.about.clone(),
+            (true, true) => "now".to_string(),
+            (true, false) => format!("{} · now", answer.about),
+        };
+        for line in choice_lines(at == selected, &answer.label, label_width, &about, MUTED, width) {
+            spots.push((lines.len(), Spot::Choice(at)));
+            lines.push(line);
+        }
+    }
+}
+
 pub fn confirm_lines(name: &str, about: Option<&str>, question: &str, nudged: bool) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(name.to_string(), style(TEXT)))];
     lines.extend(about.map(|about| Line::from(Span::styled(about.to_string(), style(MUTED)))));
