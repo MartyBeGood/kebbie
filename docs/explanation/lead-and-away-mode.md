@@ -79,6 +79,8 @@ Until someone answers, the task waits, and the board's `you:` line says so.
 
 Every 5 seconds the keeper, or an open board with `[keeper] enabled = false`, reads the screen of each task whose Claude waits like this. It sends the lead the question and the options in order, numbered (by kebbie when the menu shows no numbers), with the focused one marked, an id for this prompt, and a mark that it was read from the task's screen. When kebbie cannot read the screen as a menu, such as a question with checkboxes, the lead gets its last lines and the answer stays in the task's Space.
 
+A Codex task's start-up questions, its sign-in, a new model, the folder's trust and hooks to review, go to the lead as what Codex asks, once per question. The answer is yours, in the task's Space. See [Run a task with Codex](../how-to/run-a-task-with-codex.md#start-the-task).
+
 The lead hears of each prompt once. It hears again of a new prompt in the same task, of the same prompt once another showed in between or the task stopped waiting, and of the same prompt asked again after `kebbie choose` answered it.
 
 ## You choose, the lead only relays

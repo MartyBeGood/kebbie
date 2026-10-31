@@ -114,7 +114,7 @@ With [`task.steps`](configuration.md) on and steps listed, the task's steps not 
 
 A step to accept leaves the task in the group its phase gives it, under Working while it builds the next step. The state word always shows: a long title is shortened at a word with `…` to make room, and only when the title would drop below 12 columns does the rules part shorten (`· 2 breaks`, `· checking`) and then go. Without steps, the row is as above. See [Work in steps](../how-to/work-in-steps.md).
 
-While Claude waits on a prompt of its own, such as a permission or trust question, the `you:` line says `answer Claude's prompt in its Space (g) or through the lead`. `g` takes you there, and the lead has the question and its options in its chat. See [Claude's own prompts in a task](../explanation/lead-and-away-mode.md#claudes-own-prompts-in-a-task).
+While Claude waits on a prompt of its own, such as a permission or trust question, the `you:` line says `answer Claude's prompt in its Space (g) or through the lead`. `g` takes you there, and the lead has the question and its options in its chat. A Codex task on a start-up question says what Codex asks, as `answer Codex in its Space: it asks whether you trust its folder`. See [Claude's own prompts in a task](../explanation/lead-and-away-mode.md#claudes-own-prompts-in-a-task).
 
 The selected task opens in place with its review progress, its question and options, its report, its latest test run, and a warning about files changed in a main checkout outside any task.
 

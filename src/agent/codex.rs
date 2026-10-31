@@ -522,6 +522,24 @@ pub(crate) fn startup_question(screen: &str) -> Option<Started> {
     }
 }
 
+pub const ASKS_KEY: &str = "kebbie_asks";
+
+// herdr calls a Codex on a start-up question idle, so a waiting Codex that has taken no prompt yet has its screen read and counts as blocked when it asks; past its first prompt the same words on screen, as in code or a diff, are no question.
+pub fn with_question(mut agent: Value, unprompted: impl FnOnce() -> bool, read: impl FnOnce(&str) -> Option<String>) -> Value {
+    let waiting = !matches!(agent["agent_status"].as_str(), Some("working" | "blocked"));
+    if super::Agent::of(&agent) == Some(super::Agent::Codex) && waiting && unprompted()
+        && let Some(asks) = agent["pane_id"].as_str().and_then(read).as_deref().and_then(startup_question).and_then(|asked| asked.asks())
+    {
+        agent["agent_status"] = json!("blocked");
+        agent[ASKS_KEY] = json!(asks);
+    }
+    agent
+}
+
+pub fn read_question(agent: &Value, address: &str) -> Value {
+    with_question(agent.clone(), || crate::tasks::awaits_first_prompt(address), |pane| crate::herdr::read_agent(pane).ok())
+}
+
 pub(crate) fn trust_selected(screen: &str) -> bool {
     screen.lines().any(|line| line.trim_start().starts_with('›') && line.contains("Trust and continue"))
 }
@@ -888,6 +906,27 @@ mod tests {
         assert_eq!((SCREENS.held)(UPDATE), Some(Started::AwaitsUpdate), "a Codex that checks anyway, as under a managed config, holds the start on tui/src/update_prompt.rs");
         assert_eq!(startup_question(UPDATE), Some(Started::AwaitsUpdate));
         assert_eq!(Started::AwaitsUpdate.asks(), Some("whether to update it first"));
+    }
+
+    const HOOKS_REVIEW: &str = "  Hooks need review\n  1 hook is new or changed.\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won't run)";
+
+    #[test]
+    fn a_codex_herdr_calls_idle_on_a_start_up_question_counts_as_blocked_with_what_it_asks() {
+        let read = std::cell::RefCell::new(Vec::new());
+        let mark = |agent: Value, screen: &str| with_question(agent, || true, |pane| { read.borrow_mut().push(pane.to_string()); Some(screen.to_string()) });
+        let marked = mark(json!({ "agent": "codex", "pane_id": "w1:p1", "agent_status": "idle" }), HOOKS_REVIEW);
+        assert_eq!((marked["agent_status"].as_str(), marked[ASKS_KEY].as_str()), (Some("blocked"), Some("whether to trust the hooks it found new or changed")));
+        let composer = mark(json!({ "agent": "codex", "pane_id": "w2:p1", "agent_status": "idle" }), "› Ask Codex to do anything");
+        assert_eq!((composer["agent_status"].as_str(), composer.get(ASKS_KEY)), (Some("idle"), None), "a composer asks nothing");
+        mark(json!({ "agent": "codex", "pane_id": "w3:p1", "agent_status": "working" }), HOOKS_REVIEW);
+        mark(json!({ "agent": "claude", "pane_id": "w4:p1", "agent_status": "idle" }), HOOKS_REVIEW);
+        assert_eq!(read.into_inner(), ["w1:p1", "w2:p1"], "a working Codex and a Claude are never read");
+    }
+
+    #[test]
+    fn a_codex_past_its_first_prompt_is_never_read_for_start_up_questions_whatever_its_screen_shows() {
+        let past = with_question(json!({ "agent": "codex", "pane_id": "w1:p1", "agent_status": "idle" }), || false, |_| panic!("a Codex past its first prompt has no screen read for start-up questions"));
+        assert_eq!((past["agent_status"].as_str(), past.get(ASKS_KEY)), (Some("idle"), None), "a task working in kebbie's own repo shows these words in codex.rs or a diff, which is no question of Codex's");
     }
 
     #[test]

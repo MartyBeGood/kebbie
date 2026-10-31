@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::agent::Agent;
 use crate::permit::Caller;
 use crate::sh::Result;
 use crate::typing::is_border;
@@ -125,7 +126,11 @@ fn indented(text: &str) -> String {
     text.lines().map(|line| format!("  {line}")).collect::<Vec<_>>().join("\n")
 }
 
-pub fn relay_text(address: &str, screen: &str) -> (String, String) {
+pub fn relay_text(address: &str, screen: &str, agent: Agent) -> (String, String) {
+    if agent == Agent::Codex && let Some(asks) = crate::agent::codex::startup_question(screen).and_then(|asked| asked.asks()) {
+        let text = format!("{address} waits on Codex, which asks {asks} before it takes the task's prompt. The answer is the user's, in its Space (g on the board); tell the user.");
+        return (hash(&[address, asks]), text);
+    }
     let Some(menu) = parse(screen) else {
         let tail = tail(screen);
         let text = format!("{address} waits on its Claude's own prompt, which kebbie could not read as a menu. {READ_FROM_SCREEN} Its screen ends:\n{}\nThe answer is in its Space (g on the board); tell the user.", indented(&tail));
@@ -152,12 +157,12 @@ fn told_dir(state: &Path) -> PathBuf {
     state.join("prompts")
 }
 
-pub fn pass(state: &Path, blocked: &[(String, String)], mut read: impl FnMut(&str) -> Result<String>, mut tell: impl FnMut(&str) -> Result<()>) -> Vec<String> {
+pub fn pass(state: &Path, blocked: &[(String, String, Agent)], mut read: impl FnMut(&str) -> Result<String>, mut tell: impl FnMut(&str) -> Result<()>) -> Vec<String> {
     let dir = told_dir(state);
     let mut told = Vec::new();
-    for (address, pane) in blocked {
+    for (address, pane, agent) in blocked {
         let Ok(screen) = read(pane) else { continue };
-        let (id, text) = relay_text(address, &screen);
+        let (id, text) = relay_text(address, &screen, *agent);
         let file = dir.join(address);
         if fs::read_to_string(&file).is_ok_and(|seen| seen == id) {
             continue;
@@ -169,17 +174,17 @@ pub fn pass(state: &Path, blocked: &[(String, String)], mut read: impl FnMut(&st
     }
     for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with('.') && !blocked.iter().any(|(address, _)| *address == name) {
+        if !name.starts_with('.') && !blocked.iter().any(|(address, _, _)| *address == name) {
             let _ = fs::remove_file(entry.path());
         }
     }
     told
 }
 
-fn blocked_tasks() -> Result<Vec<(String, String)>> {
+fn blocked_tasks() -> Result<Vec<(String, String, Agent)>> {
     Ok(crate::peers::sessions()?.into_iter()
         .filter(|session| session.task.is_some() && session.status.as_deref() == Some("blocked"))
-        .filter_map(|session| Some((session.address, session.pane?)))
+        .filter_map(|session| Some((session.address, session.pane?, session.agent?)))
         .collect())
 }
 
@@ -318,11 +323,34 @@ mod tests {
     }
 
     #[test]
+    fn the_lead_hears_what_codex_asks_on_its_start_up_screen_once() {
+        let screen = "  Welcome to Codex, OpenAI's command-line coding agent\n\n  Choose how you want to use Codex.\n\n› 1. Sign in with ChatGPT\n\n  Press enter to continue";
+        let (id, text) = relay_text("hub@kebbie", screen, Agent::Codex);
+        assert_eq!(text, "hub@kebbie waits on Codex, which asks you to sign in before it takes the task's prompt. The answer is the user's, in its Space (g on the board); tell the user.");
+        assert_eq!(relay_text("hub@kebbie", &format!("{screen}\n"), Agent::Codex).0, id, "a redraw of the same screen is told once");
+        let state = crate::sh::test_dir("menu-codex");
+        let told = RefCell::new(Vec::new());
+        let blocked = vec![("hub@kebbie".to_string(), "w1:p1".to_string(), Agent::Codex)];
+        for _ in 0..2 {
+            pass(&state, &blocked, |_| Ok(screen.to_string()), |text| { told.borrow_mut().push(text.to_string()); Ok(()) });
+        }
+        assert_eq!(told.into_inner().len(), 1);
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn a_claude_whose_screen_shows_codexs_start_up_words_is_relayed_as_its_own_prompt() {
+        let screen = format!("⏺ Read src/agent/codex.rs\n  screen.contains(\"Welcome to Codex\")\n\n{PERMISSION}");
+        let (id, text) = relay_text("billing@ios", &screen, Agent::Claude);
+        assert!(!text.contains("waits on Codex") && text.contains("waits on its Claude's own prompt") && id == fingerprint("billing@ios", &parse(&screen).unwrap()), "{text}");
+    }
+
+    #[test]
     fn a_screen_without_a_menu_is_unreadable_and_the_lead_gets_its_last_lines() {
         let screen = "⏺ Working on it\n\n╭────────────────────────────╮\n│ ❯ copy the images          │\n╰────────────────────────────╯\n  ? for shortcuts\n";
         assert_eq!(parse(screen), None, "the input box is no menu");
         assert_eq!(parse("Proceed?\n❯ 1. Yes\n"), None, "one option is no menu");
-        let (_, text) = relay_text("billing@ios", screen);
+        let (_, text) = relay_text("billing@ios", screen, Agent::Claude);
         assert!(text.contains("could not read as a menu") && text.contains("  ? for shortcuts") && text.contains("in its Space") && text.contains("not the user's words"), "{text}");
     }
 
@@ -341,14 +369,14 @@ mod tests {
         assert_eq!(parse(&screen.replace("[ ]", "☐").replace("[x]", "☒")), None);
         assert_eq!(parse(&screen.replace("[ ]", "◻").replace("[x]", "◼")), None);
         assert_eq!(parse(&screen.replace("[ ]", "○").replace("[x]", "●")), None);
-        assert!(relay_text("billing@ios", screen).1.contains("could not read as a menu"));
+        assert!(relay_text("billing@ios", screen, Agent::Claude).1.contains("could not read as a menu"));
     }
 
     #[test]
     fn options_that_take_text_are_marked_in_the_relay_and_refused_by_choose() {
-        assert!(!relay_text("billing@ios", PERMISSION).1.contains("(takes text"), "a permission prompt's No is a plain option the lead can choose");
+        assert!(!relay_text("billing@ios", PERMISSION, Agent::Claude).1.contains("(takes text"), "a permission prompt's No is a plain option the lead can choose");
         let asked = "Which way?\n❯ 1. Sidekiq\n  2. Solid Queue\n  3. Type something.\n  4. Chat about this\n";
-        let (id, text) = relay_text("billing@ios", asked);
+        let (id, text) = relay_text("billing@ios", asked, Agent::Claude);
         assert!(text.contains("3. Type something.  (takes text") && text.contains("4. Chat about this  (takes text") && !text.contains("2. Solid Queue  (takes"), "{text}");
         let (result, sent) = chosen(Caller::Lead, &[asked], "4", &id);
         assert!(result.unwrap_err().contains("takes the user's own words") && sent.is_empty());
@@ -361,8 +389,8 @@ mod tests {
         let long = format!("────────\n{}Do you want to proceed?\n❯ 1. Yes\n  2. No\n", (1..=10).map(|line| format!("line {line}\n")).collect::<String>());
         let menu = parse(&long).unwrap();
         assert!(menu.cut && menu.question.lines().count() == QUESTION_LINES);
-        assert!(relay_text("billing@ios", &long).1.contains("(more above; see its Space)"));
-        assert!(!relay_text("billing@ios", PERMISSION).1.contains("more above"));
+        assert!(relay_text("billing@ios", &long, Agent::Claude).1.contains("(more above; see its Space)"));
+        assert!(!relay_text("billing@ios", PERMISSION, Agent::Claude).1.contains("more above"));
     }
 
     #[test]
@@ -370,8 +398,8 @@ mod tests {
         let state = crate::sh::test_dir("menu-relay");
         let screen = RefCell::new(PERMISSION.to_string());
         let told = RefCell::new(Vec::new());
-        let blocked = vec![("billing@ios".to_string(), "w2:p1".to_string())];
-        let run = |blocked: &[(String, String)]| pass(&state, blocked, |_| Ok(screen.borrow().clone()), |text| { told.borrow_mut().push(text.to_string()); Ok(()) });
+        let blocked = vec![("billing@ios".to_string(), "w2:p1".to_string(), Agent::Claude)];
+        let run = |blocked: &[(String, String, Agent)]| pass(&state, blocked, |_| Ok(screen.borrow().clone()), |text| { told.borrow_mut().push(text.to_string()); Ok(()) });
         run(&blocked);
         run(&blocked);
         assert_eq!(told.borrow().len(), 1, "the keeper's repeated passes tell it once");
@@ -394,7 +422,7 @@ mod tests {
     fn the_same_prompt_asked_again_right_after_a_choice_is_told_again_without_a_tick_in_between() {
         let state = crate::sh::test_dir("menu-again");
         let told = RefCell::new(0);
-        let blocked = vec![("billing@ios".to_string(), "w2:p1".to_string())];
+        let blocked = vec![("billing@ios".to_string(), "w2:p1".to_string(), Agent::Claude)];
         pass(&state, &blocked, |_| Ok(PERMISSION.to_string()), |_| { *told.borrow_mut() += 1; Ok(()) });
         let id = fingerprint("billing@ios", &parse(PERMISSION).unwrap());
         let (result, _) = chosen_in(&state, Caller::Lead, &[PERMISSION, "⏺ Copied"], "1", &id);

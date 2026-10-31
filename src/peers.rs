@@ -19,6 +19,7 @@ pub struct Session {
     pub task: Option<String>,
     pub pane: Option<String>,
     pub status: Option<String>,
+    pub agent: Option<crate::agent::Agent>,
 }
 
 impl Session {
@@ -44,7 +45,7 @@ pub fn sessions() -> Result<Vec<Session>> {
     let mut list = Vec::new();
     for workspace in workspaces.iter().filter(|workspace| workspace["label"] == LEAD_LABEL) {
         let agent = agent_in(workspace["workspace_id"].as_str());
-        list.push(Session { address: LEAD_LABEL.to_string(), task: None, pane: agent.and_then(|agent| text(&agent["pane_id"])), status: agent.and_then(|agent| text(&agent["agent_status"])) });
+        list.push(Session { address: LEAD_LABEL.to_string(), task: None, pane: agent.and_then(|agent| text(&agent["pane_id"])), status: agent.and_then(|agent| text(&agent["agent_status"])), agent: agent.and_then(crate::agent::Agent::of) });
     }
     let repos: BTreeSet<PathBuf> = workspaces.iter().filter_map(|workspace| workspace["worktree"]["repo_root"].as_str()).map(PathBuf::from).collect();
     for repo in &repos {
@@ -52,12 +53,14 @@ pub fn sessions() -> Result<Vec<Session>> {
             let Some(task) = slot.task else { continue };
             let workspace = workspaces.iter().find(|workspace| workspace["worktree"]["checkout_path"].as_str() == slot.path.to_str())
                 .and_then(|workspace| workspace["workspace_id"].as_str());
-            let agent = agent_in(workspace);
+            let address = address(&task, &name_of(repo));
+            let agent = agent_in(workspace).map(|agent| crate::agent::codex::read_question(agent, &address));
             list.push(Session {
-                address: address(&task, &name_of(repo)),
                 task: Some(task),
-                pane: agent.and_then(|agent| text(&agent["pane_id"])),
-                status: agent.and_then(|agent| text(&agent["agent_status"])),
+                pane: agent.as_ref().and_then(|agent| text(&agent["pane_id"])),
+                status: agent.as_ref().and_then(|agent| text(&agent["agent_status"])),
+                agent: agent.as_ref().and_then(crate::agent::Agent::of),
+                address,
             });
         }
     }
@@ -349,7 +352,7 @@ mod tests {
 
     fn session(address: &str, status: Option<&str>) -> Session {
         let task = address.split_once('@').map(|(task, _)| task.to_string());
-        Session { address: address.to_string(), task, pane: status.map(|_| "w1:p1".to_string()), status: status.map(str::to_string) }
+        Session { address: address.to_string(), task, pane: status.map(|_| "w1:p1".to_string()), status: status.map(str::to_string), agent: status.map(|_| crate::agent::Agent::Claude) }
     }
 
     fn sessions() -> Vec<Session> {
@@ -587,7 +590,7 @@ mod tests {
         assert_eq!(session("a@x", None).state(), "no Claude");
         assert_eq!(session("a@x", Some("blocked")).state(), "waiting for an answer");
         assert_eq!(session("a@x", Some("working")).state(), "working");
-        let unknown = Session { address: "a@x".to_string(), task: None, pane: Some("p".to_string()), status: None };
+        let unknown = Session { address: "a@x".to_string(), task: None, pane: Some("p".to_string()), status: None, agent: None };
         assert_eq!(unknown.state(), "unknown");
         let listed = list(None, &sessions());
         assert!(listed.starts_with("You are not in a task's worktree or the lead."));

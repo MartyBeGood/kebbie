@@ -378,7 +378,7 @@ mod tests {
     }
 
     fn session(address: &str, pane: Option<&str>) -> Session {
-        Session { address: address.to_string(), task: address.split_once('@').map(|(task, _)| task.to_string()), pane: pane.map(str::to_string), status: pane.map(|_| "working".to_string()) }
+        Session { address: address.to_string(), task: address.split_once('@').map(|(task, _)| task.to_string()), pane: pane.map(str::to_string), status: pane.map(|_| "working".to_string()), agent: pane.map(|_| crate::agent::Agent::Claude) }
     }
 
     #[test]

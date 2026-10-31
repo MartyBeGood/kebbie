@@ -210,6 +210,18 @@ fn record_session_in(state: &Path, address: &str, session: &str) -> Result<()> {
     crate::state::write(&file, record_text(&Record { session: Some(session.to_string()), ..record }))
 }
 
+// Codex 0.163 runs its SessionStart hooks, kebbie's among them, only as its first turn begins (core/src/session/turn.rs), so a Codex task whose record names no session yet has taken no prompt.
+pub(crate) fn awaits_first_prompt(address: &str) -> bool {
+    crate::lead::state_location().is_ok_and(|state| awaits_first_prompt_in(&state, address))
+}
+
+fn awaits_first_prompt_in(state: &Path, address: &str) -> bool {
+    std::fs::read_to_string(session_file_in(state, address)).is_ok_and(|text| {
+        let record = parse_record(&text);
+        record.agent() == Agent::Codex && record.session.is_none()
+    })
+}
+
 pub(super) fn open_space(repo: &Path, slot: &Slot, task: &str, focus: bool) -> Result<herdr::Space> {
     let space = herdr::open_worktree(repo, &slot.path, task, focus)?;
     herdr::rename_workspace(&space.workspace_id, task)?;
@@ -866,7 +878,9 @@ mod tests {
         let state = crate::sh::test_dir("codex-record");
         let codex = Record { session: None, mode: Some("acceptEdits".to_string()), profile: Some("coder".to_string()), agent: Some("codex".to_string()) };
         crate::state::write(&session_file_in(&state, "billing@app"), record_text(&codex)).unwrap();
+        assert!(awaits_first_prompt_in(&state, "billing@app"), "a new Codex start records no session, so its screen is read for start-up questions");
         record_session_in(&state, "billing@app", "019b3136-fdf0").unwrap();
+        assert!(!awaits_first_prompt_in(&state, "billing@app"), "its SessionStart hook ran with its first turn, so its screen is no longer read for them");
         assert_eq!(parse_record(&std::fs::read_to_string(session_file_in(&state, "billing@app")).unwrap()), Record { session: Some("019b3136-fdf0".to_string()), ..codex }, "the mode and profile stay");
         let claude = Record { session: Some("kebbies-own-id".to_string()), agent: Some("claude".to_string()), ..Record::default() };
         crate::state::write(&session_file_in(&state, "search@app"), record_text(&claude)).unwrap();
@@ -874,6 +888,7 @@ mod tests {
         assert_eq!(parse_record(&std::fs::read_to_string(session_file_in(&state, "search@app")).unwrap()).session.as_deref(), Some("kebbies-own-id"));
         record_session_in(&state, "nobody@app", "x").unwrap();
         assert!(!session_file_in(&state, "nobody@app").exists(), "a session outside kebbie's tasks writes no record");
+        assert!(!awaits_first_prompt_in(&state, "search@app") && !awaits_first_prompt_in(&state, "nobody@app"), "a Claude task and a session outside kebbie's tasks are never read for Codex's questions");
         std::fs::remove_dir_all(state).unwrap();
     }
 

@@ -66,6 +66,7 @@ pub struct Agent {
     pub status: String,
     pub title: String,
     pub context: Option<String>,
+    pub answer: Option<String>,
 }
 
 #[derive(Clone)]
@@ -388,7 +389,7 @@ impl Item {
             return queued.blocked.as_ref().map(|_| "start it anyway or drop the wait");
         }
         if self.blocked_on_a_prompt() {
-            return Some(ANSWER_IN_SPACE);
+            return Some(self.agent.as_ref().and_then(|agent| agent.answer.as_deref()).unwrap_or(ANSWER_IN_SPACE));
         }
         if self.turn_under_way() || self.recovering().is_some() || matches!(self.phase(), Some(Phase::Pushing { .. } | Phase::CiRunning { .. } | Phase::CiRed { .. } | Phase::Closing)) {
             return None;
@@ -408,7 +409,8 @@ impl Item {
             return queued.blocked.as_ref().map(|blocked| format!("{blocked}: start it anyway or drop the wait"));
         }
         if self.blocked_on_a_prompt() {
-            return Some(format!("answer Claude's prompt · {go} goes there"));
+            let answer = self.agent.as_ref().and_then(|agent| agent.answer.as_deref()).unwrap_or("answer Claude's prompt");
+            return Some(format!("{answer} · {go} goes there"));
         }
         if let Some(landed) = self.landed_note() {
             return Some(landed);
@@ -755,6 +757,7 @@ fn agent_from(value: &Value) -> Agent {
         status: value["agent_status"].as_str().unwrap_or("unknown").to_string(),
         title: title.to_string(),
         context: value["tokens"]["ctx"].as_str().map(str::to_string),
+        answer: value[crate::agent::codex::ASKS_KEY].as_str().map(|asks| format!("answer Codex in its Space: it asks {asks}")),
     }
 }
 
@@ -859,16 +862,16 @@ pub fn gather() -> Result<Vec<Item>> {
             if let Some(id) = &workspace {
                 task_workspaces.insert(id.clone());
             }
+            let address = peers::address(&task, &name_of(repo));
             let agent = workspace.as_ref()
                 .and_then(|id| agents.iter().find(|agent| agent["workspace_id"].as_str() == Some(id.as_str())))
-                .map(agent_from);
+                .map(|agent| agent_from(&crate::agent::codex::read_question(agent, &address)));
             let agent_title = agent.as_ref().map(|agent| agent.title.clone());
             let working = agent.as_ref().is_some_and(|agent| agent.status == "working");
             let (_, behind) = ahead_behind(&slot.path, &upstream)?;
             let ahead = own_commits(&slot.path, &upstream)?;
             let changed = changed_count(&slot.path)?;
             let uncommitted = uncommitted(&slot.path)?.len();
-            let address = peers::address(&task, &name_of(repo));
             let approved = ahead > 0 && tasks::approved(&slot.path, &upstream, &address);
             let head = crate::repo::git(&slot.path, &["rev-parse", "HEAD"]).ok();
             let tokens = workspace.as_ref().and_then(|id| herdr::workspace_tokens(id).ok()).unwrap_or_default();
@@ -1025,7 +1028,7 @@ pub(crate) mod tests {
     pub(crate) fn task(status: Option<&str>, report: Option<&str>, ahead: usize) -> Item {
         let mut item = Item {
             review: None, verdict: None, rules: None, permit: None, follows: false, bypass: false, profile: Some(crate::profiles::TASK.to_string()), server: false, worker: false, url: None, name: "billing".to_string(), title: None, place: "web".to_string(), repo: None, path: None, workspace: None,
-            agent: status.map(|status| Agent { pane: "w1:p1".to_string(), status: status.to_string(), title: String::new(), context: None }),
+            agent: status.map(|status| Agent { pane: "w1:p1".to_string(), status: status.to_string(), title: String::new(), context: None, answer: None }),
             git: Some(Git { upstream: "origin/main".to_string(), ahead, behind: 0, changed: 0, uncommitted: 0, approved: true, head: None }),
             report: report.map(|state| Message {
                 id: "1".to_string(), at: 0, from: "billing@web".to_string(), to: LEAD_LABEL.to_string(), text: "plan written".to_string(), held: false,
@@ -1270,7 +1273,7 @@ pub(crate) mod tests {
     }
 
     fn at(item: &mut Item, status: Option<&str>) -> Group {
-        item.agent = status.map(|status| Agent { pane: "w1:p1".to_string(), status: status.to_string(), title: String::new(), context: None });
+        item.agent = status.map(|status| Agent { pane: "w1:p1".to_string(), status: status.to_string(), title: String::new(), context: None, answer: None });
         item.group()
     }
 
@@ -1667,6 +1670,16 @@ pub(crate) mod tests {
         assert_eq!((bare.pane.as_str(), bare.status.as_str(), bare.title.as_str(), bare.context), ("", "unknown", "Claude", None));
         let titled = agent_from(&json!({ "terminal_title_stripped": "wt1.app" }));
         assert_eq!(titled.title, "wt1.app");
+    }
+
+    #[test]
+    fn a_codex_task_on_a_start_up_question_waits_under_needs_you_with_what_codex_asks() {
+        let mut item = task(Some("idle"), None, 0);
+        assert_eq!(item.group(), Group::Idle, "herdr calls a Codex on its trust question idle");
+        item.agent = Some(agent_from(&crate::agent::codex::with_question(json!({ "agent": "codex", "pane_id": "w1:p1", "agent_status": "idle" }), || true, |_| Some("  Trust this folder? Codex can read\n› 1. Trust and continue\n  2. Quit".to_string()))));
+        assert_eq!(item.group(), Group::NeedsYou);
+        assert_eq!(item.next_for_you(), Some("answer Codex in its Space: it asks whether you trust its folder"));
+        assert_eq!(item.wanted("g").as_deref(), Some("answer Codex in its Space: it asks whether you trust its folder · g goes there"));
     }
 
     #[test]
