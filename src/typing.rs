@@ -250,11 +250,12 @@ pub struct Typed {
     pub at_ms: u64,
     pub presses: usize,
     pub inbox: bool,
+    pub agent: Agent,
 }
 
 impl Typed {
     fn to_json(&self) -> Value {
-        json!({ "target": self.target, "label": self.label, "text": self.text, "at_ms": self.at_ms, "presses": self.presses, "inbox": self.inbox })
+        json!({ "target": self.target, "label": self.label, "text": self.text, "at_ms": self.at_ms, "presses": self.presses, "inbox": self.inbox, "agent": self.agent.key() })
     }
 
     pub fn from_json_text(text: &str) -> Option<Typed> {
@@ -269,6 +270,7 @@ impl Typed {
             at_ms: value["at_ms"].as_u64()?,
             presses: value["presses"].as_u64().unwrap_or(0) as usize,
             inbox: value["inbox"] == true,
+            agent: value["agent"].as_str().and_then(|key| Agent::named(key).ok()).unwrap_or(Agent::Claude),
         })
     }
 }
@@ -342,7 +344,7 @@ pub fn not_delivered(typed: &Typed) -> String {
     if typed.inbox {
         return format!("Not delivered to {}: Claude Code's inbox took it, but its conversation does not show it after {} minutes; the session may hold or drop messages from other sessions (crossSessionInbound). It began: {}", typed.label, INBOX_GIVE_UP / 60, normalized(&typed.text).chars().take(120).collect::<String>());
     }
-    format!("Not delivered to {}: Claude did not take what kebbie typed into its input box within {GIVE_UP} s; it may still sit there. It began: {}", typed.label, normalized(&typed.text).chars().take(120).collect::<String>())
+    format!("Not delivered to {}: {} did not take what kebbie typed into its input box within {GIVE_UP} s; it may still sit there. It began: {}", typed.label, typed.agent.name(), normalized(&typed.text).chars().take(120).collect::<String>())
 }
 
 fn typed_dir() -> Result<PathBuf> {
@@ -351,15 +353,15 @@ fn typed_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-fn type_text(target: &str, text: &str) -> Result<Typed> {
+fn type_text(target: &str, text: &str, agent: Agent) -> Result<Typed> {
     let at_ms = now_ms();
     herdr::prompt_agent(target, text)?;
-    Ok(Typed { target: target.to_string(), label: String::new(), text: text.to_string(), at_ms, presses: 0, inbox: false })
+    Ok(Typed { target: target.to_string(), label: String::new(), text: text.to_string(), at_ms, presses: 0, inbox: false, agent })
 }
 
 // The board's check follows a message given to a session's inbox the same way, by its transcript alone.
 pub fn watch_inbox_in(dir: &Path, target: &str, text: &str, label: &str, at_ms: u64) -> Result<()> {
-    let typed = Typed { target: target.to_string(), label: label.to_string(), text: text.to_string(), at_ms, presses: 0, inbox: true };
+    let typed = Typed { target: target.to_string(), label: label.to_string(), text: text.to_string(), at_ms, presses: 0, inbox: true, agent: Agent::Claude };
     crate::state::write(&dir.join("typed").join(format!("{}.json", crate::messages::new_id("inbox"))), typed.to_json().to_string())
 }
 
@@ -385,11 +387,11 @@ pub fn prompt(target: &str, text: &str, label: &str) -> std::result::Result<(), 
         Ok(Draft::Typed(_)) => return Err(Refused::Draft),
         Ok(Draft::Unreadable) | Err(_) => return Err(Refused::Unreadable),
     }
-    type_and_watch(target, text, label)
+    type_and_watch(target, text, label, agent)
 }
 
-fn type_and_watch(target: &str, text: &str, label: &str) -> std::result::Result<(), Refused> {
-    let mut typed = type_text(target, text).map_err(Refused::Failed)?;
+fn type_and_watch(target: &str, text: &str, label: &str, agent: Agent) -> std::result::Result<(), Refused> {
+    let mut typed = type_text(target, text, agent).map_err(Refused::Failed)?;
     typed.label = label.to_string();
     if let Ok(dir) = typed_dir() {
         let _ = crate::state::write(&dir.join(format!("{}.json", crate::messages::new_id("typed"))), typed.to_json().to_string());
@@ -421,7 +423,7 @@ pub fn prompt_forced(target: &str, text: &str, label: &str) -> std::result::Resu
     let mut read = || screen(&pane).map(|screen| agent.draft(&screen)).unwrap_or(Draft::Unreadable);
     let mut press = || herdr::send_keys(&pane, &["ctrl+u"]);
     let cleared = clear_draft(&mut read, &mut press)?;
-    type_and_watch(target, text, label)?;
+    type_and_watch(target, text, label, agent)?;
     Ok(cleared)
 }
 
@@ -490,7 +492,7 @@ pub fn check() {
 }
 
 pub fn prompt_confirmed(target: &str, text: &str, label: &str) -> Result<()> {
-    let mut typed = type_text(target, text)?;
+    let mut typed = type_text(target, text, place(target).agent)?;
     typed.label = label.to_string();
     loop {
         match advance(&mut typed) {
@@ -624,6 +626,15 @@ mod tests {
         assert!(!taken(Agent::Claude, Some(&notification), &Draft::Empty, answer, typed_at), "a notification Claude queued after kebbie typed is not kebbie's text: the CI log seen logged delivered and never taken");
         let old_queue = json!({ "type": "queue-operation", "operation": "enqueue", "timestamp": "2026-10-20T11:00:00.000Z", "content": "[from lead] rebase onto main please" }).to_string();
         assert!(!taken_in(&old_queue, "[from lead] rebase onto main please", at));
+    }
+
+    #[test]
+    fn a_text_kebbie_could_not_deliver_names_the_agent_it_was_typed_to() {
+        let typed = |agent: Agent| Typed { target: "w1:p1".to_string(), label: "billing@app".to_string(), text: "Fix the flaky test".to_string(), at_ms: 0, presses: 3, inbox: false, agent };
+        assert!(not_delivered(&typed(Agent::Codex)).starts_with("Not delivered to billing@app: Codex did not take what kebbie typed"), "{}", not_delivered(&typed(Agent::Codex)));
+        assert!(not_delivered(&typed(Agent::Claude)).contains(": Claude did not take"));
+        assert_eq!(Typed::from_json_text(&typed(Agent::Codex).to_json().to_string()).map(|typed| typed.agent), Some(Agent::Codex), "a check after a restart still names it");
+        assert_eq!(Typed::from_json_text(r#"{"target":"w1:p1","text":"x","at_ms":1}"#).map(|typed| typed.agent), Some(Agent::Claude), "a text an older kebbie typed");
     }
 
     #[test]
