@@ -6,12 +6,15 @@ use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use crate::issue_recheck::Fixed;
 use crate::sh::Result;
 use crate::update_progress::{self as progress, Overall, Progress, State, Summary};
-use super::widgets::{GREEN, MAUVE, MUTED, PEACH, RED, TEXT, bold, modal, style, wrap};
+use super::keys_window::Scroll;
+use super::widgets::{GREEN, MAUVE, MUTED, PEACH, RED, TEXT, bold, centered, modal_block, style, wrap};
 use super::{App, Mode};
 
 const WIDTH: u16 = 66;
@@ -24,6 +27,7 @@ pub(super) struct Run {
     overall: Cell<Overall>,
     fixed: Option<Fixed>,
     fixed_read: Option<Instant>,
+    scroll: Cell<Scroll>,
 }
 
 impl Run {
@@ -67,7 +71,7 @@ pub(super) fn step_lines(progress: &Progress, now: u64, width: usize) -> Vec<Lin
 }
 
 fn running(progress: Option<&Progress>, overall: &Cell<Overall>, now: u64, width: usize) -> Vec<Line<'static>> {
-    let mut lines = match progress.filter(|progress| !progress.steps.is_empty()) {
+    match progress.filter(|progress| !progress.steps.is_empty()) {
         Some(progress) => {
             let mut bar = overall.get();
             let shown = bar.advance(progress, now);
@@ -77,10 +81,7 @@ fn running(progress: Option<&Progress>, overall: &Cell<Overall>, now: u64, width
             lines
         }
         None => vec![muted("▸ Starting the update…")],
-    };
-    lines.push(Line::default());
-    lines.push(muted("esc hides this; the update keeps going"));
-    lines
+    }
 }
 
 pub(super) fn finished(progress: Option<&Progress>, bugs: &[String], restart: &[String], width: usize) -> (String, Vec<Line<'static>>) {
@@ -108,8 +109,6 @@ pub(super) fn finished(progress: Option<&Progress>, bugs: &[String], restart: &[
         lines.push(heading("Restarting"));
         lines.extend(restart.iter().flat_map(|said| indented(said, width)));
     }
-    lines.push(Line::default());
-    lines.push(keys(&[("d", "details"), ("any other key", "closes")]));
     (title, lines)
 }
 
@@ -120,16 +119,48 @@ fn failed(error: &str, progress: Option<&Progress>, now: u64, width: usize) -> V
         lines.push(Line::default());
         lines.extend(step_lines(progress, now, width));
     }
-    lines.push(Line::default());
-    lines.push(keys(&[("d", "details"), ("any other key", "closes")]));
     lines
 }
 
 fn details(text: &str) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line> = text.lines().map(|line| Line::from(Span::styled(line.to_string(), style(TEXT)))).collect();
-    lines.push(Line::default());
-    lines.push(keys(&[("d", "back"), ("any other key", "closes")]));
-    lines
+    text.lines().map(|line| Line::from(Span::styled(line.to_string(), style(TEXT)))).collect()
+}
+
+fn footer(d: Option<&str>, scrolls: bool, more: bool) -> Line<'static> {
+    let mut line = match d {
+        Some(d) => keys(&[("↑ ↓", "scroll"), ("d", d), ("any other key", "closes")][usize::from(!scrolls)..]),
+        None => muted("esc hides this; the update keeps going"),
+    };
+    if more {
+        line.spans.push(Span::styled(" · ↓ more", style(MUTED)));
+    }
+    line
+}
+
+fn rows(lines: &[Line<'static>], width: u16) -> u16 {
+    Paragraph::new(lines.to_vec()).wrap(Wrap { trim: false }).line_count(width) as u16
+}
+
+fn draw_scrolled(frame: &mut Frame, title: String, body: Vec<Line<'static>>, d: Option<&str>, scroll: &Cell<Scroll>) {
+    super::link::note_lines(&body);
+    let screen = frame.area();
+    let width = WIDTH.min(screen.width.saturating_sub(4));
+    let inner = width.saturating_sub(4);
+    let body_rows = rows(&body, inner);
+    let room = screen.height.saturating_sub(5 + rows(&[footer(d, true, true)], inner)).max(1);
+    let mut at = scroll.get();
+    at.fit(body_rows.saturating_sub(room));
+    scroll.set(at);
+    let foot = vec![Line::default(), footer(d, at.scrolls(), at.more())];
+    let visible = body_rows.min(room);
+    let area = centered(screen, width, visible + rows(&foot, inner) + 2);
+    let block = modal_block(title);
+    let inside = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    let shown = visible.min(inside.height);
+    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }).scroll((at.at(), 0)), Rect { height: shown, ..inside });
+    frame.render_widget(Paragraph::new(foot).wrap(Wrap { trim: false }), Rect { y: inside.y + shown, height: inside.height - shown, ..inside });
 }
 
 pub(super) fn draw(frame: &mut Frame, app: &App) {
@@ -139,14 +170,17 @@ pub(super) fn draw(frame: &mut Frame, app: &App) {
     let now = crate::messages::now();
     let bugs = run.fixed.as_ref().map(|fixed| fixed.bugs.clone()).unwrap_or_default();
     let restart = progress.as_ref().and_then(|progress| progress.summary.as_ref()).map(|summary| app.restart_lines(summary)).unwrap_or_default();
-    let (title, lines) = match &run.outcome {
-        None => ("Updating kebbie".to_string(), running(progress.as_ref(), &run.overall, now, width)),
-        Some(Ok(text)) if run.details => (finished(progress.as_ref(), &bugs, &restart, width).0, details(text)),
-        Some(Ok(_)) => finished(progress.as_ref(), &bugs, &restart, width),
-        Some(Err(error)) if run.details => ("kebbie update".to_string(), details(error)),
-        Some(Err(error)) => ("kebbie update".to_string(), failed(error, progress.as_ref(), now, width)),
+    let (title, lines, d) = match &run.outcome {
+        None => ("Updating kebbie".to_string(), running(progress.as_ref(), &run.overall, now, width), None),
+        Some(Ok(text)) if run.details => (finished(progress.as_ref(), &bugs, &restart, width).0, details(text), Some("back")),
+        Some(Ok(_)) => {
+            let (title, lines) = finished(progress.as_ref(), &bugs, &restart, width);
+            (title, lines, Some("details"))
+        }
+        Some(Err(error)) if run.details => ("kebbie update".to_string(), details(error), Some("back")),
+        Some(Err(error)) => ("kebbie update".to_string(), failed(error, progress.as_ref(), now, width), Some("details")),
     };
-    modal(frame, title, lines, WIDTH);
+    draw_scrolled(frame, title, lines, d, &run.scroll);
 }
 
 impl App {
@@ -180,7 +214,7 @@ impl App {
         thread::spawn(move || {
             let _ = sender.send(updater());
         });
-        self.update = Some(Run { result, outcome: None, details: false, file, overall: Cell::new(Overall::default()), fixed: None, fixed_read: None });
+        self.update = Some(Run { result, outcome: None, details: false, file, overall: Cell::new(Overall::default()), fixed: None, fixed_read: None, scroll: Cell::default() });
         self.mode = Mode::Update;
     }
 
@@ -206,6 +240,11 @@ impl App {
 
     pub(super) fn handle_update(&mut self, key: KeyEvent) {
         let Some(run) = self.update.as_mut() else { return };
+        if let Some(moved) = run.scroll.get().step(&key) {
+            run.scroll.set(moved);
+            self.mode = Mode::Update;
+            return;
+        }
         if run.running() {
             if !matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
                 self.mode = Mode::Update;
@@ -214,6 +253,7 @@ impl App {
         }
         if key.code == KeyCode::Char('d') {
             run.details = !run.details;
+            run.scroll.set(Scroll::default());
             self.mode = Mode::Update;
             return;
         }
@@ -341,6 +381,38 @@ mod tests {
         assert!(matches!(app.mode, Mode::Normal) && app.update.is_none(), "any other key closes it");
         assert!(app.restart_after_update, "closing the summary lets the board restart onto the new kebbie at once");
         assert!(crate::issue_recheck::for_update(&state, 0, "9cbd545", crate::messages::now()).is_none(), "a bug the summary showed is never shown again");
+    }
+
+    #[test]
+    fn a_changelog_longer_than_the_screen_scrolls_under_a_keys_line_that_stays_and_the_wheel_never_closes_it() {
+        let mut app = test_app(Vec::new());
+        let fixed: Vec<String> = (1..=24).map(|n| format!("Fixed entry number {n}")).collect();
+        let fixed: Vec<&str> = fixed.iter().map(String::as_str).collect();
+        let release = updating(&mut app, summary(&["The hub window shows your devices by name"], &fixed));
+        press(&mut app, key(KeyCode::Char('U')));
+        release.send(()).unwrap();
+        waits_for(&mut app, "the outcome", |app| app.update.as_ref().is_some_and(|run| !run.running()));
+        let shown = render(&mut app, 80, 20).0.join("\n");
+        assert!(shown.contains("↑ ↓ scroll · d details · any other key closes · ↓ more") && shown.contains("✓ Updated") && !shown.contains("Fixed entry number 24"), "{shown}");
+        for _ in 0..40 {
+            press(&mut app, key(KeyCode::Down));
+        }
+        assert!(matches!(app.mode, Mode::Update), "↓ scrolls instead of closing");
+        let shown = render(&mut app, 80, 20).0.join("\n");
+        assert!(shown.contains("Fixed entry number 24") && shown.contains("The lead and 2 sessions restart") && !shown.contains("✓ Updated"), "{shown}");
+        assert!(shown.contains("↑ ↓ scroll · d details · any other key closes") && !shown.contains("↓ more"), "{shown}");
+        press(&mut app, key(KeyCode::Home));
+        let wheel = |app: &mut App| app.work_mouse(ratatui::crossterm::event::MouseEvent { kind: ratatui::crossterm::event::MouseEventKind::ScrollDown, column: 40, row: 10, modifiers: ratatui::crossterm::event::KeyModifiers::NONE }, None);
+        for _ in 0..3 {
+            if let Some(scrolled) = wheel(&mut app) {
+                press(&mut app, scrolled);
+            }
+        }
+        assert!(matches!(app.mode, Mode::Update) && app.update.is_some(), "the wheel scrolls and keeps the window open");
+        let shown = render(&mut app, 80, 20).0.join("\n");
+        assert!(!shown.contains("✓ Updated") && shown.contains("↓ more"), "the wheel moved the body: {shown}");
+        press(&mut app, key(KeyCode::Char('x')));
+        assert!(matches!(app.mode, Mode::Normal) && app.update.is_none(), "any other key closes it");
     }
 
     #[test]

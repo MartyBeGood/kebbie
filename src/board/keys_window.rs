@@ -18,14 +18,37 @@ impl Scroll {
         if self.max == 0 {
             return None;
         }
+        self.step(key)
+    }
+
+    pub fn step(self, key: &KeyEvent) -> Option<Scroll> {
         let at = match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.at.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => self.at.saturating_add(1),
             KeyCode::PageUp => self.at.saturating_sub(10),
             KeyCode::PageDown | KeyCode::Char(' ') => self.at.saturating_add(10),
+            KeyCode::Home => 0,
+            KeyCode::End => self.max,
             _ => return None,
         };
         Some(Scroll { at: at.min(self.max), max: self.max })
+    }
+
+    pub fn fit(&mut self, max: u16) {
+        self.max = max;
+        self.at = self.at.min(max);
+    }
+
+    pub fn at(self) -> u16 {
+        self.at
+    }
+
+    pub fn scrolls(self) -> bool {
+        self.max > 0
+    }
+
+    pub fn more(self) -> bool {
+        self.at < self.max
     }
 }
 

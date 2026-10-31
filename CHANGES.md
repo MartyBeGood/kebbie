@@ -17,6 +17,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 - kebbie doctor and the setup guide's Agents step say whether Claude Code and Codex are logged in, from claude auth status and codex login status, with claude auth login or codex login as the fix; an agent that gives no answer reads as login not checked
 
 ### Fixed
+- The update window scrolls a list of what's new and fixed taller than the screen with ↑ ↓, PgUp PgDn, Home End and the mouse wheel, its keys line staying at the bottom with ↓ more while there is more, where the list was cut and the wheel closed the window
 - A Codex task's title on the board is the title Codex gives its conversation alone, where it read as Action Required | Fix the flaky checkout test | wt1.app, with Codex's status and the worktree's name around it; a title kebbie already kept that way shows the conversation's title
 - A Codex task that stops on an approval or a choice mid-task, its terminal titled [ ! ] Action Required, waits under Needs you and the lead hears the question with its options and the keys Codex shows, where the task showed under Working · nothing yet; kebbie choose takes an option's number or its key, as kebbie choose <task> y --prompt <id>
 - A kebbie command a sandboxed Codex task ran inside Codex's sandbox says to run it again asking to leave the sandbox, which you or the lead approve, where it told Codex to drop cd and pipes as a Claude task must

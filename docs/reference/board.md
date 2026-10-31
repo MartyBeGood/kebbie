@@ -290,7 +290,7 @@ kebbie never posts a reply.
 
 The [bugs to send](#bugs-to-send) are folded into one row at first. While any bug waits, the header counts them, such as `! 2 bugs to send`. The board remembers whether the list shows. See [Send it to kebbie's maintainers](../how-to/report-a-problem-with-kebbie.md#send-it-to-kebbies-maintainers).
 
-`U` shows a bar while kebbie builds or downloads. `esc` hides the window while the update goes on, and `U` opens it again. Done, it shows what's new and fixed from kebbie's release notes and what restarts; `d` shows the details, any other key closes it. See [What an update shows](../explanation/updates-and-restarts.md#what-an-update-shows).
+`U` shows a bar while kebbie builds or downloads. `esc` hides the window while the update goes on, and `U` opens it again. Done, it shows what's new and fixed from kebbie's release notes and what restarts; `d` shows the details, any other key or a click closes it. A summary or details taller than the screen scroll with `↑` `↓`, `PgUp` `PgDn`, `Home` `End` and the mouse wheel, and `↓ more` on the keys line says there is more. See [What an update shows](../explanation/updates-and-restarts.md#what-an-update-shows).
 
 `L` opens `Restart the lead` with two rows. See [Starting the lead fresh](../explanation/lead-and-away-mode.md#starting-the-lead-fresh).
 

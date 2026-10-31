@@ -140,6 +140,10 @@ impl App {
                     (Some(Hit::Question(index)), Mode::Questions(window)) => window.select(&self.questions, index),
                     (Some(Hit::Answer(index)), Mode::Questions(window)) => window.click(&self.questions, index),
                     (None, Mode::Options(_) | Mode::RestartLead(_) | Mode::Park { .. } | Mode::Message(_) | Mode::Help(_)) => self.mode = Mode::Normal,
+                    (None, Mode::Update) => {
+                        self.mode = Mode::Normal;
+                        self.handle_update(KeyEvent::from(KeyCode::Esc));
+                    }
                     _ => {}
                 }
                 None
