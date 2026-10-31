@@ -4,7 +4,7 @@ use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -199,29 +199,14 @@ pub fn output_with_timeout(program: &str, args: &[&str], cwd: &Path, timeout: Du
     timed(command, program, timeout)
 }
 
-fn timed(mut command: Command, program: &str, timeout: Duration) -> std::result::Result<String, String> {
-    let mut child = command.stdin(Stdio::null()).stderr(Stdio::piped()).process_group(0)
-        .spawn().map_err(|error| format!("{program}: {error}"))?;
-    let reader = child.stdout.take().map(|mut pipe| std::thread::spawn(move || { let mut out = String::new(); let _ = std::io::Read::read_to_string(&mut pipe, &mut out); out }));
-    let started = Instant::now();
-    loop {
-        match child.try_wait().map_err(|error| error.to_string())? {
-            Some(status) if status.success() => return Ok(reader.and_then(|reader| reader.join().ok()).unwrap_or_default()),
-            Some(status) => {
-                let mut stderr = String::new();
-                if let Some(mut pipe) = child.stderr.take() {
-                    let _ = std::io::Read::read_to_string(&mut pipe, &mut stderr);
-                }
-                let detail = stderr.trim();
-                let code = status.code().map_or("a signal".to_string(), |code| code.to_string());
-                return Err(if detail.is_empty() { format!("exited with {code}") } else { format!("exited with {code}: {detail}") });
-            }
-            None if started.elapsed() >= timeout => {
-                let _ = Command::new("kill").args(["-s", "KILL", "--", &format!("-{}", child.id())]).stderr(Stdio::null()).status();
-                let _ = child.wait();
-                return Err(format!("did not finish within {} seconds and was stopped", timeout.as_secs()));
-            }
-            None => std::thread::sleep(Duration::from_millis(50)),
+fn timed(command: Command, program: &str, timeout: Duration) -> std::result::Result<String, String> {
+    match crate::sh::output_with_timeout(command, timeout).map_err(|error| format!("{program}: {error}"))? {
+        None => Err(format!("did not finish within {} seconds and was stopped", timeout.as_secs())),
+        Some(done) if done.code == Some(0) => Ok(done.stdout),
+        Some(done) => {
+            let detail = done.stderr.trim();
+            let code = done.code.map_or("a signal".to_string(), |code| code.to_string());
+            Err(if detail.is_empty() { format!("exited with {code}") } else { format!("exited with {code}: {detail}") })
         }
     }
 }
@@ -357,7 +342,7 @@ mod tests {
         assert_eq!(run_with_timeout("sh", &["-c".to_string(), "exit 0".to_string()], TIMEOUT), Ok(()));
         let failed = run_with_timeout("sh", &["-c".to_string(), "echo no route >&2; exit 7".to_string()], TIMEOUT).unwrap_err();
         assert!(failed.contains("7") && failed.contains("no route"), "{failed}");
-        let started = Instant::now();
+        let started = std::time::Instant::now();
         let hung = run_with_timeout("sh", &["-c".to_string(), "sleep 30".to_string()], Duration::from_millis(200)).unwrap_err();
         assert!(hung.contains("did not finish"), "{hung}");
         assert!(started.elapsed() < Duration::from_secs(5), "the timeout stops the command");

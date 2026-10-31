@@ -50,6 +50,54 @@ pub fn succeeds(program: &str, args: &[&str], cwd: Option<&Path>) -> bool {
     command(program, args, cwd).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|status| status.success())
 }
 
+#[derive(Debug, PartialEq)]
+pub struct Timed {
+    pub code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+const DRAIN: std::time::Duration = std::time::Duration::from_millis(500);
+
+// None once it outlives the timeout, its process group stopped; a grandchild that keeps its pipes open is not waited for.
+pub fn output_with_timeout(mut command: Command, timeout: std::time::Duration) -> std::io::Result<Option<Timed>> {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0).spawn()?;
+    let (sender, received) = std::sync::mpsc::channel();
+    let pipes: [Option<Box<dyn Read + Send>>; 2] = [child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>), child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>)];
+    for (index, pipe) in pipes.into_iter().enumerate() {
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            let _ = sender.send((index, String::from_utf8_lossy(&bytes).to_string()));
+        });
+    }
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() >= timeout {
+            let _ = Command::new("kill").args(["-s", "KILL", "--", &format!("-{}", child.id())]).stderr(Stdio::null()).status();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+    let mut text = [String::new(), String::new()];
+    let until = std::time::Instant::now() + DRAIN;
+    for _ in 0..2 {
+        let Ok((index, read)) = received.recv_timeout(until.saturating_duration_since(std::time::Instant::now())) else { break };
+        text[index] = read;
+    }
+    let [stdout, stderr] = text;
+    Ok(Some(Timed { code: status.code(), stdout, stderr }))
+}
+
 // A child kebbie does not wait for itself is waited on by a thread, or it stays a zombie for as long as kebbie runs.
 pub fn reap(mut child: std::process::Child) -> u32 {
     let pid = child.id();

@@ -1,8 +1,6 @@
-use std::io::Read;
-use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 pub const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -28,24 +26,10 @@ pub const CODEX_FIX: &str = "codex login";
 
 // Exit code and stdout with stderr, or None when it does not start or outlives the timeout.
 fn answer(program: &Path, args: &[&str], timeout: Duration) -> Option<(Option<i32>, String)> {
-    let mut child = Command::new(program).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0).spawn().ok()?;
-    let read = |pipe: Option<Box<dyn Read + Send>>| pipe.map(|mut pipe| std::thread::spawn(move || { let mut text = String::new(); let _ = pipe.read_to_string(&mut text); text }));
-    let out = read(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
-    let err = read(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait().ok()? {
-            Some(status) => break status,
-            None if started.elapsed() >= timeout => {
-                let _ = Command::new("kill").args(["-s", "KILL", "--", &format!("-{}", child.id())]).stderr(Stdio::null()).status();
-                let _ = child.wait();
-                return None;
-            }
-            None => std::thread::sleep(Duration::from_millis(25)),
-        }
-    };
-    let text = [out, err].into_iter().flatten().filter_map(|reader| reader.join().ok()).collect::<Vec<_>>().join("\n");
-    Some((status.code(), text))
+    let mut command = Command::new(program);
+    command.args(args);
+    let done = crate::sh::output_with_timeout(command, timeout).ok()??;
+    Some((done.code, [done.stdout, done.stderr].join("\n")))
 }
 
 // claude auth status prints JSON with loggedIn whatever its exit code; no JSON is no answer.
@@ -97,6 +81,15 @@ mod tests {
         assert_eq!(codex(Some(&fake(&dir, "old", "echo 'unknown command' >&2; exit 2")), TIMEOUT), Login::Unknown);
         assert_eq!(codex(Some(&fake(&dir, "slow", "sleep 5")), Duration::from_millis(200)), Login::Unknown);
         assert_eq!(codex(None, TIMEOUT), Login::Unknown);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_status_command_that_leaves_a_child_holding_its_output_still_answers() {
+        let dir = crate::sh::test_dir("login-grandchild");
+        let started = std::time::Instant::now();
+        assert_eq!(codex(Some(&fake(&dir, "forks", "sleep 30 &\necho 'Logged in using ChatGPT'")), TIMEOUT), Login::In);
+        assert!(started.elapsed() < Duration::from_secs(3), "a grandchild on its stdout does not hold the check: {:?}", started.elapsed());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
