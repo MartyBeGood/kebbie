@@ -54,7 +54,7 @@ pub fn routines() -> Vec<Routine> {
         Routine { name: "issues", every: crate::issue_recheck::EVERY, run: |ctx| { ctx.notes.extend(crate::issue_recheck::tick(&crate::lead::state_dir()?)); Ok(()) } },
         Routine { name: "rules", every: crate::rules_check::EVERY, run: |ctx| { ctx.notes.extend(crate::rules_check::tick(&crate::lead::state_dir()?)); Ok(()) } },
         Routine { name: "review", every: crate::rules_check::EVERY, run: |ctx| { ctx.notes.extend(crate::review::tick(&crate::lead::state_dir()?)); Ok(()) } },
-        Routine { name: "assess", every: crate::rules_check::EVERY, run: |ctx| { ctx.notes.extend(crate::review_rule::tick(&crate::lead::state_dir()?)); Ok(()) } },
+        Routine { name: "assess", every: crate::rules_check::EVERY, run: |ctx| { ctx.notes.extend(crate::assessment::tick(&crate::lead::state_dir()?)); Ok(()) } },
         Routine { name: "routines", every: crate::routines::EVERY, run: |ctx| { ctx.notes.extend(crate::routines::tick(&crate::lead::state_dir()?)); Ok(()) } },
         Routine { name: "hub", every: crate::hub::EVERY, run: |_| crate::hub::tick() },
         Routine { name: "reports", every: crate::hub::inbox::EVERY, run: |ctx| { ctx.notes.extend(crate::hub::inbox::tick(&crate::lead::state_dir()?)?); Ok(()) } },

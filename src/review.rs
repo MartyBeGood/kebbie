@@ -376,7 +376,7 @@ fn review(repo: &Path, slot: &Slot, address: &str, state: &Path) -> Result<(Stri
     let sha = git(&slot.path, &["rev-parse", "HEAD"])?;
     let settings = config::resolve(Some(repo))?.settings;
     let open = git(&slot.path, &["log", "--reverse", "--format=%h %s", &format!("{upstream}..{sha}")])?;
-    let pushed = crate::review_rule::pushed_log(state, address, &slot.path);
+    let pushed = crate::assessment::pushed_log(state, address, &slot.path);
     let commits = if pushed.is_empty() { open } else { format!("{pushed}\n{open}") };
     let said = tasks::transcript(repo, slot).and_then(|(agent, file)| Some(agent.user_messages(&fs::read_to_string(file).ok()?))).unwrap_or_default();
     let file = verdict_file(state, address);

@@ -501,7 +501,7 @@ The task's commits not yet pushed are its next steps, in order. A commit beyond 
 | `profile` | The profile it started with: `task` for the built-in one, `null` for a session that is no task. |
 | `parked_until` | While it is parked: the Unix time it comes back, or `"unparked"` until you bring it back; `null` otherwise. |
 | `recipe` | How it is done: `name`, `shown`, `why` and `by` (`the lead`, `you`, `the task`), or `null` without one. |
-| `review_rule` | The assessor's word on its last ready report, such as `review suggested: changes how VAT is rounded`, `no review: wording in two templates`, `review being assessed` or `review not assessed`, or `null`. |
+| `assessment` | The assessor's word on its last ready report, such as `review suggested: changes how VAT is rounded`, `no review: wording in two templates`, `review being assessed` or `review not assessed`, or `null`. |
 | `phase` | Where it stands as kebbie keeps it, below. |
 
 `phase` holds:

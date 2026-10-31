@@ -61,7 +61,7 @@ pub fn report(cwd: &Path, state: Option<&str>, next: Option<&str>, card: Option<
         let text = if event == crate::notify::Event::Ready { format!("{me} is ready: {summary}") } else { format!("{me} needs you: {}", report.next) };
         crate::notify::send(cwd, &crate::notify::Notice::from(event, &me, text));
     }
-    let check = if report.state == "ready" { review_again(cwd) + &crate::review_rule::on_ready(cwd) + &rules_check(cwd) } else { String::new() };
+    let check = if report.state == "ready" { review_again(cwd) + &crate::assessment::on_ready(cwd) + &rules_check(cwd) } else { String::new() };
     Ok(format!("Reported to the lead and the board as {me}.{kept}{check}"))
 }
 

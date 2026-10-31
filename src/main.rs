@@ -2,6 +2,7 @@ mod actions;
 mod agent;
 mod area_page;
 mod areas;
+mod assessment;
 mod backlog;
 mod backlog_file;
 mod changes;
@@ -48,7 +49,6 @@ mod repo;
 mod report;
 mod restart;
 mod review;
-mod review_rule;
 mod rules_check;
 mod routes;
 mod routine_file;
@@ -658,7 +658,7 @@ fn run(arguments: &Arguments) -> Result<String> {
         Some("tidy") => tasks::tidy(&cwd, Some(name.ok_or("kebbie tidy needs a task name")?), &arguments.positionals[2..].join(" ")),
         Some("review") if arguments.flag("--run") && arguments.flag("--rules") => rules_check::run(&cwd),
         Some("review") if arguments.flag("--run") => review::run(&cwd),
-        Some("review") if arguments.flag("--assess") => review_rule::run(&cwd),
+        Some("review") if arguments.flag("--assess") => assessment::run(&cwd),
         Some("review") if arguments.flag("--withdraw") => review::withdraw(&cwd, name),
         Some("review") if arguments.flag("--view") => board::review::run(Path::new(name.ok_or("kebbie review --view needs the review's folder")?)),
         Some("review") => review::request(&cwd, name),

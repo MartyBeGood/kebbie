@@ -12,8 +12,14 @@ use crate::trusted_spawn;
 pub const TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const REASON_LIMIT: usize = 120;
 
+// An older kebbie kept this folder as review-rule/; it moves over on the first look.
 fn dir(state: &Path) -> PathBuf {
-    state.join("review-rule")
+    let dir = state.join("assessment");
+    let before = state.join("review-rule");
+    if !dir.exists() && before.is_dir() {
+        let _ = fs::rename(&before, &dir);
+    }
+    dir
 }
 
 fn file(state: &Path, address: &str) -> PathBuf {
@@ -24,7 +30,7 @@ fn marked(state: &Path, address: &str, kind: &str) -> PathBuf {
     dir(state).join(format!("{address}.{kind}"))
 }
 
-// The rule's word on the task as it last reported ready, for the board: "review suggested: …", "no review: …" or "review not assessed".
+// The assessor's word on the task as it last reported ready, for the board: "review suggested: …", "no review: …" or "review not assessed".
 pub fn reason_in(state: &Path, address: &str) -> Option<String> {
     fs::read_to_string(file(state, address)).ok().map(|text| text.trim().to_string()).filter(|text| !text.is_empty())
 }
@@ -300,6 +306,16 @@ mod tests {
     use super::*;
     use crate::tasks::test_support::*;
     use crate::trusted_spawn::{SPAWNED, digest};
+
+    #[test]
+    fn an_older_review_rule_folder_moves_over_on_the_first_look() {
+        let state = crate::sh::test_dir("assessment-folder");
+        std::fs::create_dir_all(state.join("review-rule")).unwrap();
+        std::fs::write(state.join("review-rule/billing@app"), "no review: wording").unwrap();
+        assert_eq!(reason_in(&state, "billing@app").as_deref(), Some("no review: wording"));
+        assert!(!state.join("review-rule").exists() && state.join("assessment/billing@app").is_file());
+        std::fs::remove_dir_all(state).unwrap();
+    }
 
     #[test]
     fn the_assessors_last_needed_line_and_its_reason_are_its_answer() {

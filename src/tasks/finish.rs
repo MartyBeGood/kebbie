@@ -112,7 +112,7 @@ pub(super) fn close_task(cwd: &Path, name: Option<&str>, vault: Option<&crate::v
     super::follow::forget(&peers::address(task_of(&slot), &name_of(&repo)));
     super::park::forget(&peers::address(task_of(&slot), &name_of(&repo)));
     crate::review::forget(task_of(&slot), &repo);
-    crate::review_rule::forget(task_of(&slot), &repo);
+    crate::assessment::forget(task_of(&slot), &repo);
     crate::rules_check::forget(task_of(&slot), &repo);
     crate::report::forget_card(task_of(&slot), &repo);
     crate::evidence::forget(task_of(&slot), &repo);
@@ -280,7 +280,7 @@ fn discard(cwd: &Path, name: Option<&str>, force: bool, how: &str, kind: Option<
     super::follow::forget(&peers::address(task, &name_of(&repo)));
     super::park::forget(&peers::address(task, &name_of(&repo)));
     crate::review::forget(task, &repo);
-    crate::review_rule::forget(task, &repo);
+    crate::assessment::forget(task, &repo);
     crate::rules_check::forget(task, &repo);
     crate::report::forget_card(task, &repo);
     crate::evidence::forget(task, &repo);

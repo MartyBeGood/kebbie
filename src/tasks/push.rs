@@ -298,7 +298,7 @@ pub(super) fn authorize_as(caller: &Caller, repo: &Path, slot: &Slot, upstream: 
     let sha = through_sha(&slot.path, upstream, through)?;
     let shown = crate::review::shown(&address, &slot.path, upstream);
     let covered = |reviewed: &str| same_code(&slot.path, upstream, reviewed, &head) || same_code(&slot.path, upstream, reviewed, &sha);
-    if let Some(why) = state_dir().ok().and_then(|state| crate::review_rule::holds_push(&state, &address)) {
+    if let Some(why) = state_dir().ok().and_then(|state| crate::assessment::holds_push(&state, &address)) {
         return Notice::new(Tone::NotNow, format!("{refused}: {why}")).next("It waits under In review; push it again once that is settled.").detail("task", task).err();
     }
     crate::review::gate(shown.as_ref(), covered).map_err(|why| Notice::new(Tone::NotNow, format!("{refused}: {why}")).detail("task", task).to_string())?;
@@ -580,7 +580,7 @@ fn deliver(repo: &Path, slot: &Slot, upstream: &str, through: Through, out: &Out
         }
     };
     super::landed::keep_open(state, &address, keep_open);
-    if keep_open && let Err(error) = crate::review_rule::note_pushed(state, &address, &shas) {
+    if keep_open && let Err(error) = crate::assessment::note_pushed(state, &address, &shas) {
         eprintln!("kebbie: the review of {address} may miss its pushed steps: {error}");
     }
     crate::comments::begin(state, repo, &address, &shas, messages::now());
@@ -959,7 +959,7 @@ mod tests {
         let state = state_of(&dir);
         let said = deliver(&dir, &slot, &upstream, through, &Out { sha: fourth.clone(), rebased: false }, "the user", &state, &crate::ci::begin).unwrap();
         assert!(said.contains("It stays open with 1 commit on top"), "{said}");
-        assert_eq!(crate::review_rule::pushed_in(&state, &crate::peers::address("billing", &name_of(&dir))), std::slice::from_ref(&fourth), "the pushed step stays in the task's review");
+        assert_eq!(crate::assessment::pushed_in(&state, &crate::peers::address("billing", &name_of(&dir))), std::slice::from_ref(&fourth), "the pushed step stays in the task's review");
         assert_eq!(git(&origin, &["rev-parse", upstream.trim_start_matches("origin/")]).unwrap(), fourth);
         assert_eq!((git(&slot.path, &["rev-parse", "HEAD"]).unwrap(), ahead_behind(&slot.path, &upstream).unwrap()), (fifth, (1, 0)), "nothing to rebase: the rest sits on what was pushed");
         assert_eq!(std::fs::read_to_string(slot.path.join("d")).unwrap(), "uncommitted");
