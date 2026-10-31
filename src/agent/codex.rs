@@ -9,9 +9,13 @@ use crate::sh::Result;
 use crate::tasks::Session;
 use crate::typing::Draft;
 
-pub const PLUGIN_ID: &str = "kebbie@kebbie";
-const MARKETPLACE: &str = "kebbie";
+// Codex reinstalls an enabled plugin from any marketplace of the same name it finds in the session's repo, and kebbie's own repo ships a Claude marketplace named "kebbie".
+pub const PLUGIN_ID: &str = "kebbie@kebbie-tasks";
+const MARKETPLACE: &str = "kebbie-tasks";
 const NAME: &str = "kebbie";
+const OLD_MARKETPLACE: &str = "kebbie";
+const OLD_ENABLE: &str = "plugins.kebbie@kebbie.enabled=true";
+const MARKETPLACE_FILES: [&str; 4] = [".agents/plugins/marketplace.json", ".agents/plugins/api_marketplace.json", ".claude-plugin/marketplace.json", ".cursor-plugin/marketplace.json"];
 const MANIFEST: &str = ".codex-plugin/plugin.json";
 const HOOKS_FILE: &str = "hooks/hooks.json";
 const LAUNCHER: &str = "bin/kebbie-hook";
@@ -37,9 +41,60 @@ pub fn home() -> Option<PathBuf> {
     std::env::var("CODEX_HOME").ok().filter(|dir| !dir.is_empty()).map(PathBuf::from).or_else(|| std::env::var("HOME").ok().map(|home| Path::new(&home).join(".codex")))
 }
 
+fn plugin_base(home: &Path, marketplace: &str) -> PathBuf {
+    home.join("plugins/cache").join(marketplace).join(NAME)
+}
+
 // Codex loads an enabled plugin from its cache at <marketplace>/<plugin>/<version>, and "local" wins over any other version there.
 pub fn plugin_root(home: &Path) -> PathBuf {
-    home.join("plugins/cache").join(MARKETPLACE).join(NAME).join("local")
+    plugin_base(home, MARKETPLACE).join("local")
+}
+
+// Versions beside "local" are copies Codex installed itself from a marketplace of the same name; installing one removes "local".
+pub fn foreign_copies(home: &Path, marketplace: &str) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(plugin_base(home, marketplace)).into_iter().flatten().flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter(|entry| entry.file_name().to_str().is_some_and(|name| name != "local" && !name.starts_with('.')))
+        .map(|entry| entry.path())
+        .collect();
+    found.sort();
+    found
+}
+
+// The plugin an older kebbie wrote under its first id, which a repo's marketplace named "kebbie" replaces.
+pub fn old_copies(home: &Path) -> Vec<PathBuf> {
+    foreign_copies(home, OLD_MARKETPLACE)
+}
+
+fn ours(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join(LAUNCHER)).is_ok_and(|text| text.contains("hook codex"))
+}
+
+fn remove_empty_above(dir: &Path, levels: usize) {
+    for dir in dir.ancestors().skip(1).take(levels) {
+        if std::fs::remove_dir(dir).is_err() {
+            break;
+        }
+    }
+}
+
+// Only kebbie's own "local" under the first id goes; a copy Codex installed there is left for doctor to name.
+fn remove_old(home: &Path) -> Result<bool> {
+    let old = plugin_base(home, OLD_MARKETPLACE).join("local");
+    if !ours(&old) {
+        return Ok(false);
+    }
+    std::fs::remove_dir_all(&old).map_err(|error| format!("{}: {error}", old.display()))?;
+    remove_empty_above(&old, 2);
+    Ok(true)
+}
+
+// A marketplace in the task's folder that offers a plugin under kebbie's id would make Codex replace kebbie's plugin with it.
+pub fn shadowed_in(folder: &Path) -> Option<PathBuf> {
+    MARKETPLACE_FILES.iter().map(|file| folder.join(file)).find(|path| {
+        let Some(manifest) = std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok()) else { return false };
+        manifest["name"] == MARKETPLACE && manifest["plugins"].as_array().is_some_and(|plugins| plugins.iter().any(|plugin| plugin["name"] == NAME))
+    })
 }
 
 fn handler(hook: &Hook) -> Value {
@@ -118,12 +173,14 @@ pub enum Installed {
     Missing,
     Current,
     Stale(Vec<&'static str>),
+    Replaced(Vec<PathBuf>),
 }
 
 pub fn installed(home: &Path, kebbie: &str) -> Installed {
     let root = plugin_root(home);
     if !root.join(HOOKS_FILE).is_file() {
-        return Installed::Missing;
+        let copies = foreign_copies(home, MARKETPLACE);
+        return if copies.is_empty() { Installed::Missing } else { Installed::Replaced(copies) };
     }
     let stale: Vec<&'static str> = plugin_files(kebbie).into_iter().filter(|(file, text, _)| std::fs::read_to_string(root.join(file)).ok().as_deref() != Some(text.as_str())).map(|(file, _, _)| file).collect();
     if stale.is_empty() { Installed::Current } else { Installed::Stale(stale) }
@@ -146,7 +203,12 @@ pub fn ready_to_start(home: Option<&Path>, kebbie: &str) -> Result<()> {
         Installed::Current => Ok(()),
         Installed::Missing => Err(format!("kebbie's Codex plugin is not installed in {}, so the task would neither report nor get its role; run kebbie setup codex", plugin_root(home).display())),
         Installed::Stale(files) => Err(format!("kebbie's Codex plugin in {} is not what this kebbie writes ({}); run kebbie setup codex", plugin_root(home).display(), files.join(", "))),
+        Installed::Replaced(copies) => Err(format!("Codex replaced kebbie's plugin with {}, a copy from a marketplace of the same name; run kebbie setup codex", shown_paths(&copies))),
     }
+}
+
+pub fn shown_paths(paths: &[PathBuf]) -> String {
+    paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(", ")
 }
 
 // Only kebbie's own folder in Codex's plugin cache is written; Codex's config.toml and hooks.json stay the user's.
@@ -160,6 +222,7 @@ pub fn install(home: &Path, kebbie: &str) -> Result<Vec<&'static str>> {
             written.push(file);
         }
     }
+    remove_old(home)?;
     Ok(written)
 }
 
@@ -167,9 +230,10 @@ pub fn install(home: &Path, kebbie: &str) -> Result<Vec<&'static str>> {
 pub fn refresh(home: Option<&Path>, kebbie: &str) -> Option<Result<Vec<&'static str>>> {
     let home = home?;
     match installed(home, kebbie) {
+        Installed::Missing if ours(&plugin_base(home, OLD_MARKETPLACE).join("local")) => Some(install(home, kebbie)),
         Installed::Missing => None,
         Installed::Current => Some(Ok(Vec::new())),
-        Installed::Stale(_) => Some(install(home, kebbie)),
+        Installed::Stale(_) | Installed::Replaced(_) => Some(install(home, kebbie)),
     }
 }
 
@@ -183,15 +247,12 @@ pub fn refresh_line(home: Option<&Path>, kebbie: &str) -> Option<String> {
 
 pub fn uninstall(home: &Path) -> Result<bool> {
     let root = plugin_root(home);
+    let old = remove_old(home)?;
     if !root.exists() {
-        return Ok(false);
+        return Ok(old);
     }
     std::fs::remove_dir_all(&root).map_err(|error| format!("{}: {error}", root.display()))?;
-    for dir in root.ancestors().skip(1).take(2) {
-        if std::fs::remove_dir(dir).is_err() {
-            break;
-        }
-    }
+    remove_empty_above(&root, 2);
     Ok(true)
 }
 
@@ -304,7 +365,7 @@ pub fn with_role(args: &[String]) -> Vec<String> {
     let mut kept = Vec::new();
     let mut words = args.iter().peekable();
     while let Some(word) = words.next() {
-        let ours = |value: &String| value == &enable_override() || value.starts_with("hooks.state=");
+        let ours = |value: &String| value == &enable_override() || value == OLD_ENABLE || value.starts_with("hooks.state=");
         if (word == "-c" || word == "--config") && words.peek().is_some_and(|value| ours(value)) {
             words.next();
         } else {
@@ -487,6 +548,7 @@ impl Availability {
             Installed::Current => "kebbie's plugin installed".to_string(),
             Installed::Missing => "kebbie's plugin not installed: kebbie setup codex".to_string(),
             Installed::Stale(_) => "kebbie's plugin out of date: kebbie setup codex".to_string(),
+            Installed::Replaced(_) => "kebbie's plugin replaced by a copy Codex installed: kebbie setup codex".to_string(),
         };
         format!("{binary} · {plugin}")
     }
@@ -529,7 +591,7 @@ mod tests {
         let config = after(&args, "-c");
         assert!(config.contains(&"model_reasoning_effort=\"high\""), "{config:?}");
         assert!(config.contains(&"shell_environment_policy.set={GIT_CONFIG_COUNT=\"6\",GIT_CONFIG_KEY_0=\"url.kebbie-blocks-push://.pushInsteadOf\",GIT_CONFIG_VALUE_0=\"\",GIT_CONFIG_KEY_1=\"protocol.kebbie-blocks-push.allow\",GIT_CONFIG_VALUE_1=\"never\",GIT_CONFIG_KEY_2=\"url./.pushInsteadOf\",GIT_CONFIG_VALUE_2=\"/\",GIT_CONFIG_KEY_3=\"url../.pushInsteadOf\",GIT_CONFIG_VALUE_3=\"./\",GIT_CONFIG_KEY_4=\"url.../.pushInsteadOf\",GIT_CONFIG_VALUE_4=\"../\",GIT_CONFIG_KEY_5=\"url.file://.pushInsteadOf\",GIT_CONFIG_VALUE_5=\"file://\",KEBBIE_ADDRESS=\"billing@app\",TMPDIR=\"/src/app/.git/worktrees/1/kebbie-tmp\"}"), "the push block reaches every command it runs, local paths let through: {config:?}");
-        assert!(config.contains(&"plugins.kebbie@kebbie.enabled=true") && config.iter().any(|value| value.starts_with("hooks.state={\"kebbie@kebbie:hooks/hooks.json:session_start:0:0\"={trusted_hash=\"sha256:")), "{config:?}");
+        assert!(config.contains(&"plugins.kebbie@kebbie-tasks.enabled=true") && config.iter().any(|value| value.starts_with("hooks.state={\"kebbie@kebbie-tasks:hooks/hooks.json:session_start:0:0\"={trusted_hash=\"sha256:")), "{config:?}");
         assert!(!args.iter().any(|word| word.contains("ignored")), "Codex picks a new session's id itself");
         assert!(!args.iter().any(|word| word.starts_with("--dangerously")), "{args:?}");
     }
@@ -568,10 +630,10 @@ mod tests {
             assert_eq!(written, &handler(hook), "{}", hook.event);
         }
         assert_eq!(file["hooks"]["SessionStart"][0]["hooks"][0]["additionalContextLimit"], json!(0), "a long role is passed whole");
-        assert_eq!(hook_key(&HOOKS[2]), "kebbie@kebbie:hooks/hooks.json:stop:0:0");
+        assert_eq!(hook_key(&HOOKS[2]), "kebbie@kebbie-tasks:hooks/hooks.json:stop:0:0");
         let reported = ["sha256:295a39bbc9d240f43c3f0b9de092ff1e0b435dc36629e69ea10b3316f3b6163d", "sha256:7a7859ef4dc3adbcfaf3e02b025e11999a6850fdd9c76dffd746561da574a189", "sha256:d777eb217913a82b5591d44ce47b1653542e40ad4164479c2c427d6ca93f3482"];
         assert_eq!(HOOKS.iter().map(hook_hash).collect::<Vec<_>>(), reported, "the currentHash codex app-server 0.163.0 reports in hooks/list for these hooks; a change to a hook changes it, and kebbie's override with it");
-        assert!(trust_override().starts_with("hooks.state={\"kebbie@kebbie:hooks/hooks.json:session_start:0:0\"={trusted_hash=\"sha256:"));
+        assert!(trust_override().starts_with("hooks.state={\"kebbie@kebbie-tasks:hooks/hooks.json:session_start:0:0\"={trusted_hash=\"sha256:"));
         let parsed: toml::Table = trust_override().replacen("hooks.state=", "state = ", 1).parse().unwrap();
         assert_eq!(parsed["state"].as_table().unwrap().len(), 3, "the override parses as TOML with all three entries");
     }
@@ -591,7 +653,7 @@ mod tests {
         std::fs::write(home.join("hooks.json"), "{\"hooks\":{}}").unwrap();
         assert_eq!(installed(&home, "/opt/kebbie"), Installed::Missing);
         let written = install(&home, "/opt/kebbie").unwrap();
-        let root = home.join("plugins/cache/kebbie/kebbie/local");
+        let root = home.join("plugins/cache/kebbie-tasks/kebbie/local");
         assert_eq!(written, [".codex-plugin/plugin.json", "hooks/hooks.json", "bin/kebbie-hook"]);
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(root.join("bin/kebbie-hook")).unwrap().permissions().mode() & 0o777, 0o755);
@@ -603,7 +665,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(home.join("config.toml")).unwrap(), "model = \"gpt-5.5\"\n");
         assert_eq!(std::fs::read_to_string(home.join("hooks.json")).unwrap(), "{\"hooks\":{}}");
         assert!(uninstall(&home).unwrap());
-        assert!(!home.join("plugins/cache/kebbie").exists(), "the empty folders above go too");
+        assert!(!home.join("plugins/cache/kebbie-tasks").exists(), "the empty folders above go too");
         assert!(home.join("plugins/cache").is_dir() && home.join("config.toml").is_file() && home.join("hooks.json").is_file());
         assert!(!uninstall(&home).unwrap());
         std::fs::remove_dir_all(home).unwrap();
@@ -637,13 +699,64 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
+    fn write(path: &Path, text: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn kebbies_plugin_id_is_not_the_name_of_kebbies_own_claude_marketplace() {
+        let marketplace: Value = serde_json::from_str(include_str!("../../.claude-plugin/marketplace.json")).unwrap();
+        assert_ne!(marketplace["name"], MARKETPLACE, "codex-rs/core-plugins/src/loader.rs at rust-v0.163.0 reinstalls an enabled plugin from a marketplace of the same name in the session's repo, and store.rs then removes local");
+        assert_eq!(PLUGIN_ID, format!("{NAME}@{MARKETPLACE}"));
+        let repo = crate::sh::test_dir("codex-shadow");
+        assert_eq!(shadowed_in(&repo), None);
+        write(&repo.join(".claude-plugin/marketplace.json"), include_str!("../../.claude-plugin/marketplace.json"));
+        assert_eq!(shadowed_in(&repo), None, "kebbie's own repo does not shadow it");
+        write(&repo.join(".agents/plugins/marketplace.json"), r#"{"name":"kebbie-tasks","plugins":[{"name":"kebbie","source":{"source":"local","path":"./x"}}]}"#);
+        assert_eq!(shadowed_in(&repo), Some(repo.join(".agents/plugins/marketplace.json")));
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn a_copy_codex_installed_in_place_of_kebbies_plugin_is_named_and_setup_puts_kebbies_back() {
+        let home = crate::sh::test_dir("codex-replaced");
+        install(&home, "/opt/kebbie").unwrap();
+        std::fs::remove_dir_all(plugin_root(&home)).unwrap();
+        write(&plugin_base(&home, MARKETPLACE).join("0.30.0/build.rs"), "fn main() {}\n");
+        let copy = plugin_base(&home, MARKETPLACE).join("0.30.0");
+        assert_eq!(installed(&home, "/opt/kebbie"), Installed::Replaced(vec![copy.clone()]));
+        let refused = ready_to_start(Some(&home), "/opt/kebbie").unwrap_err();
+        assert!(refused.contains("Codex replaced kebbie's plugin with") && refused.contains("0.30.0") && refused.contains("kebbie setup codex"), "{refused}");
+        assert_eq!(refresh_line(Some(&home), "/opt/kebbie").as_deref(), Some("Codex plugin: updated .codex-plugin/plugin.json, hooks/hooks.json, bin/kebbie-hook"));
+        assert_eq!(installed(&home, "/opt/kebbie"), Installed::Current, "local wins over the copy beside it");
+        assert_eq!(foreign_copies(&home, MARKETPLACE), [copy]);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn the_plugin_under_the_first_id_moves_to_the_new_one_and_a_copy_codex_made_there_stays_for_doctor() {
+        let home = crate::sh::test_dir("codex-old-id");
+        let old = home.join("plugins/cache/kebbie/kebbie/local");
+        for (file, text, _) in plugin_files("/opt/kebbie") {
+            write(&old.join(file), &text);
+        }
+        assert_eq!(installed(&home, "/opt/kebbie"), Installed::Missing);
+        assert_eq!(refresh_line(Some(&home), "/opt/kebbie").as_deref(), Some("Codex plugin: updated .codex-plugin/plugin.json, hooks/hooks.json, bin/kebbie-hook"), "an update moves an opted-in plugin to the new id");
+        assert!(!home.join("plugins/cache/kebbie").exists() && installed(&home, "/opt/kebbie") == Installed::Current);
+        write(&home.join("plugins/cache/kebbie/kebbie/0.30.0/src/main.rs"), "fn main() {}\n");
+        install(&home, "/opt/kebbie").unwrap();
+        assert_eq!(old_copies(&home), [home.join("plugins/cache/kebbie/kebbie/0.30.0")], "a copy kebbie did not write is never removed");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
     #[test]
     fn uninstall_keeps_other_plugins_from_the_same_cache() {
         let home = crate::sh::test_dir("codex-uninstall");
         install(&home, "/opt/kebbie").unwrap();
-        std::fs::create_dir_all(home.join("plugins/cache/kebbie/other/local")).unwrap();
+        std::fs::create_dir_all(home.join("plugins/cache/kebbie-tasks/other/local")).unwrap();
         uninstall(&home).unwrap();
-        assert!(home.join("plugins/cache/kebbie/other/local").is_dir() && !home.join("plugins/cache/kebbie/kebbie").exists());
+        assert!(home.join("plugins/cache/kebbie-tasks/other/local").is_dir() && !home.join("plugins/cache/kebbie-tasks/kebbie").exists());
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -720,7 +833,8 @@ mod tests {
         assert!(lacks_role(&argv), "an old trust entry does not count");
         let fixed = with_role(&argv[1..]);
         assert!(!lacks_role(&fixed) && fixed.last().map(String::as_str) == Some("old-id"), "{fixed:?}");
-        assert_eq!(fixed.iter().filter(|word| *word == "plugins.kebbie@kebbie.enabled=true").count(), 1);
+        assert_eq!(fixed.iter().filter(|word| *word == "plugins.kebbie@kebbie-tasks.enabled=true").count(), 1);
+        assert!(!fixed.iter().any(|word| word == "plugins.kebbie@kebbie.enabled=true"), "the first id, which a repo's marketplace replaces, goes: {fixed:?}");
     }
 
     #[test]
@@ -749,7 +863,7 @@ mod tests {
     fn doctor_names_what_in_the_users_config_turns_kebbies_hooks_off() {
         assert!(hooks_blocked(None).is_empty());
         assert!(hooks_blocked(Some(&"model = \"x\"\n".parse().unwrap())).is_empty());
-        let off: toml::Table = "[features]\nhooks = false\n[hooks.state.\"kebbie@kebbie:hooks/hooks.json:stop:0:0\"]\nenabled = false\n".parse().unwrap();
+        let off: toml::Table = "[features]\nhooks = false\n[hooks.state.\"kebbie@kebbie-tasks:hooks/hooks.json:stop:0:0\"]\nenabled = false\n".parse().unwrap();
         assert_eq!(hooks_blocked(Some(&off)), ["[features] hooks = false turns every hook off", "its Stop hook is turned off in /hooks"]);
     }
 

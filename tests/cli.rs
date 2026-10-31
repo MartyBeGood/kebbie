@@ -195,7 +195,7 @@ fn setup_codex_rewrites_a_stale_plugin_at_once_and_doctor_then_reports_it_ok() {
     let plugin_line = |doctor: &str| doctor.lines().find(|line| line.contains("codex plugin")).unwrap_or_else(|| panic!("doctor has a codex plugin line: {doctor}")).to_string();
     let installed = run(&["setup", "codex"]);
     assert!(installed.status.success() && stdout(&installed).starts_with("kebbie's Codex plugin installed at "), "{}{}", stdout(&installed), stderr(&installed));
-    fs::write(codex_home.join("plugins/cache/kebbie/kebbie/local/bin/kebbie-hook"), "#!/bin/sh\n").unwrap();
+    fs::write(codex_home.join("plugins/cache/kebbie-tasks/kebbie/local/bin/kebbie-hook"), "#!/bin/sh\n").unwrap();
     let stale = plugin_line(&stdout(&run(&["doctor"])));
     assert!(stale.contains("out of date (bin/kebbie-hook)"), "{stale}");
     let repaired = run(&["setup", "codex"]);

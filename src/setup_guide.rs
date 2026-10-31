@@ -484,6 +484,7 @@ impl Guide {
         }
         let codex = match &facts.codex_plugin {
             Installed::Stale(files) => Some(format!("kebbie's plugin in Codex is out of date ({})", files.join(", "))),
+            Installed::Replaced(_) => Some("Codex replaced kebbie's plugin with a copy of its own".to_string()),
             _ => None,
         };
         let parts: Vec<String> = facts.claude_stale.iter().cloned().chain(codex).collect();
@@ -1211,7 +1212,7 @@ mod tests {
         assert_eq!(fake.drawn, 8, "each line is drawn as it finishes");
         assert_eq!(lab.config(), "[machine]\nname = \"mac\"\n\n[board.backlog]\nsources = [\"local\", \"vault\"]\n\n[report]\nsignals = false\n", "setup never writes [hub]");
         assert_eq!(lab.herdr().matches("[[keys.command]]").count(), 3);
-        assert!(lab.dir.join("codex/plugins/cache/kebbie/kebbie/local/hooks/hooks.json").is_file(), "Codex gets kebbie's plugin");
+        assert!(lab.dir.join("codex/plugins/cache/kebbie-tasks/kebbie/local/hooks/hooks.json").is_file(), "Codex gets kebbie's plugin");
         let settings: Value = serde_json::from_str(&std::fs::read_to_string(lab.machine.claude_dir.join("settings.json")).unwrap()).unwrap();
         assert_eq!(settings["statusLine"]["command"], crate::doctor::STATUS_LINE_COMMAND);
         let calls = lab.calls();

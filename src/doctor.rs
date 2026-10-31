@@ -679,7 +679,12 @@ pub fn codex(found: &crate::agent::codex::Availability, config: Option<&toml::Ta
         Installed::Current => ok("codex plugin", format!("kebbie's plugin at {}", root.display())),
         Installed::Missing => missing("codex plugin", "kebbie's plugin is not installed, so a Codex task neither reports nor gets its role".to_string(), one("kebbie setup codex")),
         Installed::Stale(files) => missing("codex plugin", format!("kebbie's plugin is out of date ({})", files.join(", ")), one("kebbie setup codex")),
+        Installed::Replaced(copies) => missing("codex plugin", format!("Codex replaced kebbie's plugin with {}, a copy from a repo's marketplace of the same name", crate::agent::codex::shown_paths(copies)), one("kebbie setup codex")),
     });
+    let old = crate::agent::codex::old_copies(home);
+    if !old.is_empty() {
+        checks.push(warn("codex old plugin", format!("{} is a copy Codex installed from a repo's marketplace named kebbie under the id kebbie used before; kebbie no longer turns kebbie@kebbie on", crate::agent::codex::shown_paths(&old)), old.iter().map(|path| format!("rm -rf {}", crate::sh::quote(&path.to_string_lossy()))).collect()));
+    }
     let blocked = crate::agent::codex::hooks_blocked(config);
     checks.push(if blocked.is_empty() {
         ok("codex hooks", "kebbie enables its plugin and trusts its three hooks by hash in each Codex session it starts")
@@ -1386,7 +1391,7 @@ mod tests {
         let lines = codex(&ready, Some(&"model = \"gpt-5.5\"\n".parse().unwrap()), true, home, None);
         assert_eq!(lines.iter().map(|check| (check.level, check.name.as_str())).collect::<Vec<_>>(), [(Level::Ok, "codex"), (Level::Ok, "codex plugin"), (Level::Ok, "codex hooks")]);
         assert_eq!(lines[0].fact, "0.163.0 at /u/.local/bin/codex");
-        assert!(lines[1].fact.contains("/u/.codex/plugins/cache/kebbie/kebbie/local") && lines[2].fact.contains("trusts its three hooks by hash"));
+        assert!(lines[1].fact.contains("/u/.codex/plugins/cache/kebbie-tasks/kebbie/local") && lines[2].fact.contains("trusts its three hooks by hash"));
         let old = Availability { version: Some("codex-cli 0.120.4".to_string()), plugin: Installed::Missing, ..ready };
         let off: toml::Table = "[features]\nhooks = false\n".parse().unwrap();
         let lines = codex(&old, Some(&off), true, home, None);
@@ -1402,6 +1407,24 @@ mod tests {
         let unknown = signed(Login::Unknown, true);
         assert!(unknown.level == Level::Ok && unknown.fact.starts_with("login not checked"), "no answer is never logged out: {unknown:?}");
         assert_eq!(login("claude login", Login::Out, "claude auth login", "the lead cannot start").fix, ["claude auth login"]);
+    }
+
+    #[test]
+    fn doctor_names_a_copy_codex_installed_in_place_of_kebbies_plugin_and_one_left_under_the_first_id() {
+        use crate::agent::codex::{Availability, Installed};
+        let home = crate::sh::test_dir("doctor-codex-copies");
+        let copy = home.join("plugins/cache/kebbie-tasks/kebbie/0.30.0");
+        let replaced = Availability { binary: Some(PathBuf::from("/u/.local/bin/codex")), version: Some("codex-cli 0.163.0".to_string()), plugin: Installed::Replaced(vec![copy.clone()]) };
+        let plugin = codex(&replaced, None, true, &home, None).remove(1);
+        assert_eq!((plugin.level, plugin.fix), (Level::Fail, vec!["kebbie setup codex".to_string()]));
+        assert!(plugin.fact.contains("Codex replaced kebbie's plugin with") && plugin.fact.contains("0.30.0"), "{}", plugin.fact);
+        let old = home.join("plugins/cache/kebbie/kebbie/0.30.0");
+        std::fs::create_dir_all(&old).unwrap();
+        let current = Availability { plugin: Installed::Current, ..replaced };
+        let named = codex(&current, None, true, &home, None).into_iter().find(|check| check.name == "codex old plugin").unwrap();
+        assert_eq!(named.level, Level::Warn);
+        assert!(named.fact.contains("plugins/cache/kebbie/kebbie/0.30.0") && named.fix[0].starts_with("rm -rf "), "{named:?}");
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

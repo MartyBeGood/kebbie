@@ -250,6 +250,9 @@ pub fn begin(cwd: &Path, name: &str, options: &Start) -> Result<Begun> {
     sandboxed(config::resolve(Some(&repo))?.settings.sandbox.value, &profile, crate::sandbox::missing_here)?;
     if profile.agent == Agent::Codex {
         crate::agent::codex::ready_to_start(crate::agent::codex::home().as_deref(), &peers::kebbie_command()?)?;
+        if let Some(file) = crate::agent::codex::shadowed_in(&repo) {
+            return Err(format!("{} offers a plugin under kebbie's own id, {}, so Codex would replace kebbie's plugin with it; start this task on Claude", file.display(), crate::agent::codex::PLUGIN_ID));
+        }
     }
     let place = |slot: &Slot| Launch { repo: &repo, task: &task, mode, profile: &profile, setup_skill: &setup_skill, setup_command: setup_command.as_deref(), rules_skill: &rules_skill, worktree: slot.path.clone(), vault: vault.is_some(), note: None };
     if let Some(existing) = running {

@@ -21,7 +21,7 @@ Codex runs kebbie's hooks from a Codex plugin.
    kebbie setup codex
    ```
 
-   It writes the plugin and prints one line, such as `kebbie's Codex plugin installed at ~/.codex/plugins/cache/kebbie/kebbie/local: .codex-plugin/plugin.json, hooks/hooks.json, bin/kebbie-hook`. With Codex not on `PATH` it stops and writes nothing.
+   It writes the plugin and prints one line, such as `kebbie's Codex plugin installed at ~/.codex/plugins/cache/kebbie-tasks/kebbie/local: .codex-plugin/plugin.json, hooks/hooks.json, bin/kebbie-hook`. With Codex not on `PATH` it stops and writes nothing.
 
 2. Check it:
 
@@ -31,7 +31,7 @@ Codex runs kebbie's hooks from a Codex plugin.
 
    Its `codex plugin` line reads `ok`.
 
-The plugin goes in Codex's plugin cache, `$CODEX_HOME/plugins/cache/kebbie/kebbie/local/` (`CODEX_HOME` defaults to `~/.codex`), and holds three hooks:
+The plugin goes in Codex's plugin cache, `$CODEX_HOME/plugins/cache/kebbie-tasks/kebbie/local/` (`CODEX_HOME` defaults to `~/.codex`), as the plugin `kebbie@kebbie-tasks`, and holds three hooks:
 
 | Hook | What it does in a kebbie task |
 | --- | --- |
@@ -42,10 +42,11 @@ The plugin goes in Codex's plugin cache, `$CODEX_HOME/plugins/cache/kebbie/kebbi
 Outside a kebbie task's worktree each hook does nothing.
 
 - `kebbie setup codex` never edits Codex's `config.toml` or `hooks.json`.
-- Codex loads the plugin only in the sessions kebbie starts. kebbie turns it on with `-c plugins.kebbie@kebbie.enabled=true` and trusts its three hooks by their hash with `-c hooks.state=…`, for that session alone. Your own Codex sessions don't load it.
+- Codex loads the plugin only in the sessions kebbie starts. kebbie turns it on with `-c plugins.kebbie@kebbie-tasks.enabled=true` and trusts its three hooks by their hash with `-c hooks.state=…`, for that session alone. Your own Codex sessions don't load it.
 - Codex trusts the hooks by their command line, not by the launcher script they run. So kebbie starts a Codex task only when every file of the plugin is exactly what it writes, and a missing, out-of-date or changed plugin stops the start with `run kebbie setup codex`.
 - A second run that finds nothing to change writes nothing.
 - `kebbie setup codex` is yours to run: a task cannot run it.
+- Codex installs an enabled plugin again from any marketplace of the same name it finds in the session's repo, and that copy replaces kebbie's. The plugin's id, `kebbie@kebbie-tasks`, is one no Claude or Codex marketplace uses, kebbie's own repo included, and kebbie refuses a Codex task in a repo whose marketplace offers a plugin under it.
 
 The plugin follows kebbie's updates: `kebbie update` and `kebbie setup --yes` rewrite what a new kebbie writes differently, and say `Codex plugin: updated` with the files. If `kebbie doctor` still says the plugin is out of date, run `kebbie setup codex` again: it rewrites the files that changed and prints `kebbie's Codex plugin updated:` with their names. If you want the plugin gone, run `kebbie setup codex --uninstall`.
 

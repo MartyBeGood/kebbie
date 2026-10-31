@@ -450,6 +450,7 @@ pub fn codex_in(home: &Path, kebbie: &str, uninstall: bool, input: &mut impl Buf
     let files = codex::install(home, kebbie)?.join(", ");
     Ok(match before {
         Installed::Missing => format!("kebbie's Codex plugin installed at {}: {files}\nkebbie turns it on only in the Codex sessions it starts; Codex's config.toml and hooks.json stay as they are.", root.display()),
+        Installed::Replaced(copies) => format!("kebbie's Codex plugin installed again at {}: {files}\nCodex had replaced it with {}; kebbie's own copy wins over it.", root.display(), codex::shown_paths(&copies)),
         _ => format!("kebbie's Codex plugin updated: {files}"),
     })
 }

@@ -40,6 +40,13 @@ Find what is wrong with kebbie, and the fix for each message it shows.
 | A task with an approval stays out of Ready to push, marked `N uncommitted files` | Tracked files have uncommitted changes. Commit or discard them; untracked files do not count. |
 | A task worktree has no push block | The repo's shared git config sets `core.worktree` or `core.bare = true`. Move those settings out of the shared config. `kebbie doctor` in the repo shows when the block applies. |
 
+## Codex tasks
+
+| You see | Fix |
+| --- | --- |
+| `kebbie doctor` says `Codex replaced kebbie's plugin with …`, or a Codex task asks you to review a hook that is new or changed | `kebbie setup codex`. It writes kebbie's plugin again, which wins over the copy Codex installed from a repo's marketplace. |
+| `kebbie doctor` names `codex old plugin` | Run the `rm -rf` it names. The folder is a copy Codex made under the plugin id kebbie used before, and nothing turns it on. |
+
 ## Pushes and rebases
 
 | You see | Fix |
