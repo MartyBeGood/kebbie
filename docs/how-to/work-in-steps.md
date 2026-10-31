@@ -28,7 +28,7 @@ Tasks work in steps by default. Turned off, a task commits its own way and you p
 
 ## Accept and push
 
-Accepting a step marks it as read and lets the push window start there. It is up to you: a step you did not accept pushes all the same.
+Accepting a step marks it as read and lets the push window start there. It is up to you: a step you did not accept pushes all the same, unless you [require every step accepted](#require-every-step-accepted).
 
 1. Read a step's commit in review and accept it. From the command line:
 
@@ -45,6 +45,33 @@ Accepting a step marks it as read and lets the push window start there. It is up
    ```
 
    The task stays open and keeps building the next step: kebbie pushes the accepted commits without touching its worktree, rebased onto the default branch in a worktree of its own when the default branch moved, and tells its Claude to rebase onto the default branch once its work in progress is committed. The pushed steps drop out of the list and show as a count. See [Push part of a task](push-part-of-a-task.md).
+
+## Require every step accepted
+
+Turn on `task.require_accept` when no commit should leave without you accepting it first.
+
+1. Set it in the machine config for every repo, or in one repo's own file for that repo alone:
+
+   ```toml
+   # ~/.config/kebbie/config.toml, or ~/.config/kebbie/repos/app.toml
+   [task]
+   require_accept = true
+   ```
+
+   Or press space on `task.require_accept` on the board's [Settings page](../reference/board.md#settings-page).
+
+2. Accept each step as it is committed. A ready task with a step to accept waits under Needs you, with `accept step 2 · r review` under its row, and `N` lists it under Stopped on you instead of Push, in this order.
+
+3. Push as before. A push that would take a commit you did not accept is refused, and says which:
+
+   ```
+   Not pushed: step 2 is not accepted
+   Accept it with kebbie accept billing d4e5f6a, or with a in its review (r on the board); task.require_accept holds every commit until it is accepted.
+   ```
+
+   `kebbie push billing --through a1b2c3d` still pushes the accepted steps up to that commit. In push in order, the first task refused stops the rest, which stay ready.
+
+- With `task.steps` off, `task.require_accept` has no effect.
 
 ## Turn it off
 

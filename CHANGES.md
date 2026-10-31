@@ -5,6 +5,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 ## Unreleased
 
 ### What's new
+- task.require_accept = true holds every push until each commit it takes is accepted: kebbie push, the board's push and push in order refuse with the first step to accept and how, and a ready task with one waits under Needs you as accept step N; off by default, and no effect with task.steps off
 - v on a task opens a review menu, review · <task>, with its commits since main and the assessor's word: v sends it to the reviewer, and on a task in review v withdraws it; with review.second set, s reviews with a second opinion beside the reviewer and o runs the second opinion alone
 - review.profile picks who reviews, the built-in reviewer or a review profile of yours, and its verdict holds the push; review.model is that reviewer's model; the Settings page picks it from the review profiles whose agent you set up
 - review.second asks a second review profile, a Codex one for instance, for its opinion: offered with s, or "always <profile>" with every review; it never holds the push, its points show on the task's row as second opinion: 2 points · v i reads them, i in the v menu pages through them, and the lead passes them to the task as a review's findings; kebbie review --second and --second-only run it from the shell

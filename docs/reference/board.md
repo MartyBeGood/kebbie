@@ -112,6 +112,7 @@ With [`task.steps`](configuration.md) on and steps listed, the task's steps not 
 | `● … committed`, yellow | Committed, waiting for you to accept it, followed by the task's rules check in short: `· rules ✓` passed, `· rules ?` not checked yet, `· checking rules` while the reviewer or the lead checks, `· rules: N breaks` when it found some. |
 | `✓ … accepted`, green | Committed, and you accepted it. |
 | `accept N · r review` | Under the steps: the first step waiting for you. `r` opens the review, and [`kebbie accept`](commands.md#kebbie-accept-name-sha) accepts it. |
+| `accept step N · r review` | With [`task.require_accept`](configuration.md) on, a ready task with a step to accept waits under Needs you with this line: it cannot be pushed until step N is accepted. |
 
 A step to accept leaves the task in the group its phase gives it, under Working while it builds the next step. The state word always shows: a long title is shortened at a word with `…` to make room, and only when the title would drop below 12 columns does the rules part shorten (`· 2 breaks`, `· checking`) and then go. Without steps, the row is as above. See [Work in steps](../how-to/work-in-steps.md).
 
@@ -155,6 +156,7 @@ kebbie keeps one phase per task, and only what changes it writes it: its start, 
 - Messages held behind a draft in its input box.
 - A task whose commits are on the default branch that kebbie does not close by itself, marked `landed on main · d closes it` beside a question, or `landed on main, but its worktree has uncommitted changes or a stash` (see [`kebbie done`](commands.md#kebbie-done-name)).
 - A task that reported needs-you, or ready with nothing committed.
+- With `task.require_accept` on, a ready task with a commit you have not accepted, marked `accept step N`.
 - A task whose turn ended without a report even after kebbie asked for one.
 - A task whose CI failed after a push of only some of its commits, marked `CI failed: <workflow> · <job> · <step>`, and `its Claude says outside the code: <reason>` once its Claude has said so. `C` dismisses it.
 - A push under way whose Claude reported needs-you.
@@ -425,7 +427,7 @@ The note's card shows its whole title, area, status and summary, and who works o
 
 | Group | What is in it | In what order |
 | --- | --- | --- |
-| Stopped on you | A task that stands still until you act: a question or a plan to approve, Claude's own prompt, a report that asks you something, a crash, a red CI only you can settle. | The one most tasks wait behind first, then the one that has waited longest. |
+| Stopped on you | A task that stands still until you act: a question or a plan to approve, Claude's own prompt, a report that asks you something, a crash, a red CI only you can settle, a step to accept with `task.require_accept` on. | The one most tasks wait behind first, then the one that has waited longest. |
 | Push, in this order | What is ready to push and not in the push line yet. | What other tasks of the same repo wait on first, then two tasks that change the same files in the order they were built, then the one that was ready first. |
 | To read | A task that reported ready with nothing to push, such as a research result. | The one a decision waits on first, then the oldest. |
 
