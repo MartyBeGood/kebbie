@@ -778,6 +778,13 @@ pub fn checks(env: &Env) -> Vec<Check> {
     let found = crate::agent::codex::availability(&env.path, Some(&env.codex_dir), &kebbie);
     let signed = (needed || found.plugin != crate::agent::codex::Installed::Missing).then(|| crate::agent::login::codex(found.binary.as_deref(), crate::agent::login::TIMEOUT)).filter(|_| found.binary.is_some());
     checks.extend(codex(&found, codex_config.as_ref(), needed, &env.codex_dir, signed));
+    if found.binary.is_some() && (needed || found.plugin != crate::agent::codex::Installed::Missing) {
+        let rules = crate::agent::codex_setup::rules_text(&crate::agent::codex_setup::rule_forms(&kebbie, &env.home.join(".local/bin/kebbie")));
+        let mode = config::check_machine(&env.config).ok().and_then(|(machine, _)| machine.agent_updates).unwrap_or_default();
+        let vault_on = matches!(crate::vault_cli::plugin(&env.claude_dir), crate::vault_cli::Plugin::Enabled { .. });
+        let checked = crate::agent_check::read(&env.kebbie_state);
+        checks.extend(crate::agent_check::doctor(&crate::agent_check::Doctor { found: checked.as_ref(), mode, codex_home: &env.codex_dir, claude_dir: &env.claude_dir, rules: &rules, vault_on }));
+    }
     let places = crate::update_check::Places::new(plugin.as_ref().map(|plugin| plugin.root.clone()), env.claude_dir.clone(), channel);
     checks.push(updates(&env.kebbie_state, channel, &crate::update_check::installed(&places)));
     let keeper_on = config::check_machine(&env.config).ok().and_then(|(machine, _)| machine.keeper).unwrap_or(true);

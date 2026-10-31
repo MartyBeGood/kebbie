@@ -568,6 +568,7 @@ pub struct CachedModel {
     pub default_effort: Option<String>,
     pub efforts: Vec<String>,
     pub priority: Option<i64>,
+    pub upgrade: Option<String>,
 }
 
 // The models Codex fetched for this login, in its models_cache.json, in the file's order; read, never written.
@@ -582,6 +583,7 @@ pub fn cached_models(home: &Path) -> Option<Vec<CachedModel>> {
             default_effort: text(&model["default_reasoning_level"]),
             efforts: model["supported_reasoning_levels"].as_array().into_iter().flatten().filter_map(|level| text(&level["effort"])).collect(),
             priority: model["priority"].as_i64(),
+            upgrade: text(&model["upgrade"]["model"]),
             slug,
         })
     }).collect())
@@ -825,7 +827,7 @@ pub fn hooks_blocked(config: Option<&toml::Table>) -> Vec<String> {
 pub const CACHE_FIXTURE: &str = r#"{"fetched_at":"2026-10-30T08:00:00Z","etag":"W/\"1\"","client_version":"0.163.0","models":[
 {"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol","description":"Frontier","default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low","description":"Fast"},{"effort":"medium","description":"Balanced"},{"effort":"high","description":"Deep"},{"effort":"xhigh","description":"Deeper"},{"effort":"max","description":"Most"},{"effort":"ultra","description":"Agents"}],"visibility":"list","priority":1},
 {"slug":"gpt-6-astra","display_name":"GPT-6-Astra","default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low","description":""},{"effort":"medium","description":""},{"effort":"high","description":""}],"visibility":"list","priority":2},
-{"slug":"gpt-5.1-codex-max","display_name":"gpt-5.1-codex-max","default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"medium","description":""}],"visibility":"hide","priority":9},
+{"slug":"gpt-5.1-codex-max","display_name":"gpt-5.1-codex-max","default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"medium","description":""}],"visibility":"hide","priority":9,"upgrade":{"model":"gpt-6-astra","migration_markdown":"Try GPT-6-Astra"}},
 {"slug":"gpt-6.1-terra","display_name":"GPT-6.1 Terra","default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"medium","description":""},{"effort":"high","description":""}],"visibility":"list","priority":3}
 ]}"#;
 

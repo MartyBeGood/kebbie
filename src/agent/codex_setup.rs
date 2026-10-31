@@ -224,6 +224,110 @@ pub fn default_model(models: &[CachedModel]) -> Option<&CachedModel> {
     models.iter().filter(|model| model.listed).min_by_key(|model| model.priority.unwrap_or(i64::MAX))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Installer {
+    Standalone,
+    Brew,
+    Npm,
+    Bun,
+    Pnpm,
+}
+
+impl Installer {
+    // Codex 0.163's UpdateAction::command_args (tui/src/update_action.rs).
+    pub fn command(self) -> (&'static str, &'static [&'static str]) {
+        match self {
+            Installer::Standalone => ("sh", &["-c", "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh"]),
+            Installer::Brew => ("brew", &["upgrade", "--cask", "codex"]),
+            Installer::Npm => ("npm", &["install", "-g", "@openai/codex"]),
+            Installer::Bun => ("bun", &["install", "-g", "@openai/codex"]),
+            Installer::Pnpm => ("pnpm", &["add", "-g", "@openai/codex"]),
+        }
+    }
+
+    pub fn shown(self) -> &'static str {
+        match self {
+            Installer::Standalone => "standalone install",
+            Installer::Brew => "Homebrew cask",
+            Installer::Npm => "npm install",
+            Installer::Bun => "bun install",
+            Installer::Pnpm => "pnpm install",
+        }
+    }
+
+    pub fn command_line(self) -> String {
+        let (program, args) = self.command();
+        std::iter::once(program.to_string()).chain(args.iter().map(|arg| if arg.contains(' ') { crate::sh::quote(arg) } else { arg.to_string() })).collect::<Vec<_>>().join(" ")
+    }
+}
+
+// How Codex was installed, as Codex 0.163 tells it from its own executable (install-context/src/lib.rs); npm, bun and pnpm by the package folder their wrapper runs from.
+pub fn installer(binary: &Path, home: &Path, macos: bool) -> Option<Installer> {
+    let exe = binary.canonicalize().ok()?;
+    let releases = home.canonicalize().ok().map(|home| home.join("packages/standalone/releases"));
+    if releases.is_some_and(|releases| exe.starts_with(releases)) {
+        return Some(Installer::Standalone);
+    }
+    let shown = exe.to_string_lossy();
+    if shown.contains("node_modules/@openai/codex") {
+        return Some(if shown.contains("/.bun/") { Installer::Bun } else if shown.contains("/pnpm/") { Installer::Pnpm } else { Installer::Npm });
+    }
+    (macos && (exe.starts_with("/opt/homebrew") || exe.starts_with("/usr/local"))).then_some(Installer::Brew)
+}
+
+const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
+const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
+
+// The latest Codex as Codex's own update check reads it (tui/src/updates.rs): the Homebrew cask for a cask install, GitHub's latest release otherwise.
+pub fn latest_source(installer: Option<Installer>) -> &'static str {
+    if installer == Some(Installer::Brew) { HOMEBREW_CASK_API_URL } else { LATEST_RELEASE_URL }
+}
+
+pub fn latest_from(url: &str, body: &Value) -> Option<String> {
+    if url == HOMEBREW_CASK_API_URL {
+        return body["version"].as_str().map(str::to_string);
+    }
+    body["tag_name"].as_str()?.strip_prefix("rust-v").map(str::to_string)
+}
+
+pub fn fetch_latest(installer: Option<Installer>) -> Result<String> {
+    let url = latest_source(installer);
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(20)))
+        .user_agent(format!("kebbie/{}", env!("CARGO_PKG_VERSION")))
+        .build();
+    let agent = ureq::Agent::new_with_config(config);
+    let mut response = agent.get(url).call().map_err(|error| format!("{url}: {error}"))?;
+    let text = response.body_mut().read_to_string().map_err(|error| format!("{url}: {error}"))?;
+    let body: Value = serde_json::from_str(&text).map_err(|error| format!("{url}: {error}"))?;
+    latest_from(url, &body).ok_or_else(|| format!("{url}: no version in its answer"))
+}
+
+// "codex-cli 0.163.0" → "0.163.0".
+pub fn version_word(said: &str) -> Option<String> {
+    said.split_whitespace().find(|word| word.starts_with(|character: char| character.is_ascii_digit())).map(str::to_string)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Fate {
+    Listed,
+    Upgrade(String),
+    Gone(Option<String>),
+}
+
+// A model no longer listed is gone, and its task starts on the model its entry's upgrade names, else on Codex's default.
+pub fn fate(models: &[CachedModel], model: &str) -> Fate {
+    let default = || default_model(models).map(|model| model.slug.clone());
+    match models.iter().find(|cached| cached.slug == model) {
+        Some(cached) if cached.listed => match &cached.upgrade {
+            Some(upgrade) if upgrade != model => Fate::Upgrade(upgrade.clone()),
+            _ => Fate::Listed,
+        },
+        Some(cached) => Fate::Gone(cached.upgrade.clone().filter(|upgrade| models.iter().any(|model| model.listed && &model.slug == upgrade)).or_else(default)),
+        None => Fate::Gone(default()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,5 +432,39 @@ mod tests {
         let folder: toml::Table = with_vault("", &vault_server(&root, &serde_json::json!({ "vault_path": "/notes" })).unwrap()).unwrap().parse().unwrap();
         assert_eq!(session(&claude, &folder), Session { vault: true, env: Vec::new(), hidden: Vec::new() }, "a folder vault needs no keys");
         let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn codexs_installer_and_latest_version_come_from_where_codex_itself_reads_them() {
+        let dir = crate::sh::test_dir("codex-installer");
+        let release = dir.join("home/packages/standalone/releases/0.163.0-aarch64-apple-darwin");
+        std::fs::create_dir_all(&release).unwrap();
+        crate::executable::write(release.join("codex"), "#!/bin/sh\n").unwrap();
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::os::unix::fs::symlink(release.join("codex"), dir.join("bin/codex")).unwrap();
+        assert_eq!(installer(&dir.join("bin/codex"), &dir.join("home"), true), Some(Installer::Standalone), "the link on PATH points into Codex's own releases");
+        let npm = dir.join("lib/node_modules/@openai/codex/bin");
+        std::fs::create_dir_all(&npm).unwrap();
+        crate::executable::write(npm.join("codex.js"), "#!/usr/bin/env node\n").unwrap();
+        assert_eq!(installer(&npm.join("codex.js"), &dir.join("home"), false), Some(Installer::Npm));
+        assert_eq!(installer(&dir.join("bin/missing"), &dir.join("home"), true), None);
+        assert_eq!(Installer::Standalone.command_line(), "sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'");
+        assert_eq!(Installer::Brew.command_line(), "brew upgrade --cask codex");
+        assert_eq!(latest_from(latest_source(Some(Installer::Standalone)), &serde_json::json!({ "tag_name": "rust-v0.164.0" })).as_deref(), Some("0.164.0"));
+        assert_eq!(latest_from(latest_source(Some(Installer::Brew)), &serde_json::json!({ "version": "0.164.0" })).as_deref(), Some("0.164.0"));
+        assert_eq!(latest_from(latest_source(None), &serde_json::json!({ "tag_name": "v1" })), None);
+        assert_eq!(version_word("codex-cli 0.163.0").as_deref(), Some("0.163.0"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_model_gone_from_codexs_list_falls_to_its_upgrade_else_to_codexs_default() {
+        let home = crate::sh::test_dir("codex-fate");
+        std::fs::write(home.join("models_cache.json"), super::super::codex::CACHE_FIXTURE).unwrap();
+        let models = super::super::codex::cached_models(&home).unwrap();
+        assert_eq!(default_model(&models).map(|model| model.slug.as_str()), Some("gpt-6.1-sol"));
+        assert_eq!(fate(&models, "gpt-6-astra"), Fate::Listed);
+        assert_eq!(fate(&models, "gpt-5.1-codex-max"), Fate::Gone(Some("gpt-6-astra".to_string())), "a hidden model with an upgrade starts on it");
+        assert_eq!(fate(&models, "gpt-4.1"), Fate::Gone(Some("gpt-6.1-sol".to_string())), "an unknown model starts on Codex's default");
+        let _ = std::fs::remove_dir_all(home);
     }
 }
