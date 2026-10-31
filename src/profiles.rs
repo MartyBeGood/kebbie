@@ -12,6 +12,7 @@ pub const TASK: &str = "task";
 pub const REVIEWER: &str = "reviewer";
 pub const OPS: &str = "ops";
 pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+pub const CODEX_EFFORTS: [&str; 9] = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "persistent"];
 pub const KEYS: [&str; 12] = ["about", "for", "agent", "model", "effort", "role", "skills", "permission_mode", "deny", "allow", "claude", "sandbox"];
 const SANDBOX_KEYS: [&str; 4] = ["enabled", "allowed_domains", "allow_write", "excluded_commands"];
 const REVIEWER_KEYS: [&str; 6] = ["about", "for", "agent", "model", "effort", "role"];
@@ -166,6 +167,11 @@ fn claude_only(table: &Table) -> Option<String> {
     keys.or(sandbox)
 }
 
+// Codex's own named levels, as its ReasoningEffort parses them; Claude Code takes its five.
+pub fn efforts(agent: Agent) -> &'static [&'static str] {
+    if agent == Agent::Codex { &CODEX_EFFORTS } else { &EFFORTS }
+}
+
 pub fn parse(contents: &str, name: &str, file: &Path, base: Option<Profile>) -> Result<Profile> {
     let source = file.display().to_string();
     let table: Table = contents.parse().map_err(|error: toml::de::Error| format!("{source}: {}", error.to_string().trim()))?;
@@ -197,8 +203,10 @@ pub fn parse(contents: &str, name: &str, file: &Path, base: Option<Profile>) -> 
     }
     profile.model = text(&table, "model", &source)?.or(profile.model);
     if let Some(effort) = text(&table, "effort", &source)? {
-        if !EFFORTS.contains(&effort.as_str()) {
-            return Err(format!("{source}: effort: \"{effort}\" is not an effort level; use {}", EFFORTS.map(|level| format!("\"{level}\"")).join(", ")));
+        let levels = efforts(profile.agent);
+        if !levels.contains(&effort.as_str()) {
+            let agent = if profile.agent == Agent::Codex { " Codex takes" } else { "" };
+            return Err(format!("{source}: effort: \"{effort}\" is not an effort level{agent}; use {}", levels.iter().map(|level| format!("\"{level}\"")).collect::<Vec<_>>().join(", ")));
         }
         profile.effort = Some(effort);
     }
@@ -542,6 +550,13 @@ mod tests {
         for (text, key) in [("deny = [\"Bash(rm:*)\"]\n", "deny"), ("allow = [\"Read\"]\n", "allow"), ("[claude]\nplugins = [\"a@b\"]\n", "claude"), ("[sandbox]\nallowed_domains = [\"x.org\"]\n", "sandbox.allowed_domains")] {
             assert!(refused(text).contains(&format!("x.toml: {key}: Claude Code's, which a Codex task does not read")), "{key}: {}", refused(text));
         }
+        for level in CODEX_EFFORTS {
+            std::fs::write(dir.join("x.toml"), format!("agent = \"codex\"\neffort = \"{level}\"\n")).unwrap();
+            assert_eq!(load_in(&dir, "x").unwrap().effort.as_deref(), Some(level), "a level Codex's ReasoningEffort names");
+        }
+        assert!(refused("effort = \"huge\"\n").contains("x.toml: effort: \"huge\" is not an effort level Codex takes; use \"none\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultra\", \"persistent\""));
+        std::fs::write(dir.join("x.toml"), "effort = \"ultra\"\n").unwrap();
+        assert!(load_in(&dir, "x").unwrap_err().contains("effort: \"ultra\" is not an effort level; use \"low\""), "a Claude profile keeps Claude Code's five");
         std::fs::write(dir.join("reviewer.toml"), "agent = \"codex\"\n").unwrap();
         assert!(load_in(&dir, REVIEWER).unwrap_err().contains("agent: kebbie review runs Claude"), "the reviewer stays Claude");
         let ops = { std::fs::write(dir.join("ops.toml"), "agent = \"codex\"\n").unwrap(); load_in(&dir, OPS).unwrap() };

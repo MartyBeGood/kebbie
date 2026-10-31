@@ -5,6 +5,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 ## Unreleased
 
 ### What's new
+- A Codex profile takes Codex's own effort levels, ultra, none, minimal and persistent among them, where kebbie refused any but Claude Code's five; a Claude profile still takes low, medium, high, xhigh or max
 - kebbie restarts a Codex task that runs older code, as it does a Claude one: after kebbie update, after a newer codex lands on PATH, or when it runs without kebbie's plugin, it resumes the task's conversation with codex resume once it is idle, out of focus, its composer empty and no start-up question showing, where kebbie restart left every Codex as it ran; kebbie restart lists them under Claude and Codex sessions
 - kebbie profiles shows the model a Codex profile without model runs, from Codex's own config.toml, as model gpt-5.5 from Codex's config.toml, and kebbie doctor names it on a codex model line
 - The lead plans each task by its playbook, the skill kebbie:playbook: nine recipes, from a small fix with its test to a feature with a mockup you approve before its plan and build, each with when it applies and where you are needed; the lead answers a question about why something was built from the task's note and the vault, archive included, not from the board's tasks

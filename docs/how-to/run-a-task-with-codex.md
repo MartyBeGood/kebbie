@@ -72,7 +72,7 @@ The plugin follows kebbie's updates: `kebbie update` and `kebbie setup --yes` re
 
    Under the profile, a `codex:` line shows the Codex binary, its version and whether kebbie's plugin is installed.
 
-A Codex profile takes `about`, `for`, `agent`, `model`, `effort`, `role`, `skills`, `permission_mode` and `sandbox.enabled`. `model` goes to `codex --model`, `effort` to `model_reasoning_effort`.
+A Codex profile takes `about`, `for`, `agent`, `model`, `effort`, `role`, `skills`, `permission_mode` and `sandbox.enabled`. `model` goes to `codex --model`, `effort` to `model_reasoning_effort`. `effort` takes Codex's levels, `ultra` among them, not only Claude Code's five.
 
 - If the profile sets no `model`, Codex runs the `model` in its own `config.toml`. `kebbie profiles` shows it on the profile's `runs:` line, as `model gpt-5.5 from Codex's config.toml`, and `kebbie doctor` names it on its `codex model` line.
 - If that model is one your Codex login cannot use, such as a model a ChatGPT plan does not include, the task's first turn stops on an API error. Set `model` in the profile to one it can.

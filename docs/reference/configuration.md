@@ -366,7 +366,7 @@ A file named `task.toml`, `ops.toml` or `reviewer.toml` adds its keys to that bu
 | `for` | none | The work it fits, in your words. The lead chooses a task's profile by it. |
 | `agent` | `"claude"` | The agent CLI the task runs: `"claude"` or `"codex"`. The built-in profiles run Claude. |
 | `model` | none | The model, as `claude --model` or `codex --model` takes it. Unset leaves it to the agent's default. |
-| `effort` | none | `"low"`, `"medium"`, `"high"`, `"xhigh"` or `"max"`, as `claude --effort` takes it; a Codex task gets it as `model_reasoning_effort`. |
+| `effort` | none | `"low"`, `"medium"`, `"high"`, `"xhigh"` or `"max"`, as `claude --effort` takes it. A Codex profile takes Codex's own levels, `"none"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`, `"ultra"` or `"persistent"`, and its task gets it as `model_reasoning_effort`. Which a model takes is Codex's list for it. |
 | `role` | none | A markdown file in the profiles folder, carried in the task's role after kebbie's own, under `## Your profile: <name>`. |
 | `skills` | `[]` | Skills the task's Claude runs once its worktree is set up, named as `task.rules_skill` is. |
 | `permission_mode` | none | The permission mode, one of `task.permission_mode`'s values, ahead of it and behind `kebbie start --mode`. |
