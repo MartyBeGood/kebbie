@@ -536,6 +536,13 @@ pub(crate) fn task_role_now(cwd: &Path) -> Result<Option<(PathBuf, String)>> {
 // Starts the task's agent in the pane with its role and settings; the outer error is setup, the inner one is the agent not starting.
 fn launch(place: &Launch, pane: &str, session: Session) -> Result<(String, Result<Started>)> {
     let Launch { repo, task, mode, profile, .. } = *place;
+    let models = (profile.agent == Agent::Codex).then(crate::agent::codex::home).flatten().and_then(|home| crate::agent::codex::cached_models(&home));
+    let (moved, gone) = start_profile(profile, models.as_deref());
+    if let Some(said) = &gone {
+        let _ = messages::log_for_user_in(&state_dir()?, said, crate::agent_check::KIND);
+        let _ = messages::to_lead(messages::ToLead::Notice, &format!("{task}: {said}"));
+    }
+    let profile = &moved;
     if profile.agent == Agent::Codex {
         crate::agent::codex::ready_to_start(crate::agent::codex::home().as_deref(), &peers::kebbie_command()?)?;
     }
@@ -582,6 +589,16 @@ fn agent_pane(space: &herdr::Space, cwd: &Path, task: &str, root: Option<String>
         let _ = herdr::close_pane(&root);
     }
     Ok(pane)
+}
+
+// A model the user's profile pins that Codex no longer lists starts on the model Codex's list names for it, else on Codex's default; the profile file stays as it is.
+pub(crate) fn start_profile(profile: &Profile, models: Option<&[crate::agent::codex::CachedModel]>) -> (Profile, Option<String>) {
+    use crate::agent::codex_setup::{Fate, fate};
+    let pinned = profile.model.as_deref().filter(|_| profile.agent == Agent::Codex && profile.file.is_some());
+    let (Some(model), Some(models)) = (pinned, models.filter(|models| !models.is_empty())) else { return (profile.clone(), None) };
+    let Fate::Gone(to) = fate(models, model) else { return (profile.clone(), None) };
+    let said = format!("{}: {model} is gone; started on {}; pick one with m on the Settings page", profile.name, to.as_deref().unwrap_or("Codex's default"));
+    (Profile { model: to, ..profile.clone() }, Some(said))
 }
 
 // The session a started agent's record names: the one it resumed, whether its record or a scan of its conversations found it, and for a new Codex none until its SessionStart hook records the one Codex picked.
@@ -793,6 +810,30 @@ mod tests {
 
     fn claude_args(mode: Option<&str>, settings: &Path, role: &Path, session: &Session) -> Vec<String> {
         start_args(mode, &profiles::built_in(profiles::TASK).unwrap(), settings, role, session)
+    }
+
+    #[test]
+    fn a_codex_profile_whose_model_is_gone_starts_on_the_one_codex_names_and_its_file_stays() {
+        let home = crate::sh::test_dir("launch-vanished-model");
+        std::fs::write(home.join("models_cache.json"), crate::agent::codex::CACHE_FIXTURE).unwrap();
+        let file = home.join("coder.toml");
+        std::fs::write(&file, "agent = \"codex\"\nmodel = \"gpt-5.1-codex-max\"\n").unwrap();
+        let models = crate::agent::codex::cached_models(&home).unwrap();
+        let coder = Profile { name: "coder".to_string(), agent: Agent::Codex, model: Some("gpt-5.1-codex-max".to_string()), file: Some(file.clone()), ..profiles::built_in(profiles::TASK).unwrap() };
+        let (started, said) = start_profile(&coder, Some(&models));
+        assert_eq!(started.model.as_deref(), Some("gpt-6-astra"), "the hidden model's upgrade");
+        assert_eq!(said.as_deref(), Some("coder: gpt-5.1-codex-max is gone; started on gpt-6-astra; pick one with m on the Settings page"));
+        let args = crate::agent::codex::start_args(None, &started, "billing@app", true, None, &[], &Session::New("x".to_string()));
+        assert!(args.windows(2).any(|pair| pair == ["--model", "gpt-6-astra"]), "{args:?}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "agent = \"codex\"\nmodel = \"gpt-5.1-codex-max\"\n", "the profile is never rewritten");
+        let unknown = Profile { model: Some("gpt-4.1".to_string()), ..coder.clone() };
+        assert_eq!(start_profile(&unknown, Some(&models)).0.model.as_deref(), Some("gpt-6.1-sol"), "no upgrade named: Codex's default");
+        let listed = Profile { model: Some("gpt-6-astra".to_string()), ..coder.clone() };
+        assert_eq!(start_profile(&listed, Some(&models)), (listed.clone(), None));
+        let own = Profile { file: None, ..coder.clone() };
+        assert_eq!(start_profile(&own, Some(&models)).1, None, "kebbie's own profiles follow the agent's default");
+        assert_eq!(start_profile(&coder, None).1, None, "no list, no verdict");
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]
