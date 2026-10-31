@@ -5,6 +5,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 ## Unreleased
 
 ### What's new
+- On a ready report, a short read-only assessor judges whether the task's whole work, its pushed steps included, needs an independent review, by its size, its complexity, its tests, the database, business logic and security, and the task's row says why, as review suggested: changes how VAT is rounded and its tests · v or no review: wording in two templates; review.auto = "suggest" (the default) leaves the review to you and the lead, "run" starts the reviewer without holding the push, and "require" holds the push until it passes
 - kebbie doctor and the setup guide's Agents step say whether Claude Code and Codex are logged in, from claude auth status and codex login status, with claude auth login or codex login as the fix; an agent that gives no answer reads as login not checked
 
 ### Fixed

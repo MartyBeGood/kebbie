@@ -129,6 +129,7 @@ pub struct Item {
     pub staged: bool,
     pub steps: tasks::Steps,
     pub parked: Option<tasks::Parked>,
+    pub review_rule: Option<String>,
 }
 
 impl Item {
@@ -164,7 +165,7 @@ impl Item {
             name: wait.task.clone(), title, place: name_of(&wait.repo), repo: Some(wait.repo.clone()), path: None, workspace: None, agent: None, git: None,
             report: None, question: None, ci: None, recover: None, routine: None, push_waits: None,
             queued: Some(Queued { after, blocked: wait.blocked.clone(), waiting, names, base, at, backlog: wait.backlog.is_some() }),
-            held_by_draft: None, phase: None, landed: None, ci_outside: None, ci_dismissed: Vec::new(), unrecorded: None, push_left: None, staged: false, steps: tasks::Steps::default(), parked: None,
+            held_by_draft: None, phase: None, landed: None, ci_outside: None, ci_dismissed: Vec::new(), unrecorded: None, push_left: None, staged: false, steps: tasks::Steps::default(), parked: None, review_rule: None,
         }
     }
 
@@ -200,7 +201,7 @@ impl Item {
 
     // Sent to review and not passed yet: it waits under In review, and push waits with it.
     pub fn awaiting_review(&self) -> bool {
-        self.git.as_ref().is_some_and(|git| git.ahead > 0) && self.verdict.as_ref().is_some_and(crate::review::Shown::pending)
+        self.git.as_ref().is_some_and(|git| git.ahead > 0) && self.verdict.as_ref().is_some_and(|shown| shown.held && shown.pending())
     }
 
     // A pushed task's review is of code already out, so CI running shows none; nothing is left on the branch for it to match.
@@ -211,10 +212,11 @@ impl Item {
         let shown = self.verdict.as_ref()?;
         let verdict = shown.verdict.as_ref();
         Some(match verdict {
+            _ if shown.running && !shown.held => "review running · push not held".to_string(),
             _ if shown.running => "review running · waits on the reviewer".to_string(),
             Some(_) if shown.stale => "review stale".to_string(),
             Some(verdict) if verdict.ok => "reviewed".to_string(),
-            Some(verdict) if self.turn_under_way() => format!("review: {}", verdict.summary()),
+            Some(verdict) if self.turn_under_way() || !shown.held => format!("review: {}", verdict.summary()),
             Some(verdict) => format!("review: {} · withdraw with v to push without a pass", verdict.summary()),
             None => return None,
         })
@@ -524,6 +526,7 @@ impl Item {
     pub fn to_json(&self) -> Value {
         let mut shown = self.shown_json();
         shown["staged"] = json!(self.staged);
+        shown["review_rule"] = json!(self.review_rule);
         shown["parked_until"] = self.parked.map_or(Value::Null, |parked| parked.until.map_or(json!(tasks::UNPARKED), |at| json!(at)));
         shown
     }
@@ -898,6 +901,7 @@ pub fn gather() -> Result<Vec<Item>> {
                 staged: state.as_deref().is_some_and(|state| tasks::staged(state, repo, &address)),
                 steps,
                 parked: state.as_deref().and_then(|state| tasks::park_of(state, &address, began)),
+                review_rule: state.as_deref().and_then(|state| crate::review_rule::reason_in(state, &address)),
                 phase: None,
                 title: state.as_deref().and_then(|state| title_of(state, &address, agent_title.as_deref(), &name_of(repo), &task, &name_of(&slot.path))),
                 name: task,
@@ -961,6 +965,7 @@ pub fn gather() -> Result<Vec<Item>> {
             staged: false,
             steps: tasks::Steps::default(),
             parked: None,
+            review_rule: None,
         });
     }
     // A task's halves in different repos sit together within a group, after what needs you most.
@@ -1030,6 +1035,7 @@ pub(crate) mod tests {
             staged: false,
             steps: tasks::Steps::default(),
             parked: None,
+            review_rule: None,
         };
         rederive(&mut item);
         item
@@ -1176,13 +1182,13 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn in_review(ok: bool, findings: usize, stale: bool, running: bool) -> crate::review::Shown {
-        crate::review::Shown { verdict: Some(crate::review::Verdict { ok, sha: "abc".to_string(), findings }), stale, running, file: PathBuf::from("/state/verdicts/billing@web.md") }
+        crate::review::Shown { verdict: Some(crate::review::Verdict { ok, sha: "abc".to_string(), findings }), stale, running, held: true, file: PathBuf::from("/state/verdicts/billing@web.md") }
     }
 
     #[test]
     fn a_task_sent_to_review_waits_under_in_review_until_its_reviewer_passes_its_code() {
         let reviewed = |shown: crate::review::Shown| { let mut item = task(Some("idle"), Some("ready"), 2); item.verdict = Some(shown); item };
-        let running = reviewed(crate::review::Shown { verdict: None, stale: false, running: true, file: PathBuf::new() });
+        let running = reviewed(crate::review::Shown { verdict: None, stale: false, running: true, held: true, file: PathBuf::new() });
         assert!(running.group() == Group::InReview);
         assert_eq!(running.summary(), "2 commits · review running · waits on the reviewer");
         assert_eq!(Group::InReview.title(), "IN REVIEW");
@@ -1201,7 +1207,7 @@ pub(crate) mod tests {
     #[test]
     fn a_review_under_way_or_of_this_code_covers_the_rules_and_a_stale_one_does_not() {
         let reviewed = |shown: crate::review::Shown| { let mut item = task(Some("idle"), Some("ready"), 2); item.git.as_mut().unwrap().approved = false; item.verdict = Some(shown); item };
-        let running = reviewed(crate::review::Shown { verdict: None, stale: false, running: true, file: PathBuf::new() });
+        let running = reviewed(crate::review::Shown { verdict: None, stale: false, running: true, held: true, file: PathBuf::new() });
         assert_eq!(running.summary(), "2 commits · review running · waits on the reviewer", "the reviewer is the rules check");
         assert!(!reviewed(in_review(false, 2, false, false)).summary().contains(UNCHECKED));
         assert!(reviewed(in_review(true, 0, true, false)).summary().contains(UNCHECKED), "a review of older code checked none of this");

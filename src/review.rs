@@ -79,6 +79,7 @@ pub struct Shown {
     pub verdict: Option<Verdict>,
     pub stale: bool,
     pub running: bool,
+    pub held: bool,
     pub file: PathBuf,
 }
 
@@ -115,12 +116,12 @@ pub fn shown_in(state: &Path, address: &str, current: impl Fn(&str) -> bool) -> 
         return None;
     }
     let stale = verdict.as_ref().is_some_and(|verdict| !current(&verdict.sha));
-    Some(Shown { verdict, stale, running, file })
+    Some(Shown { verdict, stale, running, held: !marked(state, address, "advised").exists(), file })
 }
 
 // A task never sent to review pushes freely; one sent pushes only code its reviewer passed, which `covered` says of the reviewed sha.
 pub fn gate(shown: Option<&Shown>, covered: impl Fn(&str) -> bool) -> std::result::Result<(), String> {
-    let Some(shown) = shown else { return Ok(()) };
+    let Some(shown) = shown.filter(|shown| shown.held) else { return Ok(()) };
     if shown.running {
         return Err("its review is still running".to_string());
     }
@@ -210,7 +211,7 @@ pub fn forget_in(state: &Path, address: &str) {
     if let Some(pid) = running_pid(state, address) {
         stop_group(&pid);
     }
-    for file in [verdict_file(state, address), running_file(state, address), log_file(state, address), marked(state, address, "wanted"), marked(state, address, "run")] {
+    for file in [verdict_file(state, address), running_file(state, address), log_file(state, address), marked(state, address, "wanted"), marked(state, address, "run"), marked(state, address, "withdrawn"), marked(state, address, "advised")] {
         let _ = fs::remove_file(file);
     }
 }
@@ -237,11 +238,12 @@ fn withdraw_as(caller: &crate::permit::Caller, cwd: &Path, name: Option<&str>) -
 // The reviewer runs in a process group of its own, so the signal stops its Claude too, before it can write a verdict.
 pub fn withdraw_in(state: &Path, address: &str) -> bool {
     let running = running_pid(state, address);
-    let in_review = verdict_file(state, address).exists() || running.is_some();
+    let in_review = in_review(state, address);
     if let Some(pid) = running {
         stop_group(&pid);
     }
     forget_in(state, address);
+    let _ = crate::state::write(&marked(state, address, "withdrawn"), "");
     in_review
 }
 
@@ -263,6 +265,8 @@ pub fn request(cwd: &Path, name: Option<&str>) -> Result<String> {
     fs::create_dir_all(dir(&state)).map_err(|error| error.to_string())?;
     let sha = git(&slot.path, &["rev-parse", "--short", "HEAD"])?;
     let log = start_reviewer(&state, &address, &peers::own_exe()?, &slot.path)?;
+    let _ = fs::remove_file(marked(&state, &address, "withdrawn"));
+    let _ = fs::remove_file(marked(&state, &address, "advised"));
     crate::notice::Notice::new(crate::notice::Tone::Moving, "Review started").next("The reviewer reads its commits in the background; the lead hears its verdict.")
         .detail("task", &address).detail("commit", &sha).detail("verdict", verdict_file(&state, &address).display().to_string()).detail("output", log.display().to_string()).ok()
 }
@@ -280,9 +284,25 @@ fn start_reviewer(state: &Path, address: &str, kebbie: &Path, worktree: &Path) -
     Ok(log)
 }
 
+// Sent to review, by you, the lead or review.auto, with no verdict given up since.
+pub fn in_review(state: &Path, address: &str) -> bool {
+    verdict_file(state, address).exists() || running_in(state, address) || marked(state, address, "wanted").exists()
+}
+
+// You took it out of review, so the assessor leaves it out until you send it again.
+pub fn withdrawn_in(state: &Path, address: &str) -> bool {
+    marked(state, address, "withdrawn").exists()
+}
+
 // A task asks from its own process, so the keeper starts the reviewer from its own environment; the task waits in review meanwhile.
 pub fn want(state: &Path, address: &str, worktree: &Path) -> Result<()> {
     crate::state::write(&marked(state, address, "wanted"), format!("{}\n", worktree.display()))
+}
+
+// review.auto = "run": the reviewer reads the branch while its push stays free, until you or the lead send it to review.
+pub fn advise(state: &Path, address: &str, worktree: &Path) -> Result<()> {
+    crate::state::write(&marked(state, address, "advised"), "")?;
+    want(state, address, worktree)
 }
 
 pub fn tick(state: &Path) -> Vec<String> {
@@ -355,7 +375,9 @@ fn review(repo: &Path, slot: &Slot, address: &str, state: &Path) -> Result<(Stri
     let upstream = default_branch(repo)?;
     let sha = git(&slot.path, &["rev-parse", "HEAD"])?;
     let settings = config::resolve(Some(repo))?.settings;
-    let commits = git(&slot.path, &["log", "--reverse", "--format=%h %s", &format!("{upstream}..{sha}")])?;
+    let open = git(&slot.path, &["log", "--reverse", "--format=%h %s", &format!("{upstream}..{sha}")])?;
+    let pushed = crate::review_rule::pushed_log(state, address, &slot.path);
+    let commits = if pushed.is_empty() { open } else { format!("{pushed}\n{open}") };
     let said = tasks::transcript(repo, slot).and_then(|(agent, file)| Some(agent.user_messages(&fs::read_to_string(file).ok()?))).unwrap_or_default();
     let file = verdict_file(state, address);
     let kebbie = install_root()?;
@@ -583,7 +605,7 @@ fn brief(brief: &Brief) -> String {
     };
     format!(
         "Review the branch of the task {address} in {}, at {sha}, by the kebbie:review instructions in your system prompt.\n\n\
-         Its commits, oldest first, are {upstream}..{sha}:\n{commits}\n\n\
+         Its commits, oldest first, are {upstream}..{sha}, after any steps it pushed already, which you read the same way:\n{commits}\n\n\
          {rules}\n\n\
          {}\n\n\
          {tests}\n\n\
@@ -669,7 +691,11 @@ mod tests {
         assert!(!marked(&state, &address, "wanted").exists() && running_file(&state, &address).exists());
         want(&state, "billing@elsewhere", &slot.path).unwrap();
         assert!(tick_with(&state, &env).is_empty() && !marked(&state, "billing@elsewhere", "wanted").exists(), "a request naming another task's folder starts nothing");
+        want(&state, &address, &slot.path).unwrap();
+        assert!(in_review(&state, &address));
+        assert!(withdraw_in(&state, &address) && withdrawn_in(&state, &address) && !in_review(&state, &address), "a wanted review you withdraw never starts");
         forget_in(&state, &address);
+        assert!(!withdrawn_in(&state, &address), "a task that ends forgets it was withdrawn");
         cleanup(dir, origin, &slot);
     }
 
@@ -762,7 +788,7 @@ mod tests {
     }
 
     fn shown_as(ok: Option<bool>, stale: bool, running: bool) -> Shown {
-        Shown { verdict: ok.map(|ok| Verdict { ok, sha: "abc".to_string(), findings: usize::from(!ok) * 2 }), stale, running, file: PathBuf::new() }
+        Shown { verdict: ok.map(|ok| Verdict { ok, sha: "abc".to_string(), findings: usize::from(!ok) * 2 }), stale, running, held: true, file: PathBuf::new() }
     }
 
     #[test]
@@ -912,7 +938,7 @@ mod tests {
         assert_eq!(said, ["Add refunds to the billing page.", "Refunds only within 30 days."]);
         let mut shape = Brief { address: "billing@app", worktree: Path::new("/src/wt1.app"), upstream: "origin/main", sha: "abc123", commits: "abc123 Add refunds", rules: "kebbie:work-rules", rules_file: Some(Path::new("/kebbie/skills/work-rules/SKILL.md")), quoted: None, said: &said, tests: "- ✓ cargo test · 3 passed · at abc123 · `cargo test`", also_noticed: config::AlsoNoticed::Backlog, docs: None };
         let text = brief(&shape);
-        assert!(text.contains("origin/main..abc123:\nabc123 Add refunds"), "{text}");
+        assert!(text.contains("origin/main..abc123, after any steps it pushed already, which you read the same way:\nabc123 Add refunds"), "{text}");
         assert!(text.contains("`kebbie:work-rules`, at /kebbie/skills/work-rules/SKILL.md: read it"), "{text}");
         assert!(text.contains("does not need is a finding.\n\n- ✓ cargo test · 3 passed · at abc123"), "the reviewer reads the recorded test runs: {text}");
         shape.rules_file = None;

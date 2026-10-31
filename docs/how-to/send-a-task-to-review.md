@@ -1,6 +1,8 @@
 # Send a task to review
 
-Hold a risky task's push until an independent, read-only Claude has passed its code.
+Hold a task's push until an independent, read-only Claude has passed its code.
+
+On a ready report, an assessor judges whether the work needs a review, and the row says `review suggested: <why> · v` when it does. See [An assessor judges whether the work needs a review](../explanation/review-gate.md#an-assessor-judges-whether-the-work-needs-a-review).
 
 1. Select the task on the board and press `v`, or run:
 
@@ -45,6 +47,17 @@ Press `v` again, or run:
 kebbie review --withdraw billing
 ```
 
-The reviewer stops, its verdict goes, and push is offered again. Only you can withdraw.
+The reviewer stops, its verdict goes, and push is offered again. Only you can withdraw, and the assessor leaves a task you withdrew out until you send it again.
+
+## Let kebbie start or require the review
+
+To have the reviewer start by itself on work the assessor says needs one, set in `~/.config/kebbie/config.toml` or a repo's own file:
+
+```toml
+[review]
+auto = "run"
+```
+
+`"require"` also holds the push until the reviewer passes. `"suggest"`, the default, leaves the sending to you.
 
 See also: [The review gate](../explanation/review-gate.md).

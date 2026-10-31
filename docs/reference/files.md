@@ -58,6 +58,9 @@ The folder is `0700` and its files `0600`. Each file is replaced whole on write.
 | `verdicts/<task>@<repo>.md` | The reviewer's latest verdict for a task. See [The verdict file](#the-verdict-file). |
 | `verdicts/<task>@<repo>.wanted` | A review asked for from the task's own process, until the keeper starts the reviewer. |
 | `verdicts/<task>@<repo>.run` | The hash of the nonce handed to the reviewer that runs. |
+| `verdicts/<task>@<repo>.withdrawn` | The mark that you withdrew the task from review, so the assessor leaves it out until you send it again. |
+| `verdicts/<task>@<repo>.advised` | The mark that `review.auto = "run"` started the review, so it holds no push. |
+| `review-rule/` | Per task, `<task>@<repo>`: the assessor's word on its last ready report, such as `review suggested: changes how VAT is rounded`; `.pushed` the steps it pushed, which the assessor and the reviewer read with the rest; `.wanted`, `.running`, `.run` and `.log` the assessment under way. |
 | `approved/` | The rules approvals: the reviewer's pass or `kebbie approve`. |
 | `rules/` | The reviewer's rules checks, per `<task>@<repo>`, by extension below. |
 

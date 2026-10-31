@@ -118,10 +118,19 @@ The Where column says which file may set a key: `either`, `config.toml only` or 
 | --- | --- | --- | --- |
 | `docs.required` | `false` | repo config only | Whether this repo's docs keep in step with its code. |
 | `review.model` | none | either | The model the reviewer runs on. |
+| `review.auto` | `"suggest"` | either | What kebbie does with work the assessor says needs a review: `"suggest"`, `"run"` or `"require"`. |
 
 `docs.required`: a task's Claude updates the README and `docs/` when its change alters what a user sees or does, by the [`kebbie:keep-docs`](skills.md) skill. The reviewer, in the rules check on a ready report and in `kebbie review`, fails a branch that changes such behaviour and leaves it undescribed in the README or `docs/`. `kebbie doctor` suggests it for a repo that is public on GitHub. See [Keep docs in step with changes](../how-to/keep-docs-in-step.md).
 
 `review.model` is the `reviewer` profile's `model` by another name, and ahead of it when both are set. Unset leaves it to that profile, and then to Claude's default.
+
+`review.auto`: on a ready report, a read-only assessor judges whether the task's work since it started, pushed steps included, needs an independent review.
+
+- `"suggest"`: the row and the lead say `review suggested: <why>`, and nothing starts until you or the lead send it.
+- `"run"`: the reviewer starts by itself; the push is not held.
+- `"require"`: the push is held from the ready report on, until the reviewer passes.
+
+An assessment with no answer reads as `review not assessed`, a suggestion in every mode. A task you withdraw from review is not assessed again until you send it. See [An assessor judges whether the work needs a review](../explanation/review-gate.md#an-assessor-judges-whether-the-work-needs-a-review).
 
 ### Machine
 

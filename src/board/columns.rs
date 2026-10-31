@@ -11,7 +11,7 @@ use super::detail::unfolded_lines;
 use super::steps::{accept_wanted, step_lines, to_accept_note};
 use crate::config::OngoingAt;
 use super::{App, BacklogRow, Column, Hit};
-use super::widgets::{BLUE, FAINT, GREEN, MAUVE, MUTED, PEACH, RED, SUBTEXT, SURFACE, TEAL, TEXT, YELLOW, bold, card_text, chips, column_title, group_line, options_hint, plural, row, style, wrap};
+use super::widgets::{BLUE, FAINT, GREEN, MAUVE, MUTED, PEACH, RED, SUBTEXT, SURFACE, TEAL, TEXT, YELLOW, bold, card_text, chips, column_title, cut, group_line, options_hint, plural, row, style, wrap};
 
 pub(super) fn group_color(group: Group) -> Color {
     match group {
@@ -145,6 +145,27 @@ fn wanted_lines(wanted: &str, color: Color, highlighted: bool, width: usize) -> 
     }).collect()
 }
 
+// How the task is done, under its row: whether the assessor says its work needs a review, and why.
+pub(super) fn how_line(item: &Item, highlighted: bool, width: usize) -> Option<Line<'static>> {
+    let parts: Vec<String> = review_part(item).into_iter().collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let line = Line::from(vec![Span::raw("   "), Span::styled(cut(&parts.join(" · "), width.saturating_sub(4)), style(MUTED))]);
+    Some(if highlighted { line.style(Style::new().bg(SURFACE)) } else { line })
+}
+
+// A suggested review names the key that sends it; once sent, the suggestion is the review.
+fn review_part(item: &Item) -> Option<String> {
+    let reason = item.review_rule.as_deref()?;
+    Some(match reason.strip_prefix("review suggested") {
+        Some(rest) if item.verdict.is_some() => format!("review{rest}"),
+        Some(_) => format!("{reason} · {}", keys::key(Act::SendReview)),
+        None if reason == "review not assessed" && item.verdict.is_none() => format!("{reason} · {}", keys::key(Act::SendReview)),
+        None => reason.to_string(),
+    })
+}
+
 // The facts span is drawn muted whole; one fact in it takes its own colour.
 fn tint(line: &mut Line<'static>, fact: &str, color: Color) {
     let Some(at) = line.spans.iter().rposition(|span| span.content.contains(fact)) else { return };
@@ -250,6 +271,7 @@ pub(super) fn work_lines(app: &mut App, width: usize, unfold: bool) -> (Vec<Line
             line.spans.extend([Span::raw(" "), Span::styled("●", style(GREEN))]);
         }
         lines.push(line);
+        lines.extend(how_line(item, selected && on_task && unfold, width));
         lines.extend(step_lines(item, selected && on_task && unfold, width));
         if let Some(wanted) = item.wanted(&keys::key(Act::Go).to_string()).or_else(|| accept_wanted(item)) {
             lines.extend(wanted_lines(&wanted, PEACH, selected && on_task && unfold, width));
@@ -396,6 +418,42 @@ mod tests {
     fn a_suggested_name_keeps_letters_with_diacritics() {
         assert_eq!(suggested_name("kebbie – återanvänd worktree tar med förra uppgiftens databas"), "kebbie-ateranvand-worktree-tar");
         assert_eq!(crate::tasks::slug("Föräldraledighet över jul").unwrap(), "foraldraledighet-over-jul");
+    }
+
+    #[test]
+    fn the_review_rules_word_shows_muted_under_the_task_row_and_a_task_without_one_shows_none() {
+        let mut item = crate::status::tests::task(Some("idle"), Some("ready"), 2);
+        item.review_rule = Some("review: changes how VAT is rounded".to_string());
+        let mut app = test_app(vec![item.clone()]);
+        let (rows, buffer) = render(&mut app, 120, 30);
+        let screen = rows.join("\n");
+        let at = find(&rows, "billing")[0].1;
+        assert_eq!(rows[at + 1].trim(), "review: changes how VAT is rounded", "{screen}");
+        let (x, y) = find(&rows, "review: changes")[0];
+        assert_eq!(buffer[(x as u16, y as u16)].fg, MUTED);
+        let (narrow, _) = render(&mut app, 40, 30);
+        let line = narrow.iter().find(|row| row.contains("review: ")).unwrap();
+        assert!(line.trim_end().ends_with('…') && line.trim_end().chars().count() <= 40, "a long line is cut to the column: {}", narrow.join("\n"));
+        item.review_rule = Some("review not assessed".to_string());
+        let mut app = test_app(vec![item.clone()]);
+        app.work_selected = 9;
+        let (rows, _) = render(&mut app, 120, 30);
+        assert_eq!(rows[at + 1].trim(), "review not assessed · v", "no answer is a suggestion too: {}", rows.join("\n"));
+        item.review_rule = Some("review suggested: changes how VAT is rounded".to_string());
+        let mut app = test_app(vec![item.clone()]);
+        app.work_selected = 9;
+        let (rows, _) = render(&mut app, 120, 30);
+        assert_eq!(rows[at + 1].trim(), "review suggested: changes how VAT is rounded · v", "a suggestion names the key that sends the task to review: {}", rows.join("\n"));
+        item.verdict = Some(crate::status::tests::in_review(false, 0, false, true));
+        let mut app = test_app(vec![item.clone()]);
+        app.work_selected = 9;
+        let (rows, _) = render(&mut app, 120, 30);
+        assert_eq!(rows[at + 1].trim(), "review: changes how VAT is rounded", "once sent, it is the review: {}", rows.join("\n"));
+        item.review_rule = None;
+        item.verdict = None;
+        let mut app = test_app(vec![item]);
+        let (rows, _) = render(&mut app, 120, 30);
+        assert!(!rows.join("\n").contains("review: "), "{}", rows.join("\n"));
     }
 
     #[test]

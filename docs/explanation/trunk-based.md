@@ -48,7 +48,7 @@ A pull request does three jobs: it shows you the change, it gets a second opinio
 | Job | In kebbie |
 | --- | --- |
 | Seeing the change | The review split shows the task's diff next to its Claude, and your comments go straight into Claude's input. The push window shows the sign-off card and every commit message before anything is pushed. |
-| A second opinion | A read-only reviewer checks every ready task's commits against your rules skill. For risky work, the reviewer gate adds an independent, read-only Claude that must pass the current code. See [The review gate](review-gate.md). |
+| A second opinion | A read-only reviewer checks every ready task's commits against your rules skill. An assessor judges whether the work needs the reviewer gate too, where an independent, read-only Claude must pass the current code. See [The review gate](review-gate.md). |
 | The gate | Tasks cannot push. You push, or the lead pushes a task you gave it permission for. See [The trust boundary](trust-boundary.md). |
 
 The gate is the push itself, so nothing waits on a web page.

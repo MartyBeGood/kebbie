@@ -1,6 +1,6 @@
 # The review gate
 
-This page explains the rules check every ready task gets, the reviewer gate you send risky work through, and what keeps a pass.
+This page explains the rules check every ready task gets, the assessment of whether its work needs a review, the reviewer gate, and what keeps a pass.
 
 kebbie has two kinds of review, and they answer different questions. The review split is you reading the change. The reviewer gate is a second Claude reading it, with a verdict that holds the push until it passes.
 
@@ -20,7 +20,7 @@ Each code is checked once. A ready report on code the reviewer found breaks in g
 
 ## The reviewer gate holds the push until the code is right
 
-A task you send to review (`v` on the board, or `kebbie review`) waits under In review until a separate Claude has read it and given `verdict: ok` on the code its HEAD makes. Until then the board offers no push for it.
+A task in review, sent by you (`v` on the board, or `kebbie review`), by the lead, or by kebbie under [`review.auto`](#an-assessor-judges-whether-the-work-needs-a-review), waits under In review until a separate Claude has read it and given `verdict: ok` on the code its HEAD makes. Until then the board offers no push for it.
 
 A full review reads the rules too, so its pass is the task's rules approval, and no separate rules check runs while a task is in review. A task in review shows under Ready to push once the reviewer has passed its current code.
 
@@ -76,10 +76,24 @@ The board's task row and the push window show the latest run:
 
 Like a pass, a run belongs to the code, so a clean rebase or a squash keeps it current. See [`kebbie evidence`](../reference/commands.md#kebbie-evidence-name---json).
 
-## Send the work where a second reading pays
+## An assessor judges whether the work needs a review
 
-Most tasks go straight to push after the rules check. The reviewer costs a full Claude run and some waiting, so send the tasks where a second reading pays: money, data, migrations, security, concurrency and wide refactors.
+A full review costs a Claude run and some waiting, so not every task gets one. Whether one pays is a judgement of the work, not of its file names, so on a ready report a short, read-only assessor makes it. It is a fresh Claude, started by the keeper from its own environment, that never wrote the code.
 
-You can take a task back out with `v` again or `kebbie review --withdraw`. Only you can withdraw: the gate is there for the times you asked for it, and neither the lead nor a task can talk its way past it.
+It reads the task's whole work since it started, the steps already pushed included, with what kebbie measured: the files and lines changed, the test files, migration and schema files, and the number of commits. Its instructions, `roles/review-assess.md`, name what makes work worth a second reading: its size, its complexity, many tests changed, the database, business logic such as money or permissions, security, and agent instructions.
+
+Its answer is one line on the task's row, in your terms: `review suggested: changes how VAT is rounded and its tests` or `no review: wording in two templates`. An assessor that gives no answer leaves `review not assessed`, which counts as a suggestion, never as no review.
+
+## You choose what a suggestion does
+
+[`review.auto`](../reference/configuration.md#review-and-docs) decides what kebbie does with work the assessor says needs a review:
+
+- `"suggest"`, the default, starts nothing: the row and the lead say so, and you or the lead send it with `v`.
+- `"run"` starts the reviewer by itself and lets the push go meanwhile.
+- `"require"` holds the push from the ready report on, through the assessment and the review, until the reviewer passes.
+
+## Only you take a task out of review
+
+You can take a task back out with `v` again or `kebbie review --withdraw`. Only you can withdraw: neither the lead nor a task can talk its way past the gate. The assessor leaves a task you withdrew out until you send it again.
 
 The gate also carries push permission. On the Areas page, `a` lets the lead push every task in a repo once its reviewer has passed the current code. See [Let the lead push](../how-to/let-the-lead-push.md).

@@ -69,6 +69,27 @@ impl AlsoNoticed {
     }
 }
 
+// What kebbie does with work the assessor says needs a review: suggest it, start the reviewer, or also hold the push until it passes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ReviewAuto {
+    #[default]
+    Suggest,
+    Run,
+    Require,
+}
+
+impl ReviewAuto {
+    pub const ALL: [ReviewAuto; 3] = [ReviewAuto::Suggest, ReviewAuto::Run, ReviewAuto::Require];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            ReviewAuto::Suggest => "suggest",
+            ReviewAuto::Run => "run",
+            ReviewAuto::Require => "require",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum OngoingAt {
     #[default]
@@ -124,6 +145,7 @@ pub struct Worktree {
     pub sandbox: Option<bool>,
     pub steps: Option<bool>,
     pub review_model: Option<String>,
+    pub review_auto: Option<ReviewAuto>,
     pub notify_command: Option<String>,
     pub vault_command: Option<String>,
     pub server_name: Option<String>,
@@ -287,6 +309,7 @@ pub struct Settings {
     pub sandbox: Setting<bool>,
     pub steps: Setting<bool>,
     pub review_model: Setting<Option<String>>,
+    pub review_auto: Setting<ReviewAuto>,
     pub notify_command: Setting<Option<String>>,
     pub vault_command: Setting<Option<String>>,
     pub server_name: Setting<String>,
@@ -409,7 +432,7 @@ const SECTION_KEYS: [(&str, &[&str]); 18] = [
     ("hub", &["url"]),
     ("worktree", &["setup_skill", "setup_command", "dev_server", "dev_worker", "dev_url", "dev_route", "stage_on_main", "server_name", "worker_name", "clean_on_release"]),
     ("task", &["rules_skill", "test_commands", "also_noticed", "permission_mode", "profile", "sandbox", "steps"]),
-    ("review", &["model"]),
+    ("review", &["model", "auto"]),
     ("notify", &["command"]),
     ("vault", &["command"]),
     ("ci", &["watch"]),
@@ -709,6 +732,7 @@ fn worktree(table: &Table) -> Result<Worktree> {
         sandbox: None,
         steps: None,
         review_model: None,
+        review_auto: None,
         notify_command: None,
         vault_command: None,
         server_name: text(worktree, "server_name", "worktree.server_name")?,
@@ -765,8 +789,15 @@ fn test_commands(value: &Value) -> Result<Vec<String>> {
 fn with_review(table: &Table, mut worktree: Worktree) -> Result<Worktree> {
     if let Some(review) = subtable(table, "review", "review")? {
         worktree.review_model = text(review, "model", "review.model")?;
+        worktree.review_auto = review_auto(review)?;
     }
     Ok(worktree)
+}
+
+fn review_auto(review: &Table) -> Result<Option<ReviewAuto>> {
+    let Some(name) = text(review, "auto", "review.auto")? else { return Ok(None) };
+    ReviewAuto::ALL.into_iter().find(|choice| choice.key() == name).map(Some)
+        .ok_or(format!("review.auto: \"{name}\" is not a choice; use \"suggest\", \"run\" or \"require\""))
 }
 
 fn with_notify(table: &Table, mut worktree: Worktree) -> Result<Worktree> {
@@ -885,6 +916,7 @@ pub fn settings(repo: &Worktree, machine: &Machine) -> Settings {
         sandbox: or_default(pick(repo.sandbox.as_ref(), machine.worktree.sandbox.as_ref()), true),
         steps: or_default(pick(repo.steps.as_ref(), machine.worktree.steps.as_ref()), true),
         review_model: optional(pick(repo.review_model.as_ref(), machine.worktree.review_model.as_ref())),
+        review_auto: or_default(pick(repo.review_auto.as_ref(), machine.worktree.review_auto.as_ref()), ReviewAuto::default()),
         notify_command: optional(pick(None, machine.worktree.notify_command.as_ref())),
         vault_command: optional(pick(None, machine.worktree.vault_command.as_ref())),
         server_name: or_default(pick(None, machine.worktree.server_name.as_ref()), DEFAULT_SERVER_NAME.to_string()),
@@ -981,7 +1013,7 @@ fn quoted(items: &[&str]) -> String {
 
 // The one list of keys: kebbie config prints it and the Settings page edits it.
 pub fn entries(loaded: &Loaded) -> Vec<Entry> {
-    let Settings { sources, groups, ongoing, setup_skill, setup_command, dev_server, dev_worker, dev_url, dev_route, stage_on_main, rules_skill, test_commands, also_noticed, permission_mode, profile, sandbox, steps, review_model, notify_command, vault_command, server_name, worker_name, channel, idle_minutes, auto_restart, ci_watch, comments_watch, comments_days, clean_on_release, docs_required, keeper, recover, machine_name, hub_url, report_signals, report_text, report_inbox, propose_issues } = &loaded.settings;
+    let Settings { sources, groups, ongoing, setup_skill, setup_command, dev_server, dev_worker, dev_url, dev_route, stage_on_main, rules_skill, test_commands, also_noticed, permission_mode, profile, sandbox, steps, review_model, review_auto, notify_command, vault_command, server_name, worker_name, channel, idle_minutes, auto_restart, ci_watch, comments_watch, comments_days, clean_on_release, docs_required, keeper, recover, machine_name, hub_url, report_signals, report_text, report_inbox, propose_issues } = &loaded.settings;
     let names: Vec<&str> = sources.value.iter().map(|source| source.key()).collect();
     let (board_keys, _) = crate::keys::Keys::with(&load_machine(&loaded.machine).map(|machine| machine.keys).unwrap_or_default());
     let (server_key, worker_key) = (board_keys.char(crate::keys::Act::Server), board_keys.char(crate::keys::Act::Worker));
@@ -1034,6 +1066,8 @@ pub fn entries(loaded: &Loaded) -> Vec<Entry> {
         "Tasks work in steps, one commit each, listed with kebbie steps before they write code: you accept and push one step at a time while the task builds the next. Off, a task commits its own way and kebbie steps refuses. New tasks follow it; a running task once it restarts.");
     key("review.model", review_model.value.as_ref().map_or("none".to_string(), |model| format!("{model:?}")), review_model.layer, Kind::Text, Scope::Either,
         "The model kebbie review's independent reviewer runs on, ahead of the reviewer profile's model; none leaves it to that profile, then to Claude's default.");
+    key("review.auto", format!("{:?}", review_auto.value.key()), review_auto.layer, Kind::Choice(ReviewAuto::ALL.map(ReviewAuto::key).to_vec()), Scope::Either,
+        "What kebbie does when the assessor it runs on a ready report judges that the task's work, its pushed steps included, needs an independent review: \"suggest\" shows review suggested and its reason on the task, and nothing starts until you or the lead send it; \"run\" starts the reviewer by itself without holding the push; \"require\" starts it and holds the push, from the ready report on, until it passes. An assessment that gives no answer reads as review not assessed, a suggestion in every mode.");
     key("notify.command", notify_command.value.as_ref().map_or("none".to_string(), |command| format!("{command:?}")), notify_command.layer, Kind::Text, Scope::Machine,
         "The shell command kebbie runs when something needs you (a task needs you or is ready, a question waits, the lead's summary); KEBBIE_EVENT, KEBBIE_TASK, KEBBIE_REPO and KEBBIE_TEXT describe it, and $1 is the text. None sends no notifications; config.toml only.");
     key("vault.command", vault_command.value.as_ref().map_or("none".to_string(), |command| format!("{command:?}")), vault_command.layer, Kind::Text, Scope::Machine,
@@ -1457,12 +1491,25 @@ mod tests {
         assert_eq!(settings(&Worktree::default(), &from_machine).review_model, Setting { value: Some("opus".to_string()), layer: Layer::Machine });
         let both = settings(&repo("[review]\nmodel = \"sonnet\"\n"), &from_machine);
         assert_eq!(both.review_model, Setting { value: Some("sonnet".to_string()), layer: Layer::Repo });
-        assert!(unknown_repo("[review]\nmodle = \"opus\"\n").contains("review.modle: unknown key; known keys here: model"));
+        assert!(unknown_repo("[review]\nmodle = \"opus\"\n").contains("review.modle: unknown key; known keys here: model, auto"));
         assert!(parse_machine("[review]\nmodel = \"\"\n", "config.toml").unwrap_err().contains("review.model: must not be empty"));
         let loaded = Loaded { machine: PathBuf::from("/c.toml"), repo: None, settings: both };
         assert!(describe(&loaded).contains("review.model = \"sonnet\"  (repo config)"));
         let default = Loaded { machine: PathBuf::from("/c.toml"), repo: None, settings: settings(&Worktree::default(), &Machine::default()) };
         assert!(describe(&default).contains("review.model = none  (default)\n  The model kebbie review"));
+    }
+
+    #[test]
+    fn review_auto_suggests_by_default_and_a_repo_wins_over_the_machine() {
+        let defaults = settings(&Worktree::default(), &Machine::default());
+        assert_eq!(defaults.review_auto, Setting { value: ReviewAuto::Suggest, layer: Layer::Default });
+        let own = settings(&repo("[review]\nauto = \"require\"\n"), &machine("[review]\nauto = \"run\"\n"));
+        assert_eq!(own.review_auto, Setting { value: ReviewAuto::Require, layer: Layer::Repo });
+        assert_eq!(settings(&Worktree::default(), &machine("[review]\nauto = \"run\"\n")).review_auto.value, ReviewAuto::Run);
+        assert!(parse_repo("[review]\nauto = \"yes\"\n", "app.toml").unwrap_err().contains("review.auto: \"yes\" is not a choice; use \"suggest\", \"run\" or \"require\""));
+        assert!(unknown_repo("[review]\nskip = []\n").contains("review.skip: unknown key; known keys here: model, auto"));
+        let shown = describe(&Loaded { machine: PathBuf::from("/c.toml"), repo: None, settings: defaults });
+        assert!(shown.contains("review.auto = \"suggest\"  (default)\n  What kebbie does when the assessor"), "{shown}");
     }
 
     #[test]
@@ -1692,7 +1739,7 @@ mod tests {
     fn each_keys_scope_is_the_files_that_take_it_and_what_its_text_says() {
         let loaded = Loaded { machine: PathBuf::from("/nowhere/config.toml"), repo: None, settings: settings(&Worktree::default(), &Machine::default()) };
         let all = entries(&loaded);
-        assert_eq!(all.len(), 38);
+        assert_eq!(all.len(), 39);
         for entry in all {
             let (section, field) = entry.key.rsplit_once('.').unwrap();
             let text = format!("[{section}]\n{field} = {}\n", sample(&entry));
