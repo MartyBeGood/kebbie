@@ -341,6 +341,27 @@ pub fn repo_files(dir: &Path, current: Option<&Path>) -> (Vec<Check>, Option<Wor
     (checks, own)
 }
 
+pub fn task_profiles(profiles_dir: &Path, named: &[(String, String)]) -> Option<Check> {
+    if named.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = crate::profiles::list_in(profiles_dir).0.into_iter().map(|profile| profile.name).filter(|name| name != crate::profiles::REVIEWER).collect();
+    let missing: Vec<String> = named.iter().filter(|(_, profile)| !names.contains(profile)).map(|(file, profile)| format!("task.profile = \"{profile}\" in {file} names no profile")).collect();
+    if missing.is_empty() {
+        let set: Vec<String> = named.iter().map(|(file, profile)| format!("\"{profile}\" in {file}")).collect();
+        return Some(ok("task profile", format!("task.profile names a profile there is: {}", set.join(", "))));
+    }
+    Some(warn("task profile", format!("{}; the profiles are {}", missing.join("; "), names.join(", ")), one("pick it on the Settings page (,) under Tasks")))
+}
+
+fn named_profiles(machine: Option<&Machine>, config: &Path, repos_dir: &Path) -> Vec<(String, String)> {
+    let mut named: Vec<(String, String)> = machine.and_then(|machine| machine.worktree.profile.clone()).map(|profile| (crate::area_page::home_relative(config), profile)).into_iter().collect();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(repos_dir).into_iter().flatten().flatten().map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|extension| extension == "toml")).collect();
+    files.sort();
+    named.extend(files.iter().filter_map(|file| config::check_repo(file).ok()?.0.profile.map(|profile| (crate::area_page::home_relative(file), profile))));
+    named
+}
+
 pub fn setup_skill(skill: &Setting<String>, installed: Option<&Value>, settings: &Value) -> Check {
     let name = "setup skill";
     let shown = format!("{} ({})", skill.value, skill.layer.label());
@@ -772,6 +793,7 @@ pub fn checks(env: &Env) -> Vec<Check> {
     checks.push(check);
     let (repo_checks, own) = repo_files(&env.repos_dir, env.repo_config.as_deref());
     checks.extend(repo_checks);
+    checks.extend(task_profiles(&env.profiles_dir, &named_profiles(machine.as_ref(), &env.config, &env.repos_dir)));
     checks.extend(env.repo.as_deref().map(push_block));
     let repos = known_repos();
     checks.push(kelpie_leftovers(&crate::push_block::kelpie_era_worktrees(&repos), &sessions_with_gone_hooks(&env.kebbie_state.join("roles"), &open_addresses(&repos))));
@@ -1455,5 +1477,28 @@ mod tests {
         assert!(lacking.fact.contains("kebbie starts no task: socat, the seccomp filter missing"), "{}", lacking.fact);
         assert!(lacking.fix.iter().any(|fix| fix.contains("npm install -g @anthropic-ai/sandbox-runtime")) && lacking.fix.last().unwrap().contains("task.sandbox = false"), "{:?}", lacking.fix);
         assert!(include_str!("doctor.rs").contains("checks.push(sandbox(&settings.sandbox, &crate::sandbox::missing_here()));"), "doctor runs the check");
+    }
+
+    #[test]
+    fn a_task_profile_that_names_no_profile_is_a_warning_with_the_list_and_the_settings_page_as_fix() {
+        let dir = crate::sh::test_dir("doctor-task-profile");
+        let (profiles, repos) = (dir.join("profiles"), dir.join("repos"));
+        std::fs::create_dir_all(&profiles).unwrap();
+        std::fs::create_dir_all(&repos).unwrap();
+        std::fs::write(profiles.join("coder.toml"), "agent = \"codex\"\n").unwrap();
+        std::fs::write(dir.join("config.toml"), "[task]\nprofile = \"coder\"\n").unwrap();
+        std::fs::write(repos.join("app.toml"), "[task]\nprofile = \"designer\"\n").unwrap();
+        std::fs::write(repos.join("api.toml"), "[ci]\nwatch = true\n").unwrap();
+        let machine = config::check_machine(&dir.join("config.toml")).unwrap().0;
+        let named = named_profiles(Some(&machine), &dir.join("config.toml"), &repos);
+        assert_eq!(named, [(dir.join("config.toml").display().to_string(), "coder".to_string()), (repos.join("app.toml").display().to_string(), "designer".to_string())]);
+        let check = task_profiles(&profiles, &named).unwrap();
+        assert_eq!(check.level, Level::Warn);
+        assert_eq!(check.fact, format!("task.profile = \"designer\" in {} names no profile; the profiles are task, ops, coder", repos.join("app.toml").display()));
+        assert_eq!(check.fix, ["pick it on the Settings page (,) under Tasks"]);
+        assert!(task_profiles(&profiles, &[("config.toml".to_string(), "reviewer".to_string())]).unwrap().level == Level::Warn, "the reviewer is never a task's profile");
+        assert_eq!(task_profiles(&profiles, &named[..1]).unwrap().level, Level::Ok);
+        assert_eq!(task_profiles(&profiles, &[]), None, "nothing to say when no file sets it");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

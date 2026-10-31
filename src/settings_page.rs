@@ -385,6 +385,17 @@ impl Page {
                     now,
                 }
             }).collect(),
+            Kind::Profile => {
+                let set = (entry.layer != Layer::Default).then_some(now);
+                let mut picks = vec![Pick { label: format!("none ({})", profiles::TASK), about: "the built-in task".to_string(), then: Then::Write(Change::Remove), now: set.is_none() }];
+                picks.extend(self.agents.profiles.iter().filter(|profile| profile.name != profiles::REVIEWER).map(|profile| Pick {
+                    label: format!("{:?}", profile.name),
+                    about: if profile.fits.is_empty() { "(for not said)".to_string() } else { profile.fits.clone() },
+                    then: Then::Write(Change::Set(Set::Text(profile.name.clone()))),
+                    now: set.as_deref() == Some(profile.name.as_str()),
+                }));
+                picks
+            }
             Kind::Skill => {
                 let default = default_skill(entry.key);
                 let skill = default.split_once(':').map_or(default, |(_, skill)| skill);
@@ -561,7 +572,7 @@ impl Page {
         let Some(entry) = self.current() else { return };
         match entry.kind {
             Kind::Bool => self.request(entry.key, Change::Set(Set::Bool(entry.value != "true"))),
-            Kind::Choice(_) | Kind::Skill => {
+            Kind::Choice(_) | Kind::Skill | Kind::Profile => {
                 let picks = self.picks(&entry);
                 let index = picks.iter().position(|pick| pick.now).unwrap_or(0);
                 self.mode = Mode::Pick { picks, index };
@@ -796,7 +807,7 @@ impl Page {
         }
         let change = match self.current().map(|entry| entry.kind) {
             Some(Kind::Bool) => "space toggle",
-            Some(Kind::Choice(_) | Kind::Skill) => "⏎ pick",
+            Some(Kind::Choice(_) | Kind::Skill | Kind::Profile) => "⏎ pick",
             _ => "⏎ edit",
         };
         (
@@ -1548,5 +1559,28 @@ mod tests {
         press(&mut fixture.page, &[KeyCode::Char('d')]);
         assert_eq!((file(&fixture, "config.toml"), fixture.dir.join("profiles/reviewer.toml").exists()), ("[review]\n".to_string(), false), "d takes the reviewer back to its defaults, review.model with them");
         assert!(said(&fixture.page).starts_with("✓ removed review.model from config.toml") && said(&fixture.page).contains("✓ removed profiles/reviewer.toml"), "{}", said(&fixture.page));
+    }
+
+    #[test]
+    fn task_profile_is_picked_from_the_profiles_there_are_and_none_removes_it() {
+        let mut fixture = agents_fixture("settings-task-profile");
+        go_to(&mut fixture.page, "task.profile");
+        assert!(fixture.page.hint_lines().0.to_string().contains("⏎ pick"));
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        let shown = screen(&mut fixture.page);
+        assert!(shown.contains("▸ none (task)  · the built-in task") && shown.contains("\"ops\"  · work on other machines over ssh") && shown.contains("\"codex-build\"") && shown.contains("\"codex\""), "{shown}");
+        assert!(!shown.contains("\"reviewer\""), "the reviewer is never a task's profile: {shown}");
+        let Mode::Pick { picks, .. } = &fixture.page.mode else { panic!("a pick") };
+        let at = picks.iter().position(|pick| pick.label == "\"codex-build\"").unwrap();
+        press(&mut fixture.page, &vec![KeyCode::Down; at]);
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        assert_eq!(file(&fixture, "config.toml"), "[task]\nprofile = \"codex-build\"\n");
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        assert!(matches!(fixture.page.mode, Mode::Pick { index, .. } if index == at), "the pick opens on the profile in effect");
+        press(&mut fixture.page, &[KeyCode::Esc]);
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        press(&mut fixture.page, &vec![KeyCode::Up; at]);
+        press(&mut fixture.page, &[KeyCode::Enter]);
+        assert!(!file(&fixture, "config.toml").contains("profile"), "none starts the built-in task: the key goes");
     }
 }

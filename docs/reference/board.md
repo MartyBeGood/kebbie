@@ -694,7 +694,7 @@ Press `,` to open it, or run `kebbie config edit` for the same page on its own. 
 | `↑` `↓` | Select a key. |
 | `←` `→` | The previous or next section. |
 | `space` | Turn a `true` or `false` key on or off. |
-| `⏎` | Change the key: a pick list for a choice, the value in place for text, numbers and lists (`a, b` or `["a", "b"]`). |
+| `⏎` | Change the key: a pick list for a choice, `task.profile` among them, from the profiles there are, the value in place for text, numbers and lists (`a, b` or `["a", "b"]`). |
 | `d` | Remove the key from the tab's file, so the layer below applies. |
 | `tab` | Switch between This machine and the repo. |
 | `/` | Search the keys by name and text; `⏎` keeps the search, `esc` clears it. |

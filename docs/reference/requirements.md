@@ -68,6 +68,7 @@ Each line is `ok`, `warn` or `fail`. Every `warn` and `fail` carries a `fix:` li
 | `keeper` | Whether the keeper runs, with its pid and uptime, or that `[keeper] enabled = false` turns it off. |
 | `state dir` | The state directories. |
 | `config`, `repo config` | config.toml and every file in the repos folder parse, with no unknown or misplaced keys and no broken links. |
+| `task profile` | Each `task.profile` in config.toml and the repo configs names a profile there is; a warning lists the profiles. Shown only when a file sets it. |
 | `push block` | Inside a repo: whether its task worktrees get the push block. |
 | `kelpie leftovers` | Worktrees whose push block is still kelpie's, which refuses kebbie's own push (`kebbie doctor --fix` installs kebbie's), and open tasks whose hooks run kelpie's removed binary, so their test runs and edits go unrecorded (`kebbie restart` gives each its settings again, a busy one once it is idle). |
 | `docs` | Inside a repo: whether `docs.required` is on. |

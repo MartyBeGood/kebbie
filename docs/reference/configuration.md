@@ -91,7 +91,7 @@ The Where column says which file may set a key: `either`, `config.toml only` or 
 - `"ask"` puts each to you with `kebbie ask` first.
 - Each is listed under Also noticed on the sign-off card. Under `"backlog"` and `"ask"`, the reviewer counts a change outside the task as a finding.
 
-`task.profile`: unset, tasks start with the built-in `task`. A restarted task keeps the profile it started with. See [Give tasks a profile](../how-to/give-tasks-a-profile.md).
+`task.profile`: unset, tasks start with the built-in `task`. A restarted task keeps the profile it started with. The board's Settings page picks it from the profiles there are, each with its `for`, and `none (task)` removes the key. See [Give tasks a profile](../how-to/give-tasks-a-profile.md).
 
 `task.steps`: on, the default, a task's role tells it to list its steps with `kebbie steps` before its first line of code, and you accept and push its commits one at a time while it builds the next. `false`, in the machine config or in a repo's own file, turns it off: a task commits its own way and `kebbie steps` refuses. New tasks follow it; a running task once it restarts. `kebbie accept` works either way. See [Work in steps](../how-to/work-in-steps.md).
 
