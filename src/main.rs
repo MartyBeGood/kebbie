@@ -322,11 +322,18 @@ const USAGE: &str = "kebbie: herding coding agents in herdr
                                   Code plugin, add the free herdr keys, never through a link)
   kebbie setup vault              the guide at its Vault step; without a terminal, install the optional vault plugin
                                   in Claude Code, showing each claude command and running it only on your y
-  kebbie setup codex [--uninstall]
-                                  install kebbie's plugin into Codex's plugin cache, or rewrite what is out of date,
-                                  and say in one line what it wrote, so tasks whose profile runs Codex report, get
-                                  their role and are recorded; never edits Codex's config.toml or hooks.json
-                                  (--uninstall removes the plugin, on your y)
+  kebbie setup claude [--yes]     the guide on Claude Code's steps alone: kebbie's plugin, the login, approvals,
+                                  the vault and updates, then review and apply; with --yes or without a terminal,
+                                  install or update kebbie's Claude Code plugin and name what else the guide offers
+  kebbie setup codex [--yes] [--uninstall]
+                                  the guide on Codex's steps alone: kebbie's plugin in Codex's plugin cache, a rules
+                                  file that lets kebbie's own task commands through, the vault server in Codex's
+                                  config.toml when kebbie's vault is on, and what happens to Codex updates; each
+                                  step that writes Codex's files offers kebbie does it, you add it yourself (the
+                                  end shows exactly what and where) or skip, and nothing is written before ⏎ on
+                                  the last step; with --yes or without a terminal, install or update the plugin
+                                  alone and name what else the guide offers (--uninstall removes the plugin, on
+                                  your y)
   kebbie restart [--all]          restart, with claude --resume or codex resume in its own pane and with its own
                                   flags, each Claude session or Codex task that runs older code than is installed
                                   (Claude Code, Codex, a plugin, MCP servers, kebbie) and is idle, not the pane you
@@ -704,9 +711,10 @@ fn run(arguments: &Arguments) -> Result<String> {
         Some("issues") => Ok(issues::list_in(&issues::dir(&lead::state_dir()?), arguments.flag("--all"), arguments.flag("--json"))),
         Some("issue") => issue(arguments, name),
         Some("setup") if name == Some("vault") => setup::vault(),
-        Some("setup") if name == Some("codex") => setup::codex(arguments.flag("--uninstall")),
+        Some("setup") if name == Some("codex") => setup::codex(arguments.flag("--uninstall"), arguments.flag("--yes")),
+        Some("setup") if name == Some("claude") => setup::claude(arguments.flag("--yes")),
         Some("setup") if name.is_none() => setup::install(arguments.flag("--yes")),
-        Some("setup") => Err("kebbie setup knows vault and codex: kebbie setup, kebbie setup vault, kebbie setup codex [--uninstall]".to_string()),
+        Some("setup") => Err("kebbie setup knows claude, codex and vault: kebbie setup, kebbie setup claude [--yes], kebbie setup codex [--yes] [--uninstall], kebbie setup vault".to_string()),
         Some("restart") => restart::now_cli(arguments.flag("--all")),
         Some("keeper") if arguments.flag("--status") => keeper::status_cli(),
         Some("keeper") if arguments.flag("--stop") => keeper::stop(),

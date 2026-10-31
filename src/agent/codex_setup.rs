@@ -1,0 +1,249 @@
+use std::path::{Path, PathBuf};
+
+use serde_json::Value;
+
+use super::codex::CachedModel;
+use crate::sh::Result;
+
+pub const RULES_FILE: &str = "rules/kebbie.rules";
+pub const SECRETS: [&str; 2] = ["S3_ACCESS_KEY", "S3_SECRET_KEY"];
+const SERVER: &str = "vault";
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Placed {
+    Missing,
+    Current,
+    Differs,
+}
+
+pub fn rules_path(home: &Path) -> PathBuf {
+    home.join(RULES_FILE)
+}
+
+// The three ways a task names kebbie: the path its role gives, the link setup makes, and the bare name on PATH.
+pub fn rule_forms(kebbie: &str, link: &Path) -> Vec<String> {
+    let mut forms: Vec<String> = Vec::new();
+    for form in [kebbie.to_string(), link.to_string_lossy().to_string(), "kebbie".to_string()] {
+        if !form.is_empty() && !forms.contains(&form) {
+            forms.push(form);
+        }
+    }
+    forms
+}
+
+fn quoted(text: &str) -> String {
+    serde_json::Value::from(text).to_string()
+}
+
+pub fn rules_text(forms: &[String]) -> String {
+    let mut text = String::new();
+    for form in forms {
+        for command in crate::sandbox::TASK_COMMANDS {
+            let words: Vec<String> = std::iter::once(form.as_str()).chain(command.split_whitespace()).map(quoted).collect();
+            text.push_str(&format!("prefix_rule(pattern=[{}], decision=\"allow\")\n", words.join(", ")));
+        }
+    }
+    text
+}
+
+pub fn rules_placed(home: &Path, text: &str) -> Placed {
+    match std::fs::read_to_string(rules_path(home)) {
+        Err(_) => Placed::Missing,
+        Ok(found) if found == text => Placed::Current,
+        Ok(_) => Placed::Differs,
+    }
+}
+
+pub fn write_rules(home: &Path, text: &str) -> Result<()> {
+    let path = rules_path(home);
+    let dir = path.parent().ok_or("the rules file has no folder")?;
+    std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    std::fs::write(&path, text).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Server {
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+    pub env_vars: Vec<String>,
+}
+
+fn read_json(path: &Path) -> Value {
+    std::fs::read_to_string(path).ok().and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default()
+}
+
+// The vault plugin's options as Claude Code keeps them, under pluginConfigs."vault@<marketplace>".
+pub fn vault_options(claude_dir: &Path) -> Value {
+    read_json(&claude_dir.join("settings.json"))["pluginConfigs"].as_object().into_iter().flatten()
+        .find(|(id, _)| id.starts_with("vault@")).map(|(_, config)| config["options"].clone()).unwrap_or_default()
+}
+
+// "${user_config.s3_bucket}" names the option it takes; any other text is the value itself.
+fn filled(value: &str, options: &Value) -> String {
+    match value.strip_prefix("${user_config.").and_then(|rest| rest.strip_suffix('}')) {
+        Some(option) => options[option].as_str().unwrap_or_default().trim().to_string(),
+        None => value.to_string(),
+    }
+}
+
+fn plugin_server(plugin_root: &Path) -> Value {
+    read_json(&plugin_root.join(".mcp.json"))["mcpServers"][SERVER].clone()
+}
+
+// The Claude vault plugin's own server for Codex: its command, its args and its settings, with the two keys named for Codex to read from the environment, never written.
+pub fn vault_server(plugin_root: &Path, options: &Value) -> Option<Server> {
+    let server = plugin_server(plugin_root);
+    let command = server["command"].as_str()?.to_string();
+    let args = server["args"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+    let mut env = Vec::new();
+    let mut env_vars = Vec::new();
+    for (name, value) in server["env"].as_object().into_iter().flatten() {
+        let value = filled(value.as_str().unwrap_or_default(), options);
+        match (value.is_empty(), SECRETS.contains(&name.as_str())) {
+            (true, _) => {}
+            (false, true) => env_vars.push(name.clone()),
+            (false, false) => env.push((name.clone(), value)),
+        }
+    }
+    env.sort();
+    env_vars.sort();
+    Some(Server { command, args, env, env_vars })
+}
+
+fn list(items: &[String]) -> String {
+    format!("[{}]", items.iter().map(|item| quoted(item)).collect::<Vec<_>>().join(", "))
+}
+
+impl Server {
+    pub fn lines(&self) -> Vec<String> {
+        let mut lines = vec![format!("[mcp_servers.{SERVER}]"), format!("command = {}", quoted(&self.command)), format!("args = {}", list(&self.args))];
+        if !self.env_vars.is_empty() {
+            lines.push(format!("env_vars = {}", list(&self.env_vars)));
+        }
+        if !self.env.is_empty() {
+            lines.push(format!("[mcp_servers.{SERVER}.env]"));
+            lines.extend(self.env.iter().map(|(name, value)| format!("{name} = {}", quoted(value))));
+        }
+        lines
+    }
+
+    fn matches(&self, found: &toml::Value) -> bool {
+        let text = |key: &str| found.get(key).and_then(toml::Value::as_str).map(str::to_string);
+        let words = |key: &str| found.get(key).and_then(toml::Value::as_array).map(|items| items.iter().filter_map(toml::Value::as_str).map(str::to_string).collect::<Vec<_>>()).unwrap_or_default();
+        let mut env: Vec<(String, String)> = found.get("env").and_then(toml::Value::as_table).into_iter().flatten().filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_string()))).collect();
+        env.sort();
+        let mut env_vars = words("env_vars");
+        env_vars.sort();
+        text("command").as_deref() == Some(self.command.as_str()) && words("args") == self.args && env == self.env && env_vars == self.env_vars
+    }
+}
+
+pub fn found_server(config: &toml::Table) -> Option<&toml::Value> {
+    config.get("mcp_servers")?.get(SERVER)
+}
+
+pub fn vault_placed(config: Option<&str>, server: &Server) -> Placed {
+    let table = config.and_then(|text| text.parse::<toml::Table>().ok()).unwrap_or_default();
+    match found_server(&table) {
+        None => Placed::Missing,
+        Some(found) if server.matches(found) => Placed::Current,
+        Some(_) => Placed::Differs,
+    }
+}
+
+// The server's lines go at the end of the user's file; a vault server of other values is replaced where it stands, and the rest of the file stays as it is.
+pub fn with_vault(text: &str, server: &Server) -> Result<String> {
+    let block = server.lines().join("\n") + "\n";
+    let mut document: toml_edit::DocumentMut = text.parse().map_err(|error| format!("Codex's config.toml does not parse: {error}"))?;
+    if document.get("mcp_servers").and_then(|servers| servers.get(SERVER)).is_none() {
+        let gap = match text { "" => "", text if text.ends_with("\n\n") => "", text if text.ends_with('\n') => "\n", _ => "\n\n" };
+        return Ok(format!("{text}{gap}{block}"));
+    }
+    let ours: toml_edit::DocumentMut = block.parse().map_err(|error| format!("kebbie's vault server lines do not parse: {error}"))?;
+    document["mcp_servers"][SERVER] = ours["mcp_servers"][SERVER].clone();
+    Ok(document.to_string())
+}
+
+// Codex's default: the listed model it ranks first (models-manager, the lowest priority number).
+pub fn default_model(models: &[CachedModel]) -> Option<&CachedModel> {
+    models.iter().filter(|model| model.listed).min_by_key(|model| model.priority.unwrap_or(i64::MAX))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_rules_file_lets_each_task_command_through_in_each_form_kebbie_is_called_by() {
+        let forms = rule_forms("/home/u/.local/share/kebbie/current/target/release/kebbie", Path::new("/home/u/.local/bin/kebbie"));
+        assert_eq!(forms, ["/home/u/.local/share/kebbie/current/target/release/kebbie", "/home/u/.local/bin/kebbie", "kebbie"]);
+        let text = rules_text(&forms);
+        assert_eq!(text.lines().count(), 30, "ten commands, three forms");
+        assert!(text.contains("prefix_rule(pattern=[\"kebbie\", \"tell\"], decision=\"allow\")\n"));
+        assert!(text.contains("prefix_rule(pattern=[\"/home/u/.local/bin/kebbie\", \"routine\", \"ok\"], decision=\"allow\")\n"), "a two-word command is two words of the pattern");
+        assert!(text.contains("prefix_rule(pattern=[\"/home/u/.local/share/kebbie/current/target/release/kebbie\", \"backlog\", \"add\"], decision=\"allow\")\n"));
+        for refused in ["push", "approve", "review"] {
+            assert!(!text.contains(&format!("\"{refused}\"")), "{refused} still asks");
+        }
+        assert_eq!(rule_forms("kebbie", Path::new("/home/u/.local/bin/kebbie")).len(), 2, "a form named twice is one");
+        let home = crate::sh::test_dir("codex-rules");
+        assert_eq!(rules_placed(&home, &text), Placed::Missing);
+        write_rules(&home, &text).unwrap();
+        assert_eq!(rules_placed(&home, &text), Placed::Current);
+        assert_eq!(rules_placed(&home, &rules_text(&forms[1..])), Placed::Differs);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    fn vault_plugin(dir: &Path) -> PathBuf {
+        let root = dir.join("vault-plugin");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".mcp.json"), r#"{"mcpServers":{"vault":{"command":"uvx","args":["notes-vault-mcp==0.8.0"],"env":{"VAULT_PATH":"${user_config.vault_path}","S3_ENDPOINT":"${user_config.s3_endpoint}","S3_BUCKET":"${user_config.s3_bucket}","S3_ACCESS_KEY":"${user_config.s3_access_key}","S3_SECRET_KEY":"${user_config.s3_secret_key}"}}}}"#).unwrap();
+        root
+    }
+
+    fn s3() -> Value {
+        serde_json::json!({ "s3_endpoint": "https://s3.example.com", "s3_bucket": "notes", "s3_access_key": "AKIA1", "s3_secret_key": "hunter2" })
+    }
+
+    #[test]
+    fn the_vault_server_for_codex_is_the_plugins_own_with_the_keys_named_and_never_written() {
+        let dir = crate::sh::test_dir("codex-vault-server");
+        let root = vault_plugin(&dir);
+        let server = vault_server(&root, &s3()).unwrap();
+        assert_eq!(server.lines(), [
+            "[mcp_servers.vault]",
+            "command = \"uvx\"",
+            "args = [\"notes-vault-mcp==0.8.0\"]",
+            "env_vars = [\"S3_ACCESS_KEY\", \"S3_SECRET_KEY\"]",
+            "[mcp_servers.vault.env]",
+            "S3_BUCKET = \"notes\"",
+            "S3_ENDPOINT = \"https://s3.example.com\"",
+        ]);
+        assert!(!server.lines().join("\n").contains("hunter2") && !server.lines().join("\n").contains("AKIA1"));
+        let folder = vault_server(&root, &serde_json::json!({ "vault_path": "/notes/vault" })).unwrap();
+        assert_eq!(folder.lines()[3..], ["[mcp_servers.vault.env]", "VAULT_PATH = \"/notes/vault\""], "a folder vault has no keys to name");
+        assert_eq!(vault_server(&dir.join("missing"), &s3()), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn adding_the_vault_server_keeps_the_users_config_toml_as_it_is() {
+        let dir = crate::sh::test_dir("codex-vault-edit");
+        let server = vault_server(&vault_plugin(&dir), &s3()).unwrap();
+        let mine = "# my settings\nmodel = \"gpt-6.1-sol\"   # keep this comment\n\n[projects.\"/src/app\"]\ntrust_level = \"trusted\"\n";
+        let added = with_vault(mine, &server).unwrap();
+        assert!(added.starts_with(mine), "the user's text stays byte for byte: {added}");
+        assert_eq!(added[mine.len()..], format!("\n{}\n", server.lines().join("\n")), "seven lines at the end, after one blank line");
+        assert_eq!(vault_placed(Some(mine), &server), Placed::Missing);
+        assert_eq!(vault_placed(Some(&added), &server), Placed::Current);
+        assert_eq!(with_vault("", &server).unwrap(), server.lines().join("\n") + "\n");
+        let other = format!("{mine}\n[mcp_servers.vault]\ncommand = \"uvx\"\nargs = [\"notes-vault-mcp==0.5.0\"]\nstartup_timeout_sec = 30\n\n[mcp_servers.github]\ncommand = \"gh-mcp\"\n");
+        assert_eq!(vault_placed(Some(&other), &server), Placed::Differs);
+        let replaced = with_vault(&other, &server).unwrap();
+        assert!(replaced.starts_with(mine) && replaced.contains("[mcp_servers.github]\ncommand = \"gh-mcp\"") && replaced.contains("notes-vault-mcp==0.8.0") && !replaced.contains("0.5.0"), "{replaced}");
+        assert_eq!(vault_placed(Some(&replaced), &server), Placed::Current);
+        assert!(with_vault("model = ", &server).unwrap_err().contains("does not parse"), "a file kebbie cannot read is left alone");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

@@ -67,7 +67,7 @@ pub fn vault() -> Result<String> {
     if in_terminal() {
         crate::permit::user_only("kebbie setup vault")?;
         let machine = machine()?;
-        return crate::setup_guide::run(&crate::setup_guide::Env::current(&machine)?, crate::setup_guide::Step::Vault);
+        return crate::setup_guide::run(&crate::setup_guide::Env::current(&machine)?, crate::setup_guide::Scope::All, crate::setup_guide::Step::Vault);
     }
     let claude = claude_bin();
     let home = crate::agent::claude::home().unwrap_or_default();
@@ -142,7 +142,7 @@ pub fn install(yes: bool) -> Result<String> {
     let machine = machine()?;
     let env = crate::setup_guide::Env::current(&machine)?;
     if !yes && in_terminal() {
-        return crate::setup_guide::run(&env, crate::setup_guide::Step::Name);
+        return crate::setup_guide::run(&env, crate::setup_guide::Scope::All, crate::setup_guide::Step::Name);
     }
     let asking = if yes { Asking::Yes } else { Asking::Closed };
     let rows = crate::setup_guide::without_asking(&env, asking);
@@ -417,16 +417,41 @@ pub fn add_status_line(settings: &Path) -> Outcome {
     }
 }
 
-pub fn codex(uninstall: bool) -> Result<String> {
+pub fn codex(uninstall: bool, yes: bool) -> Result<String> {
     crate::permit::user_only("kebbie setup codex")?;
     let home = crate::agent::codex::home().ok_or("Neither CODEX_HOME nor HOME is set, so kebbie cannot find Codex's home")?;
     let path: Vec<PathBuf> = std::env::var_os("PATH").map(|path| std::env::split_paths(&path).collect()).unwrap_or_default();
     if !uninstall && crate::doctor::which("codex", &path).is_none() {
         return Err("Codex is not on PATH: install the Codex CLI first (kebbie doctor names how), then run kebbie setup codex again".to_string());
     }
-    let kebbie = crate::peers::kebbie_command()?;
+    let machine = machine()?;
+    let env = crate::setup_guide::Env::current(&machine)?;
+    if !uninstall && !yes && in_terminal() {
+        return crate::setup_guide::run(&env, crate::setup_guide::Scope::Agent(crate::agent::Agent::Codex), crate::setup_guide::Step::CodexPlugin);
+    }
     let stdin = std::io::stdin();
-    codex_in(&home, &kebbie, uninstall, &mut stdin.lock(), &mut std::io::stdout())
+    let said = codex_in(&home, &env.kebbie, uninstall, &mut stdin.lock(), &mut std::io::stdout())?;
+    if uninstall {
+        return Ok(said);
+    }
+    let offers = crate::setup_guide::offers(&env, crate::agent::Agent::Codex);
+    Ok(if offers.is_empty() { said } else { format!("{said}
+
+{}", offers.join("\n")) })
+}
+
+pub fn claude(yes: bool) -> Result<String> {
+    crate::permit::user_only("kebbie setup claude")?;
+    let machine = machine()?;
+    let env = crate::setup_guide::Env::current(&machine)?;
+    if !yes && in_terminal() {
+        return crate::setup_guide::run(&env, crate::setup_guide::Scope::Agent(crate::agent::Agent::Claude), crate::setup_guide::Step::ClaudePlugin);
+    }
+    let said = claude_plugin(&machine).line("plugin");
+    let offers = crate::setup_guide::offers(&env, crate::agent::Agent::Claude);
+    Ok(if offers.is_empty() { said } else { format!("{said}
+
+{}", offers.join("\n")) })
 }
 
 // Running the command is the yes to writing kebbie's own folder in Codex's plugin cache; config.toml and hooks.json stay the user's.

@@ -566,6 +566,7 @@ pub struct CachedModel {
     pub listed: bool,
     pub default_effort: Option<String>,
     pub efforts: Vec<String>,
+    pub priority: Option<i64>,
 }
 
 // The models Codex fetched for this login, in its models_cache.json, in the file's order; read, never written.
@@ -579,6 +580,7 @@ pub fn cached_models(home: &Path) -> Option<Vec<CachedModel>> {
             listed: model["visibility"] == "list",
             default_effort: text(&model["default_reasoning_level"]),
             efforts: model["supported_reasoning_levels"].as_array().into_iter().flatten().filter_map(|level| text(&level["effort"])).collect(),
+            priority: model["priority"].as_i64(),
             slug,
         })
     }).collect())

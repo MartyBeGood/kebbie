@@ -8,10 +8,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Padding, Paragraph, Wrap};
 use serde_json::{Value, json};
 
-use crate::board::widgets::{FAINT, GREEN, MANTLE, MAUVE, MUTED, PEACH, RED, SUBTEXT, SURFACE, TEXT, bold, style};
+use crate::board::widgets::{FAINT, GREEN, MANTLE, MAUVE, MUTED, PEACH, RED, SUBTEXT, SURFACE, TEAL, TEXT, YELLOW, bold, choice_lines, style};
 use crate::config::{self, Source};
 use crate::config_edit::{self, Set};
+use crate::agent::Agent;
 use crate::agent::codex::Installed;
+use crate::agent::codex_setup::{self, Placed, Server};
 use crate::agent::login::{self, Login};
 use crate::doctor::Repair;
 use crate::setup::{self, Asking, KeyPlan, Machine, Outcome};
@@ -22,27 +24,51 @@ use crate::vault_cli::Plugin;
 pub enum Step {
     Name,
     Agents,
+    ClaudePlugin,
+    ClaudeLogin,
+    ClaudeApprovals,
+    Vault,
+    ClaudeUpdates,
+    CodexPlugin,
+    CodexApprovals,
+    CodexVault,
+    CodexUpdates,
     Keys,
     Backlog,
-    Vault,
     Signals,
     Review,
 }
 
+const CLAUDE_STEPS: [Step; 5] = [Step::ClaudePlugin, Step::ClaudeLogin, Step::ClaudeApprovals, Step::Vault, Step::ClaudeUpdates];
+
 impl Step {
-    pub const ALL: [Step; 7] = [Step::Name, Step::Agents, Step::Keys, Step::Backlog, Step::Vault, Step::Signals, Step::Review];
+    pub const ALL: [Step; 15] = [Step::Name, Step::Agents, Step::ClaudePlugin, Step::ClaudeLogin, Step::ClaudeApprovals, Step::Vault, Step::ClaudeUpdates, Step::CodexPlugin, Step::CodexApprovals, Step::CodexVault, Step::CodexUpdates, Step::Keys, Step::Backlog, Step::Signals, Step::Review];
 
     fn index(self) -> usize {
         Step::ALL.iter().position(|step| *step == self).unwrap_or(0)
+    }
+
+    fn agent(self) -> Option<Agent> {
+        match self {
+            Step::ClaudePlugin | Step::ClaudeLogin | Step::ClaudeApprovals | Step::Vault | Step::ClaudeUpdates => Some(Agent::Claude),
+            Step::CodexPlugin | Step::CodexApprovals | Step::CodexVault | Step::CodexUpdates => Some(Agent::Codex),
+            _ => None,
+        }
     }
 
     fn title(self) -> &'static str {
         match self {
             Step::Name => "Machine name",
             Step::Agents => "Agents",
+            Step::ClaudePlugin | Step::CodexPlugin => "Plugin",
+            Step::ClaudeLogin => "Login",
+            Step::ClaudeApprovals | Step::CodexApprovals => "Approvals",
+            Step::Vault => "Vault",
+            Step::ClaudeUpdates => "Updates",
+            Step::CodexVault => "Vault in Codex",
+            Step::CodexUpdates => "Codex updates",
             Step::Keys => "herdr keys",
             Step::Backlog => "Backlog",
-            Step::Vault => "Vault",
             Step::Signals => "Error signals",
             Step::Review => "Review and apply",
         }
@@ -51,13 +77,48 @@ impl Step {
     fn help(self) -> &'static str {
         match self {
             Step::Name => "How your phone and your other machines show this one. One word, like mac or devbox.",
-            Step::Agents => "Claude Code runs the lead and the reviewer, so it stays on. Turn on Codex to give tasks a codex profile.",
+            Step::Agents => "Claude Code runs the lead and the reviewer, so it stays on. Turn on Codex to give tasks a codex profile; each agent you choose gets its own steps next.",
+            Step::ClaudePlugin => "kebbie's plugin gives the lead, the reviewer and Claude tasks kebbie's hooks and skills.",
+            Step::ClaudeLogin => "Claude Code runs the lead, the reviewer and tasks, so it needs your login.",
+            Step::ClaudeApprovals => "kebbie writes each Claude task's permissions into the settings it starts the task with, so Claude Code's own files stay as they are.",
+            Step::Vault => "Optional. A note for every task and a log line for every push, in a folder of Markdown or an S3 bucket.",
+            Step::ClaudeUpdates => "Claude Code updates itself. When a new version lands, kebbie restarts its sessions on it once they are idle.",
+            Step::CodexPlugin => "kebbie's hooks for the Codex sessions it starts: each task gets its role and reports back. Only kebbie's own folder in Codex's plugin cache is written.",
+            Step::CodexApprovals => "Codex asks before each command that leaves its sandbox, kebbie's own included: report, tell, ask, steps. A rules file lets the ten commands a task may run go through; push, approve and review still ask, and kebbie refuses them to a task anyway.",
+            Step::CodexVault => "Your Claude sessions reach the vault through the vault plugin. Codex needs the same server in its config.toml, so a Codex task keeps its own note instead of asking the lead to write it.",
+            Step::CodexUpdates => "Codex does not update itself while it runs, and kebbie turns off its update question in the sessions it starts. kebbie checks once a day for a newer Codex and for models that go away.",
             Step::Keys => "Three keys added to the end of herdr's config.toml. The rest of the file stays as it is. Updating is U on the board.",
             Step::Backlog => "Where work waits. Pick any combination; the first one is where the lead files new ideas.",
-            Step::Vault => "Optional. A note for every task and a log line for every push, in a folder of Markdown or an S3 bucket.",
             Step::Signals => "When kebbie itself crashes or hits some internal errors, it sends its maintainers an error signal, at most once a day. A signal holds only kebbie's version and commit, your OS and CPU architecture, the part of kebbie that failed, the kind of failure and a count; never your code, paths or text. Once a day it also sends an install signal, so they can count active installs: a random id made for this install, kebbie's version, your OS and CPU architecture and the update channel.",
             Step::Review => "Nothing is written until you press ⏎ here.",
         }
+    }
+}
+
+// The whole guide, or one agent's steps as kebbie setup claude and kebbie setup codex open them.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Scope {
+    All,
+    Agent(Agent),
+}
+
+// How a step that writes another tool's file is done: kebbie writes it, the user adds it from what the guide prints, or not at all.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Way {
+    Kebbie,
+    Yourself,
+    Skip,
+}
+
+impl Way {
+    const ALL: [Way; 3] = [Way::Kebbie, Way::Yourself, Way::Skip];
+
+    fn at(index: usize) -> Way {
+        Way::ALL.get(index).copied().unwrap_or(Way::Kebbie)
+    }
+
+    fn index(self) -> usize {
+        Way::ALL.iter().position(|way| *way == self).unwrap_or(0)
     }
 }
 
@@ -101,6 +162,13 @@ pub struct Facts {
     pub signals: bool,
     pub signals_set: bool,
     pub repairs: Vec<Repair>,
+    pub codex_home: Option<PathBuf>,
+    pub rules: String,
+    pub rules_placed: Placed,
+    pub codex_config: Option<String>,
+    pub vault_server: Option<Server>,
+    pub agent_updates: Option<config::AgentUpdates>,
+    pub codex_default: Option<String>,
 }
 
 fn version(program: &str) -> Option<String> {
@@ -124,6 +192,10 @@ impl Facts {
         let checkout = crate::doctor::checkout_version(crate::doctor::herdr_plugin(herdr.as_deref(), channel).1.as_ref());
         let claude_plugin = crate::doctor::claude_plugin(Some(&read_json(&env.machine.claude_dir.join("plugins/installed_plugins.json"))), &read_json(&env.machine.claude_dir.join("settings.json")), checkout.as_deref(), channel);
         let kebbie_plugin = setup::kebbie_plugin_installed(&env.machine.claude_dir);
+        let rules = codex_setup::rules_text(&codex_setup::rule_forms(&env.kebbie, &env.machine.home.join(".local/bin/kebbie")));
+        let vault = crate::vault_cli::plugin(&env.machine.claude_dir);
+        let vault_server = match &vault { Plugin::Enabled { root, .. } => codex_setup::vault_server(root, &options), _ => None };
+        let codex_default = env.codex_home.as_deref().and_then(|home| crate::agent::codex::configured_model(home).or_else(|| codex_setup::default_model(&crate::agent::codex::cached_models(home)?).map(|model| model.slug.clone())));
         let found = crate::doctor::Found {
             claude_settings: &read_json(&env.machine.claude_dir.join("settings.json")),
             keeper_on: machine.keeper.unwrap_or(true),
@@ -146,13 +218,20 @@ impl Facts {
             keys: setup::key_plan(&env.machine.herdr_config),
             sources: machine.sources.clone().unwrap_or_else(|| vec![Source::Local]),
             sources_set: machine.sources.is_some(),
-            vault: crate::vault_cli::plugin(&env.machine.claude_dir),
+            vault,
             vault_path: option("vault_path"),
             s3: S3_FIELDS.map(|(_, name)| option(name)),
             hub: crate::hub::identity::load(&env.state).ok().flatten().map(|identity| crate::hub::host(&identity.url).to_string()),
             signals: machine.report.signals(),
             signals_set: machine.report.signals.is_some(),
             repairs: crate::doctor::repairs(&found),
+            rules_placed: env.codex_home.as_deref().map_or(Placed::Missing, |home| codex_setup::rules_placed(home, &rules)),
+            rules,
+            codex_config: env.codex_home.as_deref().and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok()),
+            codex_home: env.codex_home.clone(),
+            vault_server,
+            agent_updates: machine.agent_updates,
+            codex_default,
         }
     }
 
@@ -191,6 +270,11 @@ pub struct Answers {
     pub vault_path: String,
     pub s3: [String; 4],
     pub signals: usize,
+    pub claude_plugin: Way,
+    pub codex_plugin: Way,
+    pub approvals: Way,
+    pub codex_vault: Way,
+    pub agent_updates: usize,
 }
 
 impl Answers {
@@ -206,6 +290,11 @@ impl Answers {
             vault_path: facts.vault_path.clone(),
             s3: facts.s3.clone(),
             signals: usize::from(!facts.signals),
+            claude_plugin: Way::Kebbie,
+            codex_plugin: Way::Kebbie,
+            approvals: Way::Kebbie,
+            codex_vault: Way::Kebbie,
+            agent_updates: config::AgentUpdates::ALL.iter().position(|mode| Some(*mode) == facts.agent_updates).unwrap_or(0),
         }
     }
 
@@ -228,14 +317,28 @@ enum Spot {
     Field(Field),
 }
 
+// What the user chose to add themselves; the guide prints it in full where it ends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Own {
+    ClaudePlugin,
+    CodexPlugin,
+    Rules,
+    CodexVault,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Act {
     Link,
-    Plugin(Option<bool>),
+    ClaudePlugin,
+    CodexPlugin(bool),
     Name(String),
     Keys(Box<KeyPlan>, Vec<toml::Table>),
     Sources(Vec<Source>),
     Vault(Vec<Vec<String>>, Value, String),
+    Rules(String),
+    CodexVault,
+    AgentUpdates(config::AgentUpdates),
+    Yourself(Own),
     Signals(bool),
     Repair(Repair),
     Nothing,
@@ -257,8 +360,18 @@ pub enum Next {
     Board,
 }
 
+// The text a self-added item needs: where it goes, exactly what goes there, and what holds until then.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Added {
+    pub step: String,
+    pub said: String,
+    pub lines: Vec<String>,
+    pub until: String,
+}
+
 pub struct Guide {
     pub step: Step,
+    pub scope: Scope,
     cursor: usize,
     pub answers: Answers,
     facts: Facts,
@@ -267,6 +380,8 @@ pub struct Guide {
     fresh_name: bool,
     error: Option<String>,
     pub applied: Option<Vec<(String, Outcome)>>,
+    pub done: bool,
+    pub added: Vec<Added>,
     pub ending: Vec<String>,
 }
 
@@ -295,12 +410,79 @@ fn short(wanted: &setup::Wanted) -> String {
     what(wanted).trim_start_matches("open ").trim_start_matches("go to ").to_string()
 }
 
+const UPDATE_CHOICES: [(&str, &str); 3] = [
+    ("Ask me after U", "a window offers the update; nothing installs without your yes"),
+    ("Update it with U", "U updates Codex too, then restarts its tasks when they are idle"),
+    ("Only tell me", "a notice on the board; you update Codex yourself"),
+];
+
+fn update_shown(mode: config::AgentUpdates) -> &'static str {
+    match mode {
+        config::AgentUpdates::Ask => "ask me after U",
+        config::AgentUpdates::Auto => "update it with U",
+        config::AgentUpdates::Notify => "only tell me",
+    }
+}
+
 impl Guide {
+    #[cfg(test)]
     pub fn new(facts: Facts, at: Step) -> Guide {
+        Guide::scoped(facts, Scope::All, at)
+    }
+
+    pub fn scoped(facts: Facts, scope: Scope, at: Step) -> Guide {
         let answers = Answers::from(&facts);
-        let mut guide = Guide { step: Step::Name, cursor: 0, answers, facts, visited: [false; Step::ALL.len()], skipped: [false; Step::ALL.len()], fresh_name: true, error: None, applied: None, ending: Vec::new() };
+        let mut guide = Guide { step: Step::Name, scope, cursor: 0, answers, facts, visited: [false; Step::ALL.len()], skipped: [false; Step::ALL.len()], fresh_name: true, error: None, applied: None, done: false, added: Vec::new(), ending: Vec::new() };
         guide.go(at);
         guide
+    }
+
+    fn vault_chosen(&self) -> bool {
+        self.answers.vault > 0
+    }
+
+    fn codex_shown(&self) -> bool {
+        match self.scope {
+            Scope::All => self.answers.codex && self.facts.codex.is_some(),
+            Scope::Agent(agent) => agent == Agent::Codex,
+        }
+    }
+
+    fn claude_shown(&self) -> bool {
+        self.scope != Scope::Agent(Agent::Codex)
+    }
+
+    // The steps this guide walks, in order; an agent's steps follow Agents in the whole guide.
+    pub fn steps(&self) -> Vec<Step> {
+        let codex: Vec<Step> = [Step::CodexPlugin, Step::CodexApprovals].into_iter().chain(self.vault_chosen().then_some(Step::CodexVault)).chain([Step::CodexUpdates]).collect();
+        let mut steps = Vec::new();
+        if self.scope == Scope::All {
+            steps.extend([Step::Name, Step::Agents]);
+        }
+        if self.claude_shown() {
+            steps.extend(CLAUDE_STEPS);
+        }
+        if self.codex_shown() {
+            steps.extend(codex);
+        }
+        if self.scope == Scope::All {
+            steps.extend([Step::Keys, Step::Backlog, Step::Signals]);
+        }
+        steps.push(Step::Review);
+        steps
+    }
+
+    fn position(&self) -> usize {
+        self.steps().iter().position(|step| *step == self.step).unwrap_or(0)
+    }
+
+    fn next_step(&self) -> Step {
+        let steps = self.steps();
+        steps.get(self.position() + 1).copied().unwrap_or(Step::Review)
+    }
+
+    fn previous_step(&self) -> Option<Step> {
+        self.position().checked_sub(1).and_then(|at| self.steps().get(at).copied())
     }
 
     fn spots(&self) -> Vec<Spot> {
@@ -315,7 +497,9 @@ impl Guide {
                 _ => (0..3).map(Spot::Choice).collect(),
             },
             Step::Signals => vec![Spot::Choice(0), Spot::Choice(1)],
-            Step::Review => Vec::new(),
+            Step::ClaudePlugin | Step::CodexPlugin | Step::CodexApprovals | Step::CodexUpdates => (0..3).map(Spot::Choice).collect(),
+            Step::CodexVault => (0..2).map(Spot::Choice).collect(),
+            Step::ClaudeLogin | Step::ClaudeApprovals | Step::ClaudeUpdates | Step::Review => Vec::new(),
         }
     }
 
@@ -328,6 +512,11 @@ impl Guide {
             Step::Keys => self.answers.keys,
             Step::Vault => self.answers.vault,
             Step::Signals => self.answers.signals,
+            Step::ClaudePlugin => self.answers.claude_plugin.index(),
+            Step::CodexPlugin => self.answers.codex_plugin.index(),
+            Step::CodexApprovals => self.answers.approvals.index(),
+            Step::CodexVault => self.answers.codex_vault.index(),
+            Step::CodexUpdates => self.answers.agent_updates,
             _ => 0,
         }
     }
@@ -344,6 +533,11 @@ impl Guide {
             Step::Keys => self.answers.keys = at,
             Step::Vault => self.answers.vault = at,
             Step::Signals => self.answers.signals = at,
+            Step::ClaudePlugin => self.answers.claude_plugin = Way::at(at),
+            Step::CodexPlugin => self.answers.codex_plugin = Way::at(at),
+            Step::CodexApprovals => self.answers.approvals = Way::at(at),
+            Step::CodexVault => self.answers.codex_vault = Way::at(at),
+            Step::CodexUpdates => self.answers.agent_updates = at,
             _ => {}
         }
     }
@@ -380,8 +574,17 @@ impl Guide {
             Step::Backlog => self.answers.sources = today.sources,
             Step::Vault => (self.answers.vault, self.answers.vault_path, self.answers.s3) = (today.vault, today.vault_path, today.s3),
             Step::Signals => self.answers.signals = today.signals,
-            Step::Review => {}
+            Step::ClaudePlugin => self.answers.claude_plugin = Way::Skip,
+            Step::CodexPlugin => self.answers.codex_plugin = Way::Skip,
+            Step::CodexApprovals => self.answers.approvals = Way::Skip,
+            Step::CodexUpdates => self.answers.agent_updates = today.agent_updates,
+            Step::CodexVault | Step::ClaudeLogin | Step::ClaudeApprovals | Step::ClaudeUpdates | Step::Review => {}
         }
+    }
+
+    // With kebbie's vault chosen, every agent gets it: Vault in Codex has no skip.
+    fn skips(&self) -> bool {
+        !matches!(self.step, Step::Name | Step::Review | Step::CodexVault)
     }
 
     fn check(&self) -> std::result::Result<(), String> {
@@ -403,7 +606,8 @@ impl Guide {
         }
         if self.applied.is_some() {
             return match key.code {
-                _ if self.ending.is_empty() => Next::Stay,
+                _ if !self.done => Next::Stay,
+                _ if self.scope != Scope::All => Next::Quit,
                 KeyCode::Char('h') if self.offers_hub() => Next::Connect,
                 _ => Next::Board,
             };
@@ -435,16 +639,20 @@ impl Guide {
                 Ok(()) => {
                     self.visited[self.step.index()] = true;
                     self.skipped[self.step.index()] = false;
-                    self.go(Step::ALL[self.step.index() + 1]);
+                    self.go(self.next_step());
                 }
                 Err(error) => self.error = Some(error),
             },
-            KeyCode::Left if self.step != Step::Name => self.go(Step::ALL[self.step.index() - 1]),
-            KeyCode::Char('s') if !matches!(self.step, Step::Name | Step::Review) => {
+            KeyCode::Left => {
+                if let Some(previous) = self.previous_step() {
+                    self.go(previous);
+                }
+            }
+            KeyCode::Char('s') if self.skips() => {
                 self.reset(self.step);
                 self.skipped[self.step.index()] = true;
                 self.visited[self.step.index()] = false;
-                self.go(Step::ALL[self.step.index() + 1]);
+                self.go(self.next_step());
             }
             _ => {}
         }
@@ -468,11 +676,30 @@ impl Guide {
         }
     }
 
+    fn codex_vault_placed(&self) -> Placed {
+        self.facts.vault_server.as_ref().map_or(Placed::Missing, |server| codex_setup::vault_placed(self.facts.codex_config.as_deref(), server))
+    }
+
+    fn codex_home_shown(&self, file: &str) -> String {
+        self.facts.codex_home.as_deref().map_or(format!("~/.codex/{file}"), |codex| home(&codex.join(file)))
+    }
+
+    fn codex_plugin_shown(&self) -> String {
+        self.facts.codex_home.as_deref().map_or("~/.codex/plugins/cache/kebbie-tasks/kebbie/local".to_string(), |codex| home(&crate::agent::codex::plugin_root(codex)))
+    }
+
     fn in_place(&self, step: Step) -> Option<String> {
         let facts = &self.facts;
         match step {
             Step::Name if facts.name_set => Some(format!("machine.name is \"{}\"", facts.name)),
-            Step::Agents if facts.kebbie_plugin && self.to_update(step).is_none() => Some(format!("kebbie's plugin is in Claude Code{}", if facts.codex_plugin == Installed::Current { " and in Codex" } else { "" })),
+            Step::ClaudePlugin if facts.kebbie_plugin && facts.claude_stale.is_none() => Some("kebbie's plugin is in Claude Code".to_string()),
+            Step::ClaudeLogin if facts.claude_login == Login::In => Some("Claude Code is logged in".to_string()),
+            Step::ClaudeApprovals => Some("kebbie gives Claude tasks their rules when they start".to_string()),
+            Step::ClaudeUpdates => Some("Claude Code updates itself; kebbie restarts its sessions".to_string()),
+            Step::CodexPlugin if facts.codex_plugin == Installed::Current => Some(format!("kebbie's plugin at {}", self.codex_plugin_shown())),
+            Step::CodexApprovals if facts.rules_placed == Placed::Current => Some(self.codex_home_shown(codex_setup::RULES_FILE)),
+            Step::CodexVault if self.codex_vault_placed() == Placed::Current => Some(format!("[mcp_servers.vault] in {}", self.codex_home_shown("config.toml"))),
+            Step::CodexUpdates => facts.agent_updates.map(|mode| format!("update.agents is \"{}\"", mode.key())),
             Step::Keys if facts.keys.blocked.is_none() && facts.keys.missing.is_empty() => Some(format!("{} binds kebbie's keys", home(&facts.keys.config))),
             Step::Backlog if facts.sources_set => Some(format!("board.backlog.sources is [{}]", facts.sources.iter().map(|source| format!("{:?}", source.key())).collect::<Vec<_>>().join(", "))),
             Step::Vault if matches!(facts.vault, Plugin::Enabled { .. }) && facts.vault_choice() > 0 => Some(match facts.vault_choice() { 1 => format!("the vault plugin points at {}", facts.vault_path), _ => format!("the vault plugin points at the S3 bucket {}", facts.s3[1]) }),
@@ -484,31 +711,103 @@ impl Guide {
     // The same checks as kebbie doctor's claude plugin and codex plugin lines, so the guide never calls in place what doctor calls out of date.
     fn to_update(&self, step: Step) -> Option<String> {
         let facts = &self.facts;
-        if step != Step::Agents {
-            return None;
-        }
-        let codex = match &facts.codex_plugin {
-            Installed::Stale(files) => Some(format!("kebbie's plugin in Codex is out of date ({})", files.join(", "))),
-            Installed::Replaced(_) => Some("Codex replaced kebbie's plugin with a copy of its own".to_string()),
-            Installed::UnderOldId(_) => Some("kebbie's plugin in Codex is under kebbie@kebbie, which a repo's marketplace replaces".to_string()),
+        match step {
+            Step::ClaudePlugin => facts.claude_stale.clone(),
+            Step::CodexPlugin => match &facts.codex_plugin {
+                Installed::Stale(files) => Some(format!("kebbie's plugin in Codex is out of date ({})", files.join(", "))),
+                Installed::Replaced(_) => Some("Codex replaced kebbie's plugin with a copy of its own".to_string()),
+                Installed::UnderOldId(_) => Some("kebbie's plugin in Codex is under kebbie@kebbie, which a repo's marketplace replaces".to_string()),
+                _ => None,
+            },
+            Step::CodexApprovals if facts.rules_placed == Placed::Differs => Some(format!("{} is not the file this kebbie writes", self.codex_home_shown(codex_setup::RULES_FILE))),
+            Step::CodexVault if self.codex_vault_placed() == Placed::Differs => Some(format!("[mcp_servers.vault] in {} has other values than the vault plugin's", self.codex_home_shown("config.toml"))),
             _ => None,
-        };
-        let parts: Vec<String> = facts.claude_stale.iter().cloned().chain(codex).collect();
-        (!parts.is_empty()).then(|| parts.join("; "))
+        }
+    }
+
+    fn skipped(&self, step: Step) -> bool {
+        self.skipped[step.index()]
     }
 
     pub fn plan(&self) -> Vec<Planned> {
         let (facts, answers) = (&self.facts, &self.answers);
-        let skipped = |step: Step| self.skipped[step.index()];
         let row = |step, verb, detail: String, act| Planned { step, verb, detail, act };
-        let mut rows = vec![row("link", "to do", "~/.local/bin/kebbie".to_string(), Act::Link)];
-        let codex = (answers.codex != (facts.codex_plugin != Installed::Missing) || answers.codex).then_some(answers.codex).filter(|_| facts.codex.is_some() && !skipped(Step::Agents));
-        rows.push(row("plugin", "to do", plugin_shown(codex), Act::Plugin(codex)));
-        rows.push(match () {
-            _ if skipped(Step::Name) => row("machine", "skipped", "stays as it is".to_string(), Act::Nothing),
-            _ if facts.name_set && answers.name.trim() == facts.name => row("machine", "already", format!("\"{}\"", facts.name), Act::Nothing),
-            _ => row("machine", "to do", format!("\"{}\"", answers.name.trim()), Act::Name(answers.name.trim().to_string())),
+        let mut rows = Vec::new();
+        if self.scope == Scope::All {
+            rows.push(row("link", "to do", "~/.local/bin/kebbie".to_string(), Act::Link));
+            rows.push(match () {
+                _ if self.skipped(Step::Name) => row("machine", "skipped", "stays as it is".to_string(), Act::Nothing),
+                _ if facts.name_set && answers.name.trim() == facts.name => row("machine", "already", format!("\"{}\"", facts.name), Act::Nothing),
+                _ => row("machine", "to do", format!("\"{}\"", answers.name.trim()), Act::Name(answers.name.trim().to_string())),
+            });
+        }
+        if self.claude_shown() {
+            let shown = "kebbie's plugin in Claude Code".to_string();
+            rows.push(match answers.claude_plugin {
+                _ if self.in_place(Step::ClaudePlugin).is_some() => row("plugin", "already", shown, Act::Nothing),
+                Way::Skip => row("plugin", "skipped", "kebbie's plugin stays out of Claude Code".to_string(), Act::Nothing),
+                Way::Yourself => row("plugin", "yourself", shown, Act::Yourself(Own::ClaudePlugin)),
+                Way::Kebbie => row("plugin", "to do", shown, Act::ClaudePlugin),
+            });
+            rows.push(self.vault_row());
+        }
+        if self.scope == Scope::All && !self.codex_shown() && facts.codex.is_some() && facts.codex_plugin != Installed::Missing && !self.skipped(Step::Agents) {
+            rows.push(row("plugin", "to do", "kebbie's plugin out of Codex".to_string(), Act::CodexPlugin(false)));
+        }
+        if self.codex_shown() {
+            rows.extend(self.codex_rows());
+        }
+        if self.scope == Scope::All {
+            rows.extend(self.machine_rows());
+        }
+        rows
+    }
+
+    fn codex_rows(&self) -> Vec<Planned> {
+        let (facts, answers) = (&self.facts, &self.answers);
+        let row = |step, verb, detail: String, act| Planned { step, verb, detail, act };
+        let plugin = format!("kebbie's plugin at {}", self.codex_plugin_shown());
+        let rules = self.codex_home_shown(codex_setup::RULES_FILE);
+        let config = self.codex_home_shown("config.toml");
+        let mut rows = vec![match answers.codex_plugin {
+            _ if self.in_place(Step::CodexPlugin).is_some() => row("plugin", "already", plugin, Act::Nothing),
+            Way::Skip => row("plugin", "skipped", "Codex tasks cannot start without kebbie's plugin".to_string(), Act::Nothing),
+            Way::Yourself => row("plugin", "yourself", plugin, Act::Yourself(Own::CodexPlugin)),
+            Way::Kebbie => row("plugin", "to do", plugin, Act::CodexPlugin(true)),
+        }];
+        rows.push(match answers.approvals {
+            _ if facts.rules_placed == Placed::Current => row("approvals", "already", rules, Act::Nothing),
+            Way::Skip => row("approvals", "skipped", "Codex asks before each kebbie command".to_string(), Act::Nothing),
+            Way::Yourself => row("approvals", "yourself", rules, Act::Yourself(Own::Rules)),
+            Way::Kebbie => row("approvals", "to do", rules, Act::Rules(facts.rules.clone())),
         });
+        if self.vault_chosen() {
+            let detail = format!("[mcp_servers.vault] in {config}{}", if answers.vault == 2 { ", keys from the environment" } else { "" });
+            rows.push(match answers.codex_vault {
+                _ if self.codex_vault_placed() == Placed::Current && !self.vault_changes() => row("vault", "already", detail, Act::Nothing),
+                Way::Yourself => row("vault", "yourself", detail, Act::Yourself(Own::CodexVault)),
+                _ => row("vault", "to do", detail, Act::CodexVault),
+            });
+        }
+        let mode = config::AgentUpdates::ALL.get(answers.agent_updates).copied().unwrap_or_default();
+        rows.push(match () {
+            _ if self.skipped(Step::CodexUpdates) => row("updates", "skipped", "stays as it is".to_string(), Act::Nothing),
+            _ if facts.agent_updates == Some(mode) => row("updates", "already", format!("{} (update.agents = \"{}\")", update_shown(mode), mode.key()), Act::Nothing),
+            _ => row("updates", "to do", format!("{} (update.agents = \"{}\" in kebbie's config.toml)", update_shown(mode), mode.key()), Act::AgentUpdates(mode)),
+        });
+        rows.push(row("model", "skipped", "Codex profiles follow Codex's default".to_string(), Act::Nothing));
+        rows
+    }
+
+    // A vault the guide is about to point elsewhere gives Codex's server other values too.
+    fn vault_changes(&self) -> bool {
+        matches!(self.vault_row().act, Act::Vault(..))
+    }
+
+    fn machine_rows(&self) -> Vec<Planned> {
+        let (facts, answers) = (&self.facts, &self.answers);
+        let row = |step, verb, detail: String, act| Planned { step, verb, detail, act };
+        let mut rows = Vec::new();
         let choices = key_choices(&facts.keys);
         rows.push(match (choices.get(answers.keys), &facts.keys.blocked) {
             (_, Some(blocked)) => row("keys", "skipped", blocked.clone(), Act::Nothing),
@@ -528,15 +827,14 @@ impl Guide {
         let sources = answers.chosen_sources();
         let listed = sources.iter().map(|source| source.key()).collect::<Vec<_>>().join(", ");
         rows.push(match () {
-            _ if skipped(Step::Backlog) => row("backlog", "skipped", "stays as it is".to_string(), Act::Nothing),
+            _ if self.skipped(Step::Backlog) => row("backlog", "skipped", "stays as it is".to_string(), Act::Nothing),
             _ if sources == facts.sources => row("backlog", "already", listed, Act::Nothing),
             _ => row("backlog", "to do", listed, Act::Sources(sources)),
         });
-        rows.push(self.vault_row());
         let on = answers.signals == 0;
         let said = |on: bool| if on { "on" } else { "off" };
         rows.push(match () {
-            _ if skipped(Step::Signals) => row("signals", "skipped", format!("stay {}", said(facts.signals)), Act::Nothing),
+            _ if self.skipped(Step::Signals) => row("signals", "skipped", format!("stay {}", said(facts.signals)), Act::Nothing),
             _ if on == facts.signals => row("signals", "already", said(on).to_string(), Act::Nothing),
             _ => row("signals", "to do", said(on).to_string(), Act::Signals(on)),
         });
@@ -550,7 +848,7 @@ impl Guide {
     fn vault_row(&self) -> Planned {
         let (facts, answers) = (&self.facts, &self.answers);
         let row = |verb, detail: String, act| Planned { step: "vault", verb, detail, act };
-        if self.skipped[Step::Vault.index()] || answers.vault == 0 {
+        if self.skipped(Step::Vault) || answers.vault == 0 {
             return row("skipped", "not set up".to_string(), Act::Nothing);
         }
         let (values, shown) = if answers.vault == 1 {
@@ -569,13 +867,23 @@ impl Guide {
         row("to do", format!("{shown}, through the vault plugin"), Act::Vault(steps, values, shown))
     }
 
-    fn offers_hub(&self) -> bool {
-        self.facts.hub.is_none()
+    // What the last step runs on a file of another tool's, in a few words.
+    fn runs(&self) -> Vec<String> {
+        let config = self.codex_home_shown("config.toml");
+        self.plan().iter().filter_map(|row| match row.act {
+            Act::Rules(ref text) => Some(format!("writes {}, {} lines", self.codex_home_shown(codex_setup::RULES_FILE), text.lines().count())),
+            Act::CodexVault if self.codex_vault_placed() == Placed::Missing => {
+                let lines = self.facts.vault_server.as_ref().map_or("the vault server's".to_string(), |server| server.lines().len().to_string());
+                Some(format!("adds {lines} lines to the end of {config}; the rest of the file stays as it is"))
+            }
+            Act::CodexVault => Some(format!("replaces [mcp_servers.vault] in {config}; the rest of the file stays as it is")),
+            _ => None,
+        }).collect()
     }
-}
 
-fn plugin_shown(codex: Option<bool>) -> String {
-    format!("kebbie in Claude Code{}", match codex { Some(true) => " and Codex", Some(false) => ", out of Codex", None => "" })
+    fn offers_hub(&self) -> bool {
+        self.scope == Scope::All && self.facts.hub.is_none()
+    }
 }
 
 fn repair_shown(repair: Repair) -> (&'static str, &'static str) {
@@ -602,19 +910,82 @@ fn write_key(env: &Env, key: &str, set: &Set) -> Outcome {
     }
 }
 
-fn plugin(env: &Env, codex: Option<bool>) -> Outcome {
-    let claude = setup::claude_plugin(env.machine);
-    let shown = plugin_shown(codex);
-    let codex = codex.map(|on| {
-        let codex_home = env.codex_home.as_deref().ok_or("neither CODEX_HOME nor HOME is set")?;
-        if on { crate::agent::codex::install(codex_home, &env.kebbie).map(|written| written.is_empty()) } else { crate::agent::codex::uninstall(codex_home).map(|_| false) }
-    });
-    match (claude.verb, codex) {
-        (_, Some(Err(error))) => Outcome::new("failed", format!("Codex: {error}")),
-        ("failed" | "skipped", _) => claude,
-        ("already", None | Some(Ok(true))) => Outcome::new("already", shown),
-        _ => Outcome::new("done", shown),
+fn codex_home<'a>(env: &'a Env) -> Result<&'a std::path::Path> {
+    env.codex_home.as_deref().ok_or_else(|| "neither CODEX_HOME nor HOME is set".to_string())
+}
+
+fn codex_plugin(env: &Env, on: bool, shown: &str) -> Outcome {
+    let done = codex_home(env).and_then(|home| if on { crate::agent::codex::install(home, &env.kebbie).map(|written| !written.is_empty()) } else { crate::agent::codex::uninstall(home) });
+    match done {
+        Ok(true) => Outcome::new("done", shown),
+        Ok(false) => Outcome::new("already", shown),
+        Err(error) => Outcome::new("failed", format!("Codex: {error}")),
     }
+}
+
+fn rules(env: &Env, text: &str) -> Outcome {
+    match codex_home(env).and_then(|codex| codex_setup::write_rules(codex, text).map(|_| home(&codex_setup::rules_path(codex)))) {
+        Ok(path) => Outcome::new("done", path),
+        Err(error) => Outcome::new("failed", error),
+    }
+}
+
+// The vault server is read from the vault plugin as it is now, after this apply's own vault step.
+fn fresh_server(env: &Env) -> Option<Server> {
+    let (_, _, root) = crate::vault_cli::installed(&env.machine.claude_dir)?;
+    codex_setup::vault_server(&root, &codex_setup::vault_options(&env.machine.claude_dir))
+}
+
+fn codex_vault(env: &Env) -> Outcome {
+    let Some(server) = fresh_server(env) else { return Outcome::new("failed", "the vault plugin is not in Claude Code yet, so its server is unknown; run kebbie setup codex once it is") };
+    let result = codex_home(env).and_then(|codex| {
+        let path = codex.join("config.toml");
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let new = codex_setup::with_vault(&text, &server)?;
+        crate::state::write(&path, new)?;
+        Ok(path)
+    });
+    match result {
+        Ok(path) => Outcome::new("done", format!("added [mcp_servers.vault] to {}", home(&path))),
+        Err(error) => Outcome::new("failed", error),
+    }
+}
+
+// Exactly what a self-added item needs and where, read as things are once the rest is applied.
+pub fn added(env: &Env, planned: &[Planned]) -> Vec<Added> {
+    let codex = env.codex_home.clone().unwrap_or_default();
+    planned.iter().filter_map(|row| match row.act {
+        Act::Yourself(own) => Some((row.step, own)),
+        _ => None,
+    }).map(|(step, own)| match own {
+        Own::Rules => Added {
+            step: step.to_string(),
+            said: format!("copy this file to {}:", home(&codex_setup::rules_path(&codex))),
+            lines: codex_setup::rules_text(&codex_setup::rule_forms(&env.kebbie, &env.machine.home.join(".local/bin/kebbie"))).lines().map(str::to_string).collect(),
+            until: "Codex asks before each kebbie command, and kebbie doctor names the file as missing".to_string(),
+        },
+        Own::CodexVault => Added {
+            step: step.to_string(),
+            said: format!("add these lines to the end of {}:", home(&codex.join("config.toml"))),
+            lines: fresh_server(env).map_or_else(|| vec!["(the vault plugin is not in Claude Code yet; kebbie setup codex shows them once it is)".to_string()], |server| server.lines()),
+            until: "the lead keeps Codex tasks' notes, and kebbie doctor fails the Codex vault line".to_string(),
+        },
+        Own::ClaudePlugin => {
+            let current = env.machine.home.join(".local/share/kebbie/current");
+            Added {
+                step: step.to_string(),
+                said: "run:".to_string(),
+                lines: vec![format!("{} plugin marketplace add {}", env.machine.claude, current.display()), format!("{} plugin install kebbie@kebbie", env.machine.claude)],
+                until: "kebbie doctor names kebbie's Claude plugin as missing".to_string(),
+            }
+        }
+        Own::CodexPlugin => Added {
+            step: step.to_string(),
+            said: format!("run this, which writes only kebbie's own folder {}:", home(&crate::agent::codex::plugin_root(&codex))),
+            lines: vec!["kebbie setup codex --yes".to_string()],
+            until: "Codex tasks do not start, and kebbie doctor names the plugin as missing".to_string(),
+        },
+    }).collect()
 }
 
 fn vault(env: &Env, steps: &[Vec<String>], values: &Value, shown: &str) -> Outcome {
@@ -658,7 +1029,12 @@ pub fn apply(planned: &[Planned], env: &Env, hooks: &mut dyn Hooks) -> Vec<(Stri
         let outcome = match &row.act {
             Act::Nothing => Outcome::new(row.verb, row.detail.clone()),
             Act::Link => setup::link_binary(&env.machine.home, &env.machine.path),
-            Act::Plugin(codex) => plugin(env, *codex),
+            Act::ClaudePlugin => setup::claude_plugin(env.machine),
+            Act::CodexPlugin(on) => codex_plugin(env, *on, &row.detail),
+            Act::Rules(text) => rules(env, text),
+            Act::CodexVault => codex_vault(env),
+            Act::AgentUpdates(mode) => when_done(write_key(env, "update.agents", &Set::Text(mode.key().to_string())), format!("update.agents = \"{}\"", mode.key())),
+            Act::Yourself(_) => Outcome::new("yourself", row.detail.clone()),
             Act::Name(name) => when_done(write_key(env, "machine.name", &Set::Text(name.clone())), row.detail.clone()),
             Act::Keys(plan, bindings) => keys(env, plan, bindings, &row.detail),
             Act::Sources(sources) => when_done(write_key(env, "board.backlog.sources", &Set::List(sources.iter().map(|source| source.key().to_string()).collect())), row.detail.clone()),
@@ -683,6 +1059,17 @@ pub fn without_asking(env: &Env, asking: Asking) -> Vec<(String, Outcome)> {
     });
     let rows = [("link", Some(setup::link_binary(&env.machine.home, &env.machine.path))), ("plugin", Some(setup::claude_plugin(env.machine))), ("codex", codex), ("keys", Some(keys))];
     rows.into_iter().filter_map(|(step, outcome)| Some((step.to_string(), outcome?))).collect()
+}
+
+// What the agent's guide would write besides the plugin, for a run that asks nothing.
+pub fn offers(env: &Env, agent: Agent) -> Vec<String> {
+    let first = if agent == Agent::Codex { Step::CodexPlugin } else { Step::ClaudePlugin };
+    let guide = Guide::scoped(Facts::read(env), Scope::Agent(agent), first);
+    let rows: Vec<String> = guide.plan().iter().filter(|row| row.verb == "to do" && !matches!(row.step, "link" | "plugin")).map(|row| format!("  {:<10} {}", row.step, row.detail)).collect();
+    if rows.is_empty() {
+        return rows;
+    }
+    std::iter::once(format!("kebbie setup {} in a terminal also offers, each on your choice:", agent.key())).chain(rows).collect()
 }
 
 const DONE: &str = "Setup done";
@@ -727,11 +1114,16 @@ pub fn ending(codex: Option<Login>, checks: &[crate::doctor::Check], shell: &str
     lines
 }
 
+fn row_line(step: &str, outcome: &Outcome) -> Line<'static> {
+    Line::from(vec![Span::styled(format!("{:<9}", outcome.verb), style(verb_color(outcome.verb))), Span::styled(format!("{step:<11}"), style(MAUVE)), Span::styled(outcome.detail.clone(), style(TEXT))])
+}
+
 fn verb_color(verb: &str) -> Color {
     match verb {
         "done" | "already" => GREEN,
         "failed" => RED,
         "to do" => TEXT,
+        "yourself" => YELLOW,
         _ => MUTED,
     }
 }
@@ -836,6 +1228,35 @@ impl Guide {
                 lines.push(Line::default());
                 lines.push(Line::from(Span::styled("A bug report with text is always shown to you first and sent only on your y.", style(SUBTEXT))));
             }
+            Step::ClaudeLogin => {
+                lines.push(Line::from(vec![Span::styled(format!("Claude Code {}", facts.claude.clone().unwrap_or_default()), style(TEXT)), Span::styled(format!(" · {}", facts.claude_login.shown(login::CLAUDE_FIX)), style(MUTED))]));
+            }
+            Step::ClaudeApprovals | Step::ClaudeUpdates => {}
+            Step::ClaudePlugin => self.ways(&mut lines, [("Install kebbie's plugin", "through claude plugin install"), ("I'll add it myself", "shows the commands to run"), ("Skip", "kebbie doctor names it as missing")]),
+            Step::CodexPlugin => {
+                let root = self.codex_plugin_shown();
+                self.ways(&mut lines, [("Install kebbie's plugin", root.as_str()), ("I'll add it myself", "shows the command to run"), ("Skip", "Codex tasks cannot start without it")]);
+            }
+            Step::CodexApprovals => {
+                let file = format!("{}, {} lines", self.codex_home_shown(codex_setup::RULES_FILE), facts.rules.lines().count());
+                self.ways(&mut lines, [("Add kebbie's rules file", file.as_str()), ("I'll add it myself", "shows the file to copy"), ("Skip", "Codex asks for each command")]);
+            }
+            Step::CodexVault => {
+                let config = format!("[mcp_servers.vault] in {}", self.codex_home_shown("config.toml"));
+                self.ways(&mut lines, [("Add the vault server", config.as_str()), ("I'll add it myself", "shows the lines to copy")]);
+                if answers.vault == 2 {
+                    lines.push(Line::default());
+                    lines.push(Line::from(Span::styled(format!("The keys stay out of the file: Codex reads {} from the environment by name (env_vars), and kebbie starts Codex with them set from the vault plugin's settings.", codex_setup::SECRETS.join(" and ")), style(MUTED))));
+                }
+            }
+            Step::CodexUpdates => {
+                self.ways(&mut lines, UPDATE_CHOICES);
+                if let Some(model) = &facts.codex_default {
+                    lines.push(Line::default());
+                    lines.push(Line::from(Span::styled(format!("Codex profiles without a model follow Codex's own default, {model} today."), style(MUTED))));
+                }
+            }
+            Step::Review if self.done => lines.extend(self.done_lines()),
             Step::Review => {
                 let rows: Vec<(String, Outcome)> = match &self.applied {
                     Some(done) => {
@@ -846,25 +1267,26 @@ impl Guide {
                     None => self.plan().into_iter().map(|row| (row.step.to_string(), Outcome::new(row.verb, row.detail))).collect(),
                 };
                 for (step, outcome) in rows {
-                    lines.push(Line::from(vec![Span::styled(format!("{:<9}", outcome.verb), style(verb_color(outcome.verb))), Span::styled(format!("{step:<10}"), style(MAUVE)), Span::styled(outcome.detail, style(TEXT))]));
+                    lines.push(row_line(&step, &outcome));
                 }
-                for said in &self.ending {
-                    lines.push(match (said.as_str(), said.get(..23), said.get(23..)) {
-                        (_, _, _) if said.starts_with(DONE) => Line::from(vec![Span::styled(DONE, style(GREEN)), Span::styled(said[DONE.len()..].to_string(), style(SUBTEXT))]),
-                        (NEXT, _, _) => Line::from(Span::styled(NEXT, bold(MAUVE))),
-                        (_, Some(command), Some(why)) => Line::from(vec![Span::styled(command.to_string(), style(TEXT)), Span::styled(why.to_string(), style(SUBTEXT))]),
-                        _ => Line::from(Span::styled(said.clone(), style(TEXT))),
-                    });
+                let runs = if self.applied.is_none() { self.runs() } else { Vec::new() };
+                if !runs.is_empty() {
+                    lines.push(Line::default());
+                    lines.extend(runs.into_iter().map(|said| Line::from(vec![Span::styled("runs: ", style(MUTED)), Span::styled(said, style(MUTED))])));
                 }
             }
         }
-        if let Some(place) = self.in_place(self.step) {
-            lines.insert(0, Line::default());
-            lines.insert(0, Line::from(vec![Span::styled("✓ in place: ", style(GREEN)), Span::styled(place, style(SUBTEXT))]));
+        if let Some(place) = self.in_place(self.step).filter(|_| self.step != Step::Review) {
+            if !lines.is_empty() {
+                lines.push(Line::default());
+            }
+            lines.push(Line::from(vec![Span::styled("✓ in place: ", style(GREEN)), Span::styled(place, style(SUBTEXT))]));
         }
         if let Some(stale) = self.to_update(self.step) {
-            lines.insert(0, Line::default());
-            lines.insert(0, Line::from(vec![Span::styled("to update: ", style(PEACH)), Span::styled(stale, style(SUBTEXT))]));
+            if !lines.is_empty() {
+                lines.push(Line::default());
+            }
+            lines.push(Line::from(vec![Span::styled("to update: ", style(PEACH)), Span::styled(stale, style(SUBTEXT))]));
         }
         if let Some(error) = &self.error {
             lines.push(Line::default());
@@ -875,14 +1297,17 @@ impl Guide {
 
     fn hint(&self) -> String {
         match self.step {
-            _ if self.applied.is_some() && self.ending.is_empty() => "applying…".to_string(),
+            _ if self.applied.is_some() && !self.done => "applying…".to_string(),
+            _ if self.applied.is_some() && self.scope != Scope::All => "any key closes".to_string(),
             _ if self.applied.is_some() => "any key opens your board".to_string(),
             Step::Name => "type to change · ⏎ next · esc quit".to_string(),
             Step::Review => "⏎ apply · ← back · esc quit without writing".to_string(),
+            _ if self.spots().is_empty() => "⏎ next · ← back · esc quit".to_string(),
             step => {
                 let toggle = if matches!(step, Step::Agents | Step::Backlog) { "space toggle · " } else { "" };
                 let typing = if matches!(self.spot(), Some(Spot::Field(_))) { "type to change · " } else { "" };
-                format!("↑ ↓ choose · {toggle}{typing}⏎ next · ← back · s skip · esc quit")
+                let skip = if self.skips() { "s skip · " } else { "" };
+                format!("↑ ↓ choose · {toggle}{typing}⏎ next · ← back · {skip}esc quit")
             }
         }
     }
@@ -890,30 +1315,43 @@ impl Guide {
     pub fn draw(&self, frame: &mut Frame) {
         let area = frame.area().inner(Margin { horizontal: 2, vertical: 1 });
         let [title, _, body] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(5)]).areas(area);
-        let right = "run it again any time · --yes takes the defaults";
-        let left = format!("step {} of {}", self.step.index() + 1, Step::ALL.len());
+        let right = match self.scope {
+            Scope::All => "run it again any time · --yes takes the defaults".to_string(),
+            Scope::Agent(agent) => format!("kebbie setup {} · esc quits without writing", agent.key()),
+        };
+        let right = right.as_str();
+        let steps = self.steps();
+        let left = format!("step {} of {}", self.position() + 1, steps.len());
         let gap = (title.width as usize).saturating_sub(14 + left.len() + right.len()).max(2);
         let right = if gap > 2 { right } else { "" };
         frame.render_widget(Paragraph::new(Line::from(vec![Span::styled("kebbie setup", bold(MAUVE)), Span::raw("  "), Span::styled(left, style(MUTED)), Span::raw(" ".repeat(gap)), Span::styled(right, style(MUTED))])), title);
         let main = if body.width >= 72 {
             let [rail, _, main] = Layout::horizontal([Constraint::Length(22), Constraint::Length(2), Constraint::Min(40)]).areas(body);
-            let lines: Vec<Line> = Step::ALL.iter().enumerate().map(|(at, step)| {
+            let mut lines: Vec<Line> = Vec::new();
+            let mut section = None;
+            for (at, step) in steps.iter().enumerate() {
+                if self.scope == Scope::All && step.agent() != section {
+                    section = step.agent();
+                    if let Some(agent) = section {
+                        lines.push(Line::from(Span::styled(if agent == Agent::Claude { "  Claude Code" } else { "  Codex" }, style(MUTED))));
+                    }
+                }
                 let current = *step == self.step;
                 let mark = match () {
                     _ if current => Span::styled("▸", style(MAUVE)),
-                    _ if self.visited[at] || self.in_place(*step).is_some() => Span::styled("✓", style(GREEN)),
+                    _ if (self.visited[step.index()] || self.in_place(*step).is_some()) && self.to_update(*step).is_none() => Span::styled("✓", style(GREEN)),
                     _ => Span::styled("·", style(MUTED)),
                 };
                 let line = Line::from(vec![mark, Span::styled(format!(" {} {}", at + 1, step.title()), if current { bold(TEXT) } else { style(SUBTEXT) })]);
-                if current { line.style(Style::new().bg(SURFACE)) } else { line }
-            }).collect();
+                lines.push(if current { line.style(Style::new().bg(SURFACE)) } else { line });
+            }
             frame.render_widget(Paragraph::new(lines), rail);
             main
         } else {
             body
         };
         let [boxed, hint] = Layout::vertical([Constraint::Min(4), Constraint::Length(2)]).areas(main);
-        let mut lines = vec![Line::from(Span::styled(self.step.help(), style(SUBTEXT))), Line::default()];
+        let mut lines = if self.done { Vec::new() } else { vec![Line::from(Span::styled(self.step.help(), style(SUBTEXT))), Line::default()] };
         lines.extend(self.body());
         let framed = |title: &str| Block::bordered().border_type(BorderType::Rounded).border_style(style(FAINT)).padding(Padding::horizontal(1)).title(Span::styled(format!(" {title} "), bold(MAUVE)));
         let tall = |block: &Block, lines: &[Line<'static>], width: u16| Paragraph::new(lines.to_vec()).wrap(Wrap { trim: false }).line_count(block.inner(Rect { width, height: 3, ..boxed }).width) as u16 + 2;
@@ -925,7 +1363,7 @@ impl Guide {
             (block, lines, width, height)
         });
         let below = phone.as_ref().map_or(0, |(_, _, _, height)| height + 1);
-        let block = framed(self.step.title());
+        let block = framed(if self.done { "Done" } else { self.step.title() });
         let shown = Rect { height: tall(&block, &lines, boxed.width).min(boxed.height.saturating_sub(below)), ..boxed };
         frame.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: false }), shown);
         let mut hint_at = hint.y + 1;
@@ -935,6 +1373,67 @@ impl Guide {
             hint_at = hint_at.min(at.y + at.height + 1);
         }
         frame.render_widget(Paragraph::new(Line::from(Span::styled(self.hint(), style(MUTED)))), Rect { y: hint_at, height: 1, ..hint });
+    }
+
+    fn ways<const N: usize>(&self, lines: &mut Vec<Line<'static>>, choices: [(&str, &str); N]) {
+        let width = choices.iter().map(|(label, _)| label.chars().count() + 3).max().unwrap_or(0).max(34);
+        for (at, (label, about)) in choices.into_iter().enumerate() {
+            lines.extend(choice_lines(self.spot() == Some(Spot::Choice(at)), &format!(" {label}"), width, about, MUTED, 200));
+        }
+    }
+
+    fn until(&self) -> Vec<String> {
+        if self.added.is_empty() {
+            return Vec::new();
+        }
+        let mut lines: Vec<String> = self.added.iter().map(|added| format!("Until then {}.", added.until)).collect();
+        if !self.added.iter().any(|added| added.step == "plugin") {
+            lines.push("Tasks keep running either way.".to_string());
+        }
+        lines
+    }
+
+    fn done_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        for (step, outcome) in self.applied.iter().flatten().filter(|(_, outcome)| !matches!(outcome.verb, "already" | "skipped" | "yourself")) {
+            lines.push(row_line(step, outcome));
+        }
+        if !self.added.is_empty() {
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled("You chose to add these yourself:", bold(TEXT))));
+            for added in &self.added {
+                lines.push(Line::from(vec![Span::styled(format!("{:<9}", "yourself"), style(YELLOW)), Span::styled(format!("{:<11}", added.step), style(MAUVE)), Span::styled(added.said.clone(), style(TEXT))]));
+                lines.extend(added.lines.first().map(|first| Line::from(Span::styled(format!("{:<11}  {first}", ""), style(TEAL)))));
+                if added.lines.len() > 1 {
+                    lines.push(Line::from(Span::styled(format!("{:<11}  … {} more lines, also printed when you quit", "", added.lines.len() - 1), style(MUTED))));
+                }
+            }
+            lines.push(Line::default());
+            lines.extend(self.until().into_iter().map(|said| Line::from(Span::styled(said, style(MUTED)))));
+        }
+        for said in &self.ending {
+            lines.push(match (said.as_str(), said.get(..23), said.get(23..)) {
+                (_, _, _) if said.starts_with(DONE) => Line::from(vec![Span::styled(DONE, style(GREEN)), Span::styled(said[DONE.len()..].to_string(), style(SUBTEXT))]),
+                (NEXT, _, _) => Line::from(Span::styled(NEXT, bold(MAUVE))),
+                (_, Some(command), Some(why)) => Line::from(vec![Span::styled(command.to_string(), style(TEXT)), Span::styled(why.to_string(), style(SUBTEXT))]),
+                _ => Line::from(Span::styled(said.clone(), style(TEXT))),
+            });
+        }
+        lines
+    }
+
+    // The self-added items in full, for the terminal once the guide closes.
+    fn added_text(&self) -> Vec<String> {
+        if self.added.is_empty() {
+            return Vec::new();
+        }
+        let mut lines = vec![String::new(), "You chose to add these yourself:".to_string()];
+        for added in &self.added {
+            lines.push(setup::line("yourself", &added.step, &added.said));
+            lines.extend(added.lines.iter().map(|line| format!("    {line}")));
+        }
+        lines.extend(self.until());
+        lines
     }
 
     fn phone(&self) -> Vec<Line<'static>> {
@@ -955,6 +1454,7 @@ impl Guide {
             None => "Nothing written: kebbie setup runs the guide again whenever you want.".to_string(),
             Some(rows) => {
                 let mut lines: Vec<String> = rows.iter().map(|(step, outcome)| outcome.line(step)).collect();
+                lines.extend(self.added_text());
                 lines.extend(self.ending.iter().cloned());
                 if phone {
                     lines.extend(PHONE.iter().map(|line| line.to_string()));
@@ -978,9 +1478,9 @@ impl Hooks for Screen<'_> {
     }
 }
 
-fn ask(env: &Env, at: Step) -> Result<(Next, Guide)> {
+fn ask(env: &Env, scope: Scope, at: Step) -> Result<(Next, Guide)> {
     use ratatui::crossterm::event::{self, Event, KeyEventKind};
-    let mut guide = Guide::new(Facts::read(env), at);
+    let mut guide = Guide::scoped(Facts::read(env), scope, at);
     let mut terminal = crate::board::terminal::init_terminal();
     let result = (|| -> Result<Next> {
         loop {
@@ -992,9 +1492,13 @@ fn ask(env: &Env, at: Step) -> Result<(Next, Guide)> {
                         let planned = guide.plan();
                         guide.applied = Some(Vec::new());
                         let rows = apply(&planned, env, &mut Screen { terminal: &mut terminal, guide: &mut guide });
-                        let codex = (guide.answers.codex && !guide.skipped[Step::Agents.index()]).then(|| login::codex(guide.facts.codex_bin.as_deref(), login::TIMEOUT));
-                        guide.ending = ending(codex, &crate::doctor::checks(&crate::doctor::Env::current()), &std::env::var("SHELL").unwrap_or_default());
+                        guide.added = added(env, &planned);
+                        if scope == Scope::All {
+                            let codex = (guide.answers.codex && !guide.skipped[Step::Agents.index()]).then(|| login::codex(guide.facts.codex_bin.as_deref(), login::TIMEOUT));
+                            guide.ending = ending(codex, &crate::doctor::checks(&crate::doctor::Env::current()), &std::env::var("SHELL").unwrap_or_default());
+                        }
                         guide.applied = Some(rows);
+                        guide.done = true;
                     }
                     next => return Ok(next),
                 },
@@ -1007,8 +1511,8 @@ fn ask(env: &Env, at: Step) -> Result<(Next, Guide)> {
     Ok((result?, guide))
 }
 
-pub fn run(env: &Env, at: Step) -> Result<String> {
-    let (next, guide) = ask(env, at)?;
+pub fn run(env: &Env, scope: Scope, at: Step) -> Result<String> {
+    let (next, guide) = ask(env, scope, at)?;
     match next {
         Next::Board if std::env::var("HERDR_PANE_ID").is_ok_and(|pane| !pane.is_empty()) => {
             println!("{}\n", guide.text());
@@ -1034,7 +1538,7 @@ pub fn board(overlay: bool) -> Result<String> {
     if first_run(&claude_dir, setup::in_terminal()) && crate::permit::user_only("kebbie setup").is_ok() {
         let machine = setup::machine()?;
         let env = Env::current(&machine)?;
-        let (next, guide) = ask(&env, Step::Name)?;
+        let (next, guide) = ask(&env, Scope::All, Step::Name)?;
         match next {
             Next::Connect => {
                 println!("{}\n", guide.said(false));
@@ -1113,7 +1617,7 @@ mod tests {
     }
 
     fn screen(guide: &Guide) -> String {
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(130, 40)).unwrap();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(230, 40)).unwrap();
         terminal.draw(|frame| guide.draw(frame)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string()).collect::<Vec<_>>().join("\n")
@@ -1132,11 +1636,12 @@ mod tests {
     }
 
     #[test]
-    fn the_guide_walks_seven_steps_with_their_choices_and_writes_nothing_before_apply() {
+    fn the_guide_walks_each_chosen_agents_own_steps_and_writes_nothing_before_apply() {
         let lab = Lab::new("guide-walk");
         let mut guide = fresh(&lab);
         let shown = screen(&guide);
-        assert!(shown.contains("kebbie setup  step 1 of 7") && shown.contains("▸ 1 Machine name") && shown.contains("· 7 Review and apply") && !shown.contains("Hub"), "{shown}");
+        assert!(shown.contains("kebbie setup  step 1 of 11") && shown.contains("▸ 1 Machine name") && shown.contains("· 11 Review and apply") && !shown.contains("Hub"), "{shown}");
+        assert!(shown.contains("  Claude Code") && shown.contains("· 3 Plugin") && shown.contains("· 6 Vault") && !shown.contains("Codex updates"), "Claude Code's steps follow Agents, Codex's only once it is chosen: {shown}");
         assert!(shown.contains("▸ name     mac▏") && shown.contains("from this computer's name") && shown.contains("type to change · ⏎ next · esc quit"), "{shown}");
         type_text(&mut guide, "devbox");
         press(&mut guide, &[KeyCode::Enter]);
@@ -1150,12 +1655,39 @@ mod tests {
         assert!(shown.contains("found 2.1.3 · not logged in: run claude auth login") && shown.contains("found 0.163.0 · not logged in: run codex login"), "{shown}");
         press(&mut guide, &[KeyCode::Char(' ')]);
         assert!(!guide.answers.codex, "space on Claude Code changes nothing: it stays on");
-        let codex = lab.dir.join("codex");
+        let codex = lab.dir.join("codex-bin");
         crate::executable::write(&codex, "#!/bin/sh\necho 'Logged in using ChatGPT'\n").unwrap();
         (guide.facts.codex_bin, guide.facts.codex_login) = (Some(codex), Login::Unknown);
         press(&mut guide, &[KeyCode::Down, KeyCode::Char(' ')]);
         assert!(guide.answers.codex && guide.facts.codex_login == Login::In, "Codex's login is checked once you choose it");
+        assert!(screen(&guide).contains("  Codex") && screen(&guide).contains("· 10 Codex updates") && screen(&guide).contains("· 14 Review and apply"), "Codex's steps join once it is on: {}", screen(&guide));
         press(&mut guide, &[KeyCode::Enter]);
+        assert_eq!(guide.step, Step::ClaudePlugin);
+        let shown = screen(&guide);
+        assert!(shown.contains("▌ Install kebbie's plugin") && shown.contains("I'll add it myself") && shown.contains("shows the commands to run") && shown.contains("Skip"), "{shown}");
+        press(&mut guide, &[KeyCode::Enter]);
+        assert_eq!(guide.step, Step::ClaudeLogin);
+        assert!(screen(&guide).contains("Claude Code 2.1.3 · not logged in: run claude auth login") && screen(&guide).contains("⏎ next · ← back · esc quit"), "{}", screen(&guide));
+        press(&mut guide, &[KeyCode::Enter]);
+        assert!(screen(&guide).contains("✓ in place: kebbie gives Claude tasks their rules when they start"), "{}", screen(&guide));
+        press(&mut guide, &[KeyCode::Enter, KeyCode::Down]);
+        assert_eq!((guide.step, guide.answers.vault), (Step::Vault, 1), "moving onto an option picks it");
+        let shown = screen(&guide);
+        assert!(shown.contains("(•) A local folder") && shown.contains("path") && shown.contains("plugin install vault@gronare"), "{shown}");
+        press(&mut guide, &[KeyCode::Enter]);
+        assert!(screen(&guide).contains("Type the vault folder's path, or pick None."), "an empty path stops the step");
+        press(&mut guide, &[KeyCode::Down]);
+        type_text(&mut guide, "/notes/vault");
+        press(&mut guide, &[KeyCode::Enter]);
+        assert_eq!(guide.step, Step::ClaudeUpdates);
+        assert!(screen(&guide).contains("✓ in place: Claude Code updates itself; kebbie restarts its sessions"));
+        press(&mut guide, &[KeyCode::Enter, KeyCode::Enter, KeyCode::Enter]);
+        assert_eq!(guide.step, Step::CodexVault, "with kebbie's vault chosen, Codex gets its Vault step");
+        assert!(!screen(&guide).contains("s skip") && !screen(&guide).contains("Skip"), "the vault every agent gets has no skip: {}", screen(&guide));
+        press(&mut guide, &[KeyCode::Char('s')]);
+        assert_eq!(guide.step, Step::CodexVault, "s skips nothing here");
+        press(&mut guide, &[KeyCode::Enter, KeyCode::Enter]);
+        assert_eq!(guide.step, Step::Keys);
         let shown = screen(&guide);
         assert!(shown.contains("+ prefix+space  go to the lead, or back") && shown.contains("+ prefix+t      open the board") && !shown.contains("prefix+u"), "{shown}");
         assert!(shown.contains("(•) Add them  · to the end of") && shown.contains("( ) Skip"), "{shown}");
@@ -1164,34 +1696,32 @@ mod tests {
         assert!(screen(&guide).contains("[x] Local file  · backlog.md beside your config · new ideas go here"));
         press(&mut guide, &[KeyCode::Down, KeyCode::Char(' '), KeyCode::Up, KeyCode::Char(' '), KeyCode::Enter]);
         assert_eq!(guide.answers.chosen_sources(), [Source::Vault], "the first one checked is where the lead files ideas");
-        press(&mut guide, &[KeyCode::Down]);
-        assert_eq!(guide.answers.vault, 1, "moving onto an option picks it");
-        let shown = screen(&guide);
-        assert!(shown.contains("(•) A local folder") && shown.contains("path") && shown.contains("plugin install vault@gronare"), "{shown}");
-        press(&mut guide, &[KeyCode::Enter]);
-        assert!(screen(&guide).contains("Type the vault folder's path, or pick None."), "an empty path stops the step");
-        press(&mut guide, &[KeyCode::Down]);
-        type_text(&mut guide, "/notes/vault");
-        press(&mut guide, &[KeyCode::Enter]);
-        assert_eq!(guide.step, Step::Signals, "the vault leads straight to the error signals");
+        assert_eq!(guide.step, Step::Signals, "the backlog leads straight to the error signals");
         assert!(screen(&guide).contains("never your code, paths or text") && screen(&guide).contains("A bug report with text is always shown to you first"));
         press(&mut guide, &[KeyCode::Down, KeyCode::Enter]);
         assert_eq!(guide.step, Step::Review);
+        let rules = format!("{}/codex/rules/kebbie.rules", lab.dir.display());
         assert_eq!(plan(&guide), [
-            "to do link ~/.local/bin/kebbie",
-            "to do plugin kebbie in Claude Code and Codex",
-            "to do machine \"devbox\"",
-            "to do keys prefix+space, prefix+f, prefix+t in herdr",
-            "to do backlog vault",
-            "to do vault folder /notes/vault, through the vault plugin",
-            "to do signals off",
-            "to do usage kebbie's statusLine in Claude Code's settings.json, for the board's usage bar",
-            "to do keeper start it, so routines run without an open board",
+            "to do link ~/.local/bin/kebbie".to_string(),
+            "to do machine \"devbox\"".to_string(),
+            "to do plugin kebbie's plugin in Claude Code".to_string(),
+            "to do vault folder /notes/vault, through the vault plugin".to_string(),
+            format!("to do plugin kebbie's plugin at {}/codex/plugins/cache/kebbie-tasks/kebbie/local", lab.dir.display()),
+            format!("to do approvals {rules}"),
+            format!("to do vault [mcp_servers.vault] in {}/codex/config.toml", lab.dir.display()),
+            "to do updates ask me after U (update.agents = \"ask\" in kebbie's config.toml)".to_string(),
+            "skipped model Codex profiles follow Codex's default".to_string(),
+            "to do keys prefix+space, prefix+f, prefix+t in herdr".to_string(),
+            "to do backlog vault".to_string(),
+            "to do signals off".to_string(),
+            "to do usage kebbie's statusLine in Claude Code's settings.json, for the board's usage bar".to_string(),
+            "to do keeper start it, so routines run without an open board".to_string(),
         ], "the doctor's fixes are rows of the plan like every other");
         let shown = screen(&guide);
-        assert!(shown.contains("to do    usage     kebbie's statusLine in Claude Code's settings.json") && shown.contains("⏎ apply · ← back · esc quit without writing"), "{shown}");
+        assert!(shown.contains("to do    usage      kebbie's statusLine in Claude Code's settings.json") && shown.contains("⏎ apply · ← back · esc quit without writing"), "{shown}");
+        assert!(shown.contains(&format!("runs: writes {rules}, 30 lines")) && shown.contains("runs: adds the vault server's lines to the end of"), "{shown}");
         assert_eq!((lab.config(), lab.herdr(), lab.calls()), (String::new(), String::new(), String::new()), "nothing is written or run before ⏎ on the last step");
-        assert!(!lab.dir.join("codex/plugins").exists() && !lab.machine.home.join(".local/bin/kebbie").exists() && !lab.machine.claude_dir.join("settings.json").exists());
+        assert!(!lab.dir.join("codex").exists() && !lab.machine.home.join(".local/bin/kebbie").exists() && !lab.machine.claude_dir.join("settings.json").exists());
         assert!(matches!(guide.key(KeyEvent::from(KeyCode::Esc)), Next::Quit));
         assert_eq!(guide.text(), "Nothing written: kebbie setup runs the guide again whenever you want.");
     }
@@ -1201,28 +1731,37 @@ mod tests {
         let lab = Lab::new("guide-apply");
         let mut guide = fresh(&lab);
         guide.facts.repairs.retain(|repair| *repair != Repair::KeeperStart);
-        press(&mut guide, &[KeyCode::Enter, KeyCode::Down, KeyCode::Char(' '), KeyCode::Enter, KeyCode::Enter, KeyCode::Down, KeyCode::Char(' '), KeyCode::Enter, KeyCode::Down, KeyCode::Down]);
+        press(&mut guide, &[KeyCode::Enter, KeyCode::Down, KeyCode::Char(' '), KeyCode::Enter, KeyCode::Enter, KeyCode::Enter, KeyCode::Enter, KeyCode::Down, KeyCode::Down]);
         type_text(&mut guide, "/notes/vault");
-        press(&mut guide, &[KeyCode::Enter, KeyCode::Down, KeyCode::Enter]);
+        press(&mut guide, &[KeyCode::Enter, KeyCode::Enter, KeyCode::Enter, KeyCode::Down, KeyCode::Enter, KeyCode::Enter, KeyCode::Enter, KeyCode::Enter, KeyCode::Down, KeyCode::Char(' '), KeyCode::Enter, KeyCode::Down, KeyCode::Enter]);
         assert_eq!(guide.step, Step::Review);
         assert!(matches!(guide.key(KeyEvent::from(KeyCode::Enter)), Next::Apply));
         let mut fake = Fake { drawn: 0 };
-        let rows = apply(&guide.plan(), &lab.env(), &mut fake);
+        let planned = guide.plan();
+        let rows = apply(&planned, &lab.env(), &mut fake);
         let lines: Vec<String> = rows.iter().map(|(step, outcome)| format!("{} {step} {}", outcome.verb, outcome.detail)).collect();
         assert_eq!(lines, [
-            "done link ~/.local/bin/kebbie",
-            "done plugin kebbie in Claude Code and Codex",
-            "done machine \"mac\"",
-            "done keys prefix+space, prefix+f, prefix+t added, restart herdr to use them",
-            "done backlog local, vault",
-            "done vault folder /notes/vault",
-            "done signals off",
-            "done usage statusLine added to Claude Code's settings.json",
+            "done link ~/.local/bin/kebbie".to_string(),
+            "done machine \"mac\"".to_string(),
+            format!("done plugin installed kebbie@kebbie in Claude Code from {}", lab.machine.home.join(".local/share/kebbie/current").display()),
+            "done vault folder /notes/vault".to_string(),
+            format!("done plugin kebbie's plugin at {}/codex/plugins/cache/kebbie-tasks/kebbie/local", lab.dir.display()),
+            format!("yourself approvals {}/codex/rules/kebbie.rules", lab.dir.display()),
+            "failed vault the vault plugin is not in Claude Code yet, so its server is unknown; run kebbie setup codex once it is".to_string(),
+            "done updates update.agents = \"ask\"".to_string(),
+            "skipped model Codex profiles follow Codex's default".to_string(),
+            "done keys prefix+space, prefix+f, prefix+t added, restart herdr to use them".to_string(),
+            "done backlog local, vault".to_string(),
+            "done signals off".to_string(),
+            "done usage statusLine added to Claude Code's settings.json".to_string(),
         ], "each line says what it did in a few words");
-        assert_eq!(fake.drawn, 8, "each line is drawn as it finishes");
-        assert_eq!(lab.config(), "[machine]\nname = \"mac\"\n\n[board.backlog]\nsources = [\"local\", \"vault\"]\n\n[report]\nsignals = false\n", "setup never writes [hub]");
+        assert_eq!(fake.drawn, 13, "each line is drawn as it finishes");
+        assert_eq!(lab.config(), "[machine]\nname = \"mac\"\n\n[update]\nagents = \"ask\"\n\n[board.backlog]\nsources = [\"local\", \"vault\"]\n\n[report]\nsignals = false\n", "setup never writes [hub]");
         assert_eq!(lab.herdr().matches("[[keys.command]]").count(), 3);
         assert!(lab.dir.join("codex/plugins/cache/kebbie-tasks/kebbie/local/hooks/hooks.json").is_file(), "Codex gets kebbie's plugin");
+        assert!(!lab.dir.join("codex/rules").exists(), "a file the user adds is never written");
+        let added = added(&lab.env(), &planned);
+        assert_eq!((added.len(), added[0].step.as_str(), added[0].lines.len()), (1, "approvals", 30));
         let settings: Value = serde_json::from_str(&std::fs::read_to_string(lab.machine.claude_dir.join("settings.json")).unwrap()).unwrap();
         assert_eq!(settings["statusLine"]["command"], crate::doctor::STATUS_LINE_COMMAND);
         let calls = lab.calls();
@@ -1240,16 +1779,20 @@ mod tests {
         let shown = screen(&signals);
         assert!(shown.contains("( ) Turn them on") && shown.contains("▸ (•) Keep them off"), "signals that are off offer to turn them on: {shown}");
         press(&mut signals, &[KeyCode::Up, KeyCode::Enter]);
-        assert_eq!(plan(&signals)[6], "to do signals on");
+        assert_eq!(plan(&signals).iter().find(|row| row.contains(" signals ")).map(String::as_str), Some("to do signals on"));
         assert_eq!(rerun.answers.name, "mac");
         assert_eq!(rerun.answers.chosen_sources(), [Source::Local, Source::Vault]);
         assert_eq!((rerun.answers.signals, rerun.answers.codex, rerun.answers.vault, rerun.answers.vault_path.as_str()), (1, true, 1, "/notes/vault"));
         let shown = screen(&rerun);
-        assert!(shown.contains("✓ in place: machine.name is \"mac\"") && shown.contains("✓ 3 herdr keys") && shown.contains("✓ 6 Error signals"), "the rail marks what is in place: {shown}");
+        assert!(shown.contains("✓ in place: machine.name is \"mac\"") && shown.contains("herdr keys") && shown.contains("Error signals"), "{shown}");
+        assert!(shown.lines().any(|line| line.contains("✓") && line.contains("herdr keys")) && shown.lines().any(|line| line.contains("✓") && line.contains("Error signals")), "the rail marks what is in place: {shown}");
         let mut rerun = rerun;
-        press(&mut rerun, &[KeyCode::Enter, KeyCode::Enter, KeyCode::Enter, KeyCode::Enter, KeyCode::Enter, KeyCode::Enter]);
-        assert_eq!(rerun.step, Step::Review);
-        assert_eq!(plan(&rerun)[2..7], ["already machine \"mac\"", "already keys kebbie's keys are bound in herdr", "already backlog local, vault", "already vault folder /notes/vault", "already signals off"]);
+        rerun.facts.codex = Some("0.163.0".to_string());
+        rerun.go(Step::Review);
+        let plan = plan(&rerun);
+        for row in ["already machine \"mac\"", "already keys kebbie's keys are bound in herdr", "already backlog local, vault", "already vault folder /notes/vault", "already signals off", "already updates ask me after U (update.agents = \"ask\")"] {
+            assert!(plan.iter().any(|line| line == row), "{row} missing from {plan:?}");
+        }
     }
 
     #[test]
@@ -1260,17 +1803,18 @@ mod tests {
         std::fs::write(plugins.join("installed_plugins.json"), json!({ "plugins": { "kebbie@kebbie": [{ "version": "0.27.0" }] } }).to_string()).unwrap();
         crate::agent::codex::install(&lab.dir.join("codex"), "/elsewhere/kebbie").unwrap();
         let mut guide = fresh(&lab);
-        press(&mut guide, &[KeyCode::Enter]);
-        assert_eq!(guide.step, Step::Agents);
+        assert!(guide.answers.codex, "an installed plugin keeps Codex on");
+        guide.go(Step::CodexPlugin);
         let shown = screen(&guide);
         assert!(shown.contains("to update: kebbie's plugin in Codex is out of date (bin/kebbie-hook)") && !shown.contains("✓ in place"), "{shown}");
-        assert!(!shown.contains("✓ 2 Agents"), "the rail marks no step with something to update: {shown}");
-        assert!(guide.answers.codex, "an installed plugin keeps Codex on");
+        assert!(shown.lines().any(|line| line.contains("▸ 8 Plugin")), "{shown}");
         let rows = apply(&guide.plan(), &lab.env(), &mut Fake { drawn: 0 });
-        assert!(rows.iter().any(|(step, outcome)| step == "plugin" && outcome.verb == "done"), "{rows:?}");
+        assert!(rows.iter().any(|(step, outcome)| step == "plugin" && outcome.verb == "done" && outcome.detail.contains("kebbie-tasks")), "{rows:?}");
         assert_eq!(crate::agent::codex::installed(&lab.dir.join("codex"), "/opt/kebbie"), Installed::Current);
-        let rerun = Guide::new(Facts::read(&lab.env()), Step::Agents);
-        assert!(screen(&rerun).contains("✓ in place: kebbie's plugin is in Claude Code and in Codex"));
+        let mut rerun = Guide::new(Facts::read(&lab.env()), Step::Agents);
+        rerun.facts.codex = Some("0.163.0".to_string());
+        rerun.go(Step::CodexPlugin);
+        assert!(screen(&rerun).contains("✓ in place: kebbie's plugin at"), "{}", screen(&rerun));
     }
 
     #[test]
@@ -1284,12 +1828,22 @@ mod tests {
         std::fs::create_dir_all(home.join("plugins/cache/kebbie/kebbie")).unwrap();
         std::fs::rename(home.join("plugins/cache/kebbie-tasks/kebbie/local"), home.join("plugins/cache/kebbie/kebbie/local")).unwrap();
         let mut guide = fresh(&lab);
-        press(&mut guide, &[KeyCode::Enter]);
         assert!(guide.answers.codex, "an opted-in machine is not shown Codex off");
+        guide.go(Step::CodexPlugin);
         assert!(screen(&guide).contains("to update: kebbie's plugin in Codex is under kebbie@kebbie"), "{}", screen(&guide));
         let rows = apply(&guide.plan(), &lab.env(), &mut Fake { drawn: 0 });
-        assert!(rows.iter().any(|(step, outcome)| step == "plugin" && outcome.verb == "done"), "{rows:?}");
+        assert!(rows.iter().any(|(step, outcome)| step == "plugin" && outcome.verb == "done" && outcome.detail.contains("kebbie-tasks")), "{rows:?}");
         assert!(!home.join("plugins/cache/kebbie/kebbie/local").exists());
+    }
+
+    #[test]
+    fn turning_codex_off_takes_kebbies_plugin_out_of_codex() {
+        let lab = Lab::new("guide-codex-off");
+        crate::agent::codex::install(&lab.dir.join("codex"), "/opt/kebbie").unwrap();
+        let mut guide = fresh(&lab);
+        press(&mut guide, &[KeyCode::Enter, KeyCode::Down, KeyCode::Char(' ')]);
+        assert!(!guide.answers.codex && !guide.steps().contains(&Step::CodexPlugin));
+        assert!(plan(&guide).contains(&"to do plugin kebbie's plugin out of Codex".to_string()), "{:?}", plan(&guide));
     }
 
     #[test]
@@ -1297,21 +1851,26 @@ mod tests {
         let lab = Lab::new("guide-skip");
         let mut guide = fresh(&lab);
         press(&mut guide, &[KeyCode::Enter, KeyCode::Char('s')]);
-        assert_eq!(guide.step, Step::Keys);
+        assert_eq!(guide.step, Step::ClaudePlugin);
+        press(&mut guide, &[KeyCode::Char('s')]);
+        assert_eq!((guide.step, guide.answers.claude_plugin), (Step::ClaudeLogin, Way::Skip), "a skipped write is a skip, never kebbie's");
+        guide.go(Step::Keys);
         press(&mut guide, &[KeyCode::Char('s'), KeyCode::Down, KeyCode::Char(' '), KeyCode::Left]);
         assert_eq!(guide.step, Step::Keys);
         press(&mut guide, &[KeyCode::Left]);
-        assert_eq!(guide.step, Step::Agents);
-        press(&mut guide, &[KeyCode::Enter, KeyCode::Char('s'), KeyCode::Enter]);
-        assert_eq!(guide.step, Step::Vault);
+        assert_eq!(guide.step, Step::ClaudeUpdates, "← goes back through the agent's steps");
+        guide.go(Step::Keys);
+        press(&mut guide, &[KeyCode::Enter, KeyCode::Enter, KeyCode::Char('s')]);
+        assert_eq!(guide.step, Step::Review);
         assert_eq!(guide.answers.chosen_sources(), [Source::Local, Source::Vault], "← and ⏎ keep the boxes ticked");
+        guide.go(Step::Vault);
         press(&mut guide, &[KeyCode::Down, KeyCode::Char('s')]);
         assert_eq!(guide.answers.vault, 0, "a skip puts the step back to what the machine has");
-        press(&mut guide, &[KeyCode::Char('s')]);
-        assert_eq!(guide.step, Step::Review);
+        guide.go(Step::Review);
         let plan = plan(&guide);
-        assert!(plan[3].starts_with("skipped keys") && plan[5].starts_with("skipped vault") && plan[6] == "skipped signals stay on", "{plan:?}");
-        assert!(plan[4].starts_with("to do backlog"), "{plan:?}");
+        let row = |step: &str| plan.iter().find(|row| row.split_whitespace().nth(if row.starts_with("to do") { 2 } else { 1 }) == Some(step)).cloned().unwrap_or_default();
+        assert!(row("keys").starts_with("skipped keys") && row("vault").starts_with("skipped vault") && row("signals") == "skipped signals stay on", "{plan:?}");
+        assert!(row("plugin") == "skipped plugin kebbie's plugin stays out of Claude Code" && row("backlog").starts_with("to do backlog"), "{plan:?}");
         press(&mut guide, &[KeyCode::Left]);
         assert_eq!(guide.step, Step::Signals);
         let mut name = fresh(&lab);
@@ -1327,24 +1886,26 @@ mod tests {
         std::fs::create_dir_all(lab.machine.herdr_config.parent().unwrap()).unwrap();
         std::fs::write(&lab.machine.herdr_config, "[keys]\nnew_tab = \"prefix+t\"\n").unwrap();
         let mut guide = fresh(&lab);
-        press(&mut guide, &[KeyCode::Enter, KeyCode::Enter]);
+        guide.go(Step::Keys);
         let shown = screen(&guide);
         assert!(shown.contains("! prefix+t      open the board · taken by new_tab"), "{shown}");
         assert!(shown.contains("(•) Add them, leave prefix+t to new_tab  · bind the rest yourself later") && shown.contains("( ) Add them, the board on prefix+y  · free in your config") && shown.contains("( ) Skip  · add them by hand"), "{shown}");
         press(&mut guide, &[KeyCode::Down]);
         assert!(screen(&guide).contains("+ prefix+y      open the board · moved off prefix+t, which new_tab uses"));
-        press(&mut guide, &[KeyCode::Enter, KeyCode::Char('s'), KeyCode::Char('s'), KeyCode::Char('s')]);
+        press(&mut guide, &[KeyCode::Enter, KeyCode::Char('s'), KeyCode::Char('s')]);
         assert_eq!(guide.step, Step::Review);
-        assert_eq!(plan(&guide)[3], "to do keys prefix+space, prefix+f, prefix+y in herdr");
-        let rows = apply(&guide.plan()[3..4], &lab.env(), &mut Fake { drawn: 0 });
+        let keys: Vec<Planned> = guide.plan().into_iter().filter(|row| row.step == "keys").collect();
+        assert_eq!(format!("{} {}", keys[0].verb, keys[0].detail), "to do prefix+space, prefix+f, prefix+y in herdr");
+        let rows = apply(&keys, &lab.env(), &mut Fake { drawn: 0 });
         assert_eq!(format!("{} {}", rows[0].1.verb, rows[0].1.detail), "done prefix+space, prefix+f, prefix+y added, restart herdr to use them");
         let herdr = lab.herdr();
         assert!(herdr.starts_with("[keys]\nnew_tab = \"prefix+t\"\n\n[[keys.command]]") && herdr.contains("key = \"prefix+y\"\ntype = \"plugin_action\"\ncommand = \"kebbie.board\""), "only the end of the file changes: {herdr}");
         let mut leave = fresh(&lab);
         std::fs::write(&lab.machine.herdr_config, "[keys]\nnew_tab = \"prefix+t\"\n").unwrap();
         leave.facts.keys = setup::key_plan(&lab.machine.herdr_config);
-        press(&mut leave, &[KeyCode::Enter, KeyCode::Enter, KeyCode::Enter]);
-        assert_eq!(plan(&leave)[3], "to do keys prefix+space, prefix+f in herdr, the board unbound");
+        leave.go(Step::Keys);
+        press(&mut leave, &[KeyCode::Enter]);
+        assert!(plan(&leave).contains(&"to do keys prefix+space, prefix+f in herdr, the board unbound".to_string()), "{:?}", plan(&leave));
     }
 
     #[test]
@@ -1360,14 +1921,135 @@ mod tests {
         }
         let shown = screen(&guide);
         assert!(shown.contains("secret   •••••••") && !shown.contains("hunter2"), "{shown}");
-        press(&mut guide, &[KeyCode::Enter, KeyCode::Enter]);
-        assert_eq!(guide.step, Step::Review);
-        let plan = guide.plan();
-        assert_eq!(format!("{} {}", plan[5].verb, plan[5].detail), "to do S3 bucket notes, through the vault plugin");
-        let rows = apply(&plan[5..6], &lab.env(), &mut Fake { drawn: 0 });
+        press(&mut guide, &[KeyCode::Enter]);
+        assert_eq!(guide.step, Step::ClaudeUpdates);
+        guide.go(Step::Review);
+        let vault: Vec<Planned> = guide.plan().into_iter().filter(|row| row.step == "vault").collect();
+        assert_eq!(format!("{} {}", vault[0].verb, vault[0].detail), "to do S3 bucket notes, through the vault plugin");
+        let rows = apply(&vault[..1], &lab.env(), &mut Fake { drawn: 0 });
         assert_eq!(format!("{} {}", rows[0].1.verb, rows[0].1.detail), "done S3 bucket notes");
         assert!(!screen(&guide).contains("hunter2"), "the secret is never shown");
         assert!(std::fs::read_to_string(lab.dir.join("claude.stdin")).unwrap().contains("\"s3_secret_key\":\"hunter2\""));
+    }
+
+    // A machine with Codex, kebbie's plugin in it, the vault plugin on an S3 bucket and a config.toml of the user's own.
+    fn codex_lab(name: &str) -> Lab {
+        let lab = Lab::new(name);
+        let codex = lab.dir.join("codex");
+        crate::agent::codex::install(&codex, "/opt/kebbie").unwrap();
+        std::fs::write(codex.join("config.toml"), "# mine\nmodel_reasoning_effort = \"high\"\n").unwrap();
+        std::fs::write(codex.join("models_cache.json"), crate::agent::codex::CACHE_FIXTURE).unwrap();
+        let root = lab.dir.join("vault-plugin");
+        std::fs::create_dir_all(root.join("hooks")).unwrap();
+        std::fs::write(root.join("hooks/hooks.json"), "uvx notes-vault-mcp==0.8.0 hook session-start").unwrap();
+        std::fs::write(root.join(".mcp.json"), r#"{"mcpServers":{"vault":{"command":"uvx","args":["notes-vault-mcp==0.8.0"],"env":{"VAULT_PATH":"${user_config.vault_path}","S3_ENDPOINT":"${user_config.s3_endpoint}","S3_BUCKET":"${user_config.s3_bucket}","S3_ACCESS_KEY":"${user_config.s3_access_key}","S3_SECRET_KEY":"${user_config.s3_secret_key}"}}}}"#).unwrap();
+        let plugins = lab.machine.claude_dir.join("plugins");
+        std::fs::write(plugins.join("installed_plugins.json"), json!({ "plugins": { "kebbie@kebbie": [{ "version": "0.30.0" }], "vault@gronare": [{ "version": "0.2.19", "installPath": root }] } }).to_string()).unwrap();
+        std::fs::write(lab.machine.claude_dir.join("settings.json"), json!({ "pluginConfigs": { "vault@gronare": { "options": { "s3_endpoint": "https://s3.example.com", "s3_bucket": "notes", "s3_access_key": "AKIA1", "s3_secret_key": "hunter2" } } } }).to_string()).unwrap();
+        lab
+    }
+
+    fn wide(guide: &Guide) -> String {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(130, 30)).unwrap();
+        terminal.draw(|frame| guide.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn kebbie_setup_codex_walks_codexs_steps_and_apply_writes_only_what_kebbie_was_asked_to() {
+        let lab = codex_lab("guide-codex");
+        let mut guide = Guide::scoped(Facts::read(&lab.env()), Scope::Agent(Agent::Codex), Step::CodexPlugin);
+        let shown = screen(&guide);
+        assert!(shown.contains("kebbie setup  step 1 of 5") && shown.contains("kebbie setup codex · esc quits without writing") && shown.contains("✓ in place: kebbie's plugin at"), "{shown}");
+        assert!(!shown.contains("Machine name") && !shown.contains("herdr keys") && !shown.contains("  Codex\n"), "only Codex's steps: {shown}");
+        press(&mut guide, &[KeyCode::Enter]);
+        println!("--- Codex approvals step ---\n{}", wide(&guide));
+        let shown = screen(&guide);
+        assert!(shown.contains("step 2 of 5") && shown.contains("Codex asks before each command that leaves its sandbox, kebbie's own included: report, tell, ask,"), "{shown}");
+        assert!(shown.contains("▌ Add kebbie's rules file") && shown.contains("/codex/rules/kebbie.rules, 30 lines") && shown.contains("  I'll add it myself") && shown.contains("shows the file to copy") && shown.contains("  Skip") && shown.contains("Codex asks for each command"), "{shown}");
+        assert!(shown.contains("↑ ↓ choose · ⏎ next · ← back · s skip · esc quit"), "{shown}");
+        press(&mut guide, &[KeyCode::Down, KeyCode::Enter]);
+        assert_eq!((guide.step, guide.answers.approvals), (Step::CodexVault, Way::Yourself));
+        let shown = screen(&guide);
+        assert!(shown.contains("step 3 of 5") && shown.contains("▌ Add the vault server") && shown.contains("[mcp_servers.vault] in") && shown.contains("The keys stay out of the file: Codex reads S3_ACCESS_KEY and S3_SECRET_KEY from the environment by name (env_vars)"), "{shown}");
+        press(&mut guide, &[KeyCode::Enter]);
+        let shown = screen(&guide);
+        assert!(shown.contains("step 4 of 5") && shown.contains("▌ Ask me after U") && shown.contains("Update it with U") && shown.contains("Only tell me") && shown.contains("Codex profiles without a model follow Codex's own default, gpt-6.1-sol today."), "{shown}");
+        press(&mut guide, &[KeyCode::Enter]);
+        assert_eq!(guide.step, Step::Review);
+        println!("--- review and apply ---\n{}", wide(&guide));
+        let shown = screen(&guide);
+        let config = format!("{}/codex/config.toml", lab.dir.display());
+        assert_eq!(plan(&guide), [
+            format!("already plugin kebbie's plugin at {}/codex/plugins/cache/kebbie-tasks/kebbie/local", lab.dir.display()),
+            format!("yourself approvals {}/codex/rules/kebbie.rules", lab.dir.display()),
+            format!("to do vault [mcp_servers.vault] in {config}, keys from the environment"),
+            "to do updates ask me after U (update.agents = \"ask\" in kebbie's config.toml)".to_string(),
+            "skipped model Codex profiles follow Codex's default".to_string(),
+        ]);
+        assert!(shown.contains(&format!("runs: adds 7 lines to the end of {config}; the rest of the file stays as it is")), "{shown}");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), "# mine\nmodel_reasoning_effort = \"high\"\n", "nothing is written before ⏎");
+        let planned = guide.plan();
+        let rows = apply(&planned, &lab.env(), &mut Fake { drawn: 0 });
+        guide.added = added(&lab.env(), &planned);
+        (guide.applied, guide.done) = (Some(rows), true);
+        let written = std::fs::read_to_string(&config).unwrap();
+        assert!(written.starts_with("# mine\nmodel_reasoning_effort = \"high\"\n\n[mcp_servers.vault]\ncommand = \"uvx\"") && written.contains("env_vars = [\"S3_ACCESS_KEY\", \"S3_SECRET_KEY\"]"), "{written}");
+        assert!(!written.contains("hunter2") && !written.contains("AKIA1"), "the keys never go in Codex's file");
+        assert!(lab.config().contains("[update]\nagents = \"ask\"\n"), "{}", lab.config());
+        assert!(!lab.dir.join("codex/rules").exists(), "the file the user adds is never written");
+        println!("--- done, with what you add yourself ---\n{}", wide(&guide));
+        let shown = screen(&guide);
+        assert!(shown.contains("╭ Done ") && shown.contains("done     vault      added [mcp_servers.vault] to") && shown.contains("done     updates    update.agents = \"ask\""), "{shown}");
+        assert!(!shown.contains("already  plugin"), "the done list names what changed: {shown}");
+        assert!(shown.contains("You chose to add these yourself:") && shown.contains("yourself approvals  copy this file to") && shown.contains("prefix_rule(pattern=[\"/opt/kebbie\", \"peers\"], decision=\"allow\")") && shown.contains("… 29 more lines, also printed when you quit"), "{shown}");
+        assert!(shown.contains("Until then Codex asks before each kebbie command, and kebbie doctor names the file as missing.") && shown.contains("Tasks keep running either way.") && shown.contains("any key closes"), "{shown}");
+        let text = guide.text();
+        assert_eq!(text.matches("prefix_rule(").count(), 30, "quitting prints the whole file: {text}");
+        assert!(text.contains("yourself  approvals  copy this file to") && !text.contains("hunter2"), "{text}");
+        assert!(matches!(guide.key(KeyEvent::from(KeyCode::Char('x'))), Next::Quit), "any key closes kebbie setup codex");
+        let again = Guide::scoped(Facts::read(&lab.env()), Scope::Agent(Agent::Codex), Step::CodexVault);
+        assert!(screen(&again).contains("✓ in place: [mcp_servers.vault] in"), "{}", screen(&again));
+    }
+
+    #[test]
+    fn a_rules_file_in_place_reads_already_and_one_of_other_rules_reads_to_update() {
+        let lab = codex_lab("guide-codex-rules");
+        let mut guide = Guide::scoped(Facts::read(&lab.env()), Scope::Agent(Agent::Codex), Step::CodexApprovals);
+        let rules = guide.facts.rules.clone();
+        crate::agent::codex_setup::write_rules(&lab.dir.join("codex"), &rules).unwrap();
+        guide = Guide::scoped(Facts::read(&lab.env()), Scope::Agent(Agent::Codex), Step::CodexApprovals);
+        assert!(screen(&guide).contains("✓ in place:") && screen(&guide).contains("/codex/rules/kebbie.rules"), "{}", screen(&guide));
+        assert!(plan(&guide).iter().any(|row| row.starts_with("already approvals")), "{:?}", plan(&guide));
+        crate::agent::codex_setup::write_rules(&lab.dir.join("codex"), "prefix_rule(pattern=[\"kebbie\"], decision=\"allow\")\n").unwrap();
+        guide = Guide::scoped(Facts::read(&lab.env()), Scope::Agent(Agent::Codex), Step::CodexApprovals);
+        assert!(screen(&guide).contains("to update:") && screen(&guide).contains("is not the file this kebbie writes"), "{}", screen(&guide));
+        assert!(plan(&guide).iter().any(|row| row.starts_with("to do approvals")));
+        let rows = apply(&guide.plan(), &lab.env(), &mut Fake { drawn: 0 });
+        assert!(rows.iter().any(|(step, outcome)| step == "approvals" && outcome.verb == "done"), "{rows:?}");
+        assert_eq!(std::fs::read_to_string(lab.dir.join("codex/rules/kebbie.rules")).unwrap(), rules);
+    }
+
+    #[test]
+    fn without_kebbies_vault_no_agent_has_a_vault_step() {
+        let lab = Lab::new("guide-codex-no-vault");
+        crate::agent::codex::install(&lab.dir.join("codex"), "/opt/kebbie").unwrap();
+        let guide = Guide::scoped(Facts::read(&lab.env()), Scope::Agent(Agent::Codex), Step::CodexPlugin);
+        assert_eq!(guide.steps(), [Step::CodexPlugin, Step::CodexApprovals, Step::CodexUpdates, Step::Review]);
+        assert!(plan(&guide).iter().all(|row| !row.contains(" vault ")), "{:?}", plan(&guide));
+        let claude = Guide::scoped(Facts::read(&lab.env()), Scope::Agent(Agent::Claude), Step::ClaudePlugin);
+        assert_eq!(claude.steps(), [Step::ClaudePlugin, Step::ClaudeLogin, Step::ClaudeApprovals, Step::Vault, Step::ClaudeUpdates, Step::Review], "Claude's Vault step is where the vault is chosen");
+        assert!(screen(&claude).contains("kebbie setup claude · esc quits without writing"));
+    }
+
+    #[test]
+    fn kebbie_setup_codex_without_a_terminal_names_what_else_it_offers() {
+        let lab = codex_lab("guide-codex-offers");
+        let offers = offers(&lab.env(), Agent::Codex);
+        assert_eq!(offers[0], "kebbie setup codex in a terminal also offers, each on your choice:");
+        assert!(offers.iter().any(|line| line.contains("approvals") && line.contains("rules/kebbie.rules")) && offers.iter().any(|line| line.contains("vault") && line.contains("[mcp_servers.vault]")) && offers.iter().any(|line| line.contains("updates")), "{offers:?}");
+        assert!(!lab.dir.join("codex/rules").exists() && !std::fs::read_to_string(lab.dir.join("codex/config.toml")).unwrap().contains("mcp_servers"), "naming them writes nothing");
     }
 
     #[test]
@@ -1448,11 +2130,11 @@ mod tests {
         let lab = Lab::new("guide-open");
         let mut guide = Guide::new(Facts::read(&lab.env()), Step::Vault);
         assert_eq!(guide.step, Step::Vault);
-        assert!(screen(&guide).contains("▸ 5 Vault"));
+        assert!(screen(&guide).contains("▸ 6 Vault"), "{}", screen(&guide));
         guide.go(Step::Review);
         guide.applied = Some(vec![("link".to_string(), Outcome::new("done", "~/.local/bin/kebbie"))]);
         let shown = screen(&guide);
-        assert!(shown.contains("done     link      ~/.local/bin/kebbie") && shown.contains("to do    plugin") && shown.contains("applying…") && !shown.contains("Your board on your phone"), "{shown}");
+        assert!(shown.contains("done     link       ~/.local/bin/kebbie") && shown.contains("to do    plugin ") && shown.contains("applying…") && !shown.contains("Your board on your phone"), "{shown}");
         assert!(matches!(guide.key(KeyEvent::from(KeyCode::Char('h'))), Next::Stay), "keys wait while it applies");
     }
 
@@ -1475,6 +2157,7 @@ mod tests {
         ]);
         let ok: Vec<crate::doctor::Check> = (0..36).map(|at| check(crate::doctor::Level::Ok, &format!("check {at}"), "fine", &[])).collect();
         guide.ending = ending(Some(Login::Out), &ok, "/bin/zsh");
+        guide.done = true;
         guide
     }
 

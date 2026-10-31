@@ -200,7 +200,10 @@ fn setup_codex_rewrites_a_stale_plugin_at_once_and_doctor_then_reports_it_ok() {
     assert!(stale.contains("out of date (bin/kebbie-hook)"), "{stale}");
     let repaired = run(&["setup", "codex"]);
     assert!(repaired.status.success(), "{}", stderr(&repaired));
-    assert_eq!(stdout(&repaired).trim_end(), "kebbie's Codex plugin updated: bin/kebbie-hook", "one line, no prompt and no guide");
+    let said = stdout(&repaired);
+    assert_eq!(said.lines().next(), Some("kebbie's Codex plugin updated: bin/kebbie-hook"), "the plugin's line first, no prompt and no guide: {said}");
+    assert!(said.contains("kebbie setup codex in a terminal also offers, each on your choice:") && said.contains("rules/kebbie.rules") && said.contains("update.agents"), "what else the guide offers, written nowhere: {said}");
+    assert!(!codex_home.join("rules").exists(), "{said}");
     let fixed = plugin_line(&stdout(&run(&["doctor"])));
     assert!(fixed.starts_with("ok") && fixed.contains("kebbie's plugin at "), "{fixed}");
     assert!(stdout(&run(&["setup", "codex"])).starts_with("kebbie's Codex plugin is up to date at "));
