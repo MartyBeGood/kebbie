@@ -21,7 +21,7 @@ pub fn fix_message(comment: &Comment) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Reopen {
     Tell { address: String, text: String },
-    Start { repo: PathBuf, name: String, prompt: String },
+    Start { repo: PathBuf, name: String, prompt: String, recipe: String },
 }
 
 // The task that pushed is still the one under its address: a later task by the same name never gets an ended one's comment.
@@ -71,7 +71,7 @@ pub fn reopen(comment: &Comment, words: Option<&str>, log: &[Message], running: 
     }
     let name = followup_name(if comment.task.is_empty() { "comment" } else { &comment.task }, running);
     let prompt = format!("A follow-up to the task {}, which pushed {} and has ended.\n{text}", if comment.task.is_empty() { "that pushed it" } else { &comment.task }, comment.short());
-    Ok(Reopen::Start { repo: comment.repo.clone(), name, prompt })
+    Ok(Reopen::Start { repo: comment.repo.clone(), name, prompt, recipe: format!("follow-up: {}'s comment on {}", comment.author, comment.short()) })
 }
 
 pub fn tell(reopen: &Reopen) -> Result<()> {
@@ -124,7 +124,8 @@ mod tests {
         }
         let ended = crate::messages::fold(r#"{"id":"e","at":5,"from":"kebbie","to":"refunds-in-part@app","text":"refunds-in-part ended (done)","state":"ended"}"#);
         let started = reopen(&read, None, &ended, &running).unwrap();
-        assert!(matches!(&started, Reopen::Start { name, repo, prompt } if name == "refunds-in-part-followup" && repo == Path::new("/src/app") && prompt.starts_with("A follow-up to the task refunds-in-part, which pushed 3f2a9c1 and has ended.") && prompt.contains("Addresses johan's comment on 3f2a9c1.")), "a later task by the same name never gets it: {started:?}");
+        assert!(matches!(&started, Reopen::Start { recipe, .. } if crate::recipe::parse(recipe).unwrap() == ("follow-up".to_string(), "johan's comment on 3f2a9c1".to_string())), "the follow-up start names its recipe: {started:?}");
+        assert!(matches!(&started, Reopen::Start { name, repo, prompt, .. } if name == "refunds-in-part-followup" && repo == Path::new("/src/app") && prompt.starts_with("A follow-up to the task refunds-in-part, which pushed 3f2a9c1 and has ended.") && prompt.contains("Addresses johan's comment on 3f2a9c1.")), "a later task by the same name never gets it: {started:?}");
         let gone = |name: &str| name == "refunds-in-part-followup";
         assert!(matches!(reopen(&read, None, &[], &gone).unwrap(), Reopen::Start { name, .. } if name == "refunds-in-part-followup-2"), "a follow-up already running gets a sibling");
         let own = reopen(&read, Some("Use amount_cents, not amount."), &[], &|_| false).unwrap();
@@ -138,7 +139,7 @@ mod tests {
     fn reopening_marks_the_card_with_the_task_that_fixes_it() {
         let state = crate::sh::test_dir("comments-reopen");
         crate::comments::save(&state, &comment(51, Some(Kind::Holds), Status::Read)).unwrap();
-        let start = Reopen::Start { repo: PathBuf::from("/src/app"), name: "refunds-in-part-followup".to_string(), prompt: String::new() };
+        let start = Reopen::Start { repo: PathBuf::from("/src/app"), name: "refunds-in-part-followup".to_string(), prompt: String::new(), recipe: String::new() };
         let marked = mark_reopened(&state, 51, &start, None, "app").unwrap();
         assert_eq!((marked.status, marked.fixing.as_deref()), (Status::Reopened, Some("refunds-in-part-followup@app")));
         assert_eq!(crate::comments::row_word(&marked), "fixing in refunds-in-part-followup");

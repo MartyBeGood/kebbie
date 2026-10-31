@@ -81,7 +81,7 @@ impl App {
                 let repo = self.any_repo();
                 let prompt = (!text.is_empty()).then_some(text);
                 self.subject = Some(super::notices::Subject { kind: "start".to_string(), title: name.clone(), task: false });
-                self.show(start_in_background(&repo, &name, prompt.as_deref(), None, None, false));
+                self.show(start_in_background(&repo, &name, prompt.as_deref(), None, None, false, None));
             }
             Purpose::BacklogName(_) | Purpose::ClaimedName(_) | Purpose::BacklogLaterAt(..) => {
                 let (entry, name, at, anyway) = match purpose {
@@ -98,7 +98,7 @@ impl App {
                 };
                 self.subject = Some(super::notices::Subject { kind: "start".to_string(), title: name.clone(), task: false });
                 match known.map_or_else(located, Ok) {
-                    Ok(repo) => self.show(start_in_background(&repo, &name, Some(&prompt), Some(&entry.reference), at.as_deref(), anyway)),
+                    Ok(repo) => self.show(start_in_background(&repo, &name, Some(&prompt), Some(&entry.reference), at.as_deref(), anyway, None)),
                     Err(error) => self.show(Err(error)),
                 }
             }
@@ -123,7 +123,8 @@ impl App {
 // The board stays where it is while the task's worktree and Claude come up; the task shows under Work once its Space exists.
 pub(super) const START_AT_LABEL: &str = "Start at: 15:00, tomorrow 09:00, fri 09:00, 24 oct 09:00 or in 2h";
 
-pub(super) fn start_in_background(repo: &Path, name: &str, prompt: Option<&str>, backlog: Option<&str>, at: Option<&str>, anyway: bool) -> Result<String> {
+#[allow(clippy::too_many_arguments)]
+pub(super) fn start_in_background(repo: &Path, name: &str, prompt: Option<&str>, backlog: Option<&str>, at: Option<&str>, anyway: bool, recipe: Option<&str>) -> Result<String> {
     let dir = crate::lead::state_dir()?.join("starts");
     crate::state::private_dir(&dir)?;
     let log = dir.join(format!("{}.log", name.replace('/', "-")));
@@ -139,6 +140,9 @@ pub(super) fn start_in_background(repo: &Path, name: &str, prompt: Option<&str>,
     }
     if anyway {
         command.arg("--anyway");
+    }
+    if let Some(recipe) = recipe {
+        command.args(["--recipe", recipe]);
     }
     if let Some(prompt) = prompt {
         command.arg(prompt);

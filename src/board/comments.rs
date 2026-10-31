@@ -43,7 +43,7 @@ pub(super) fn default_copier() -> Copier {
 pub(super) fn default_reopener() -> Reopener {
     Arc::new(|reopen| match reopen {
         Reopen::Tell { address, .. } => comments::tell(reopen).map(|_| Notice::new(Tone::Moving, format!("Told {address} to fix it")).next("The card turns to its reply once the fix is pushed.").to_string()),
-        Reopen::Start { repo, name, prompt } => super::input::start_in_background(repo, name, Some(prompt), None, None, false),
+        Reopen::Start { repo, name, prompt, recipe } => super::input::start_in_background(repo, name, Some(prompt), None, None, false, Some(recipe)),
     })
 }
 
