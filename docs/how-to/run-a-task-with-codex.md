@@ -147,7 +147,7 @@ With `task.sandbox` on, the default, a Codex task runs in Codex's sandbox under 
 
 kebbie's own commands, `kebbie tell` and `kebbie report` among them, still ask for approval: they write kebbie's state outside the worktree and reach herdr's socket. kebbie keeps its state out of the sandbox's reach on purpose, so a task can't write it directly.
 
-With `task.sandbox` off, Claude runs unsandboxed, and Codex runs in the sandbox your own Codex config picks. Under `workspace-write`, kebbie adds what a commit writes in `.git` to your own `sandbox_workspace_write.writable_roots` and turns on its network, so a commit or `npm ci` runs without asking.
+With `task.sandbox` off, Claude runs unsandboxed, and Codex runs in the sandbox your own Codex config picks. Under `workspace-write`, kebbie adds kebbie's sandbox folders (`~/.cargo/registry`, `~/.npm`, `~/.cache` and the rest, or a profile's `allow_write`) and what a commit writes in `.git` to your own `sandbox_workspace_write.writable_roots` and turns on its network, so a commit or `npm ci` runs without asking.
 
 kebbie's rules file, from the Approvals step of `kebbie setup codex`, lets kebbie's own task commands through without asking. Without it, each approval reaches you and the lead, as under [Approvals and choices](#approvals-and-choices), and the lead recommends `p`, `Yes, and don't ask again for commands that start with …`, for kebbie's commands: Codex itself adds the rule to `~/.codex/rules/default.rules`, and every later Codex session, your own included, runs that command outside its sandbox without asking. `kebbie push`, `approve` and `review` still ask, and kebbie refuses them to a task anyway.
 

@@ -319,8 +319,9 @@ fn git_run_as_user(tmp: Option<&Path>) -> Vec<PathBuf> {
 }
 
 // Codex keeps a worktree's git dir read-only unless it is itself a writable root, and a -c list replaces the user's own roots.
-fn unsandboxed_args(tmp: Option<&Path>, user_roots: &[String]) -> Vec<String> {
-    let roots: Vec<String> = user_roots.iter().cloned().chain(commit_roots(tmp).iter().map(|root| root.to_string_lossy().to_string())).map(|root| toml_string(&root)).collect();
+fn unsandboxed_args(policy: &crate::sandbox::Policy, tmp: Option<&Path>, user_roots: &[String]) -> Vec<String> {
+    let caches = policy.writes().into_iter().filter_map(|path| crate::config::skill_path(&path)).map(|path| path.to_string_lossy().to_string());
+    let roots: Vec<String> = user_roots.iter().cloned().chain(caches).chain(commit_roots(tmp).iter().map(|root| root.to_string_lossy().to_string())).map(|root| toml_string(&root)).collect();
     let mut args = Vec::new();
     if !roots.is_empty() {
         args.extend(["-c".to_string(), format!("sandbox_workspace_write.writable_roots=[{}]", roots.join(","))]);
@@ -344,7 +345,7 @@ fn permission_profile(policy: &crate::sandbox::Policy, tmp: Option<&Path>, mac: 
 fn sandbox_args(mode: Option<&str>, profile: &Profile, sandboxed: bool, tmp: Option<&Path>, user_roots: &[String]) -> Vec<String> {
     match (mode, sandboxed) {
         (Some("plan"), _) | (Some("bypassPermissions"), false) => Vec::new(),
-        (_, false) => unsandboxed_args(tmp, user_roots),
+        (_, false) => unsandboxed_args(&profile.sandbox, tmp, user_roots),
         (_, true) => ["-c".to_string(), format!("default_permissions={}", toml_string(PERMISSIONS)), "-c".to_string(), permission_profile(&profile.sandbox, tmp, cfg!(target_os = "macos")), "-c".to_string(), "features.network_proxy=true".to_string()].to_vec(),
     }
 }
@@ -1001,11 +1002,21 @@ mod tests {
         let args = start_args(None, &profile(None, None), &files(false, Some(Path::new(TMP)), &["~/code".to_string()]), &Session::New("x".to_string()));
         let [roots] = value_of(&args, "sandbox_workspace_write.writable_roots")[..] else { panic!("one list: {args:?}") };
         let roots: Vec<String> = toml_value(roots).as_array().unwrap().iter().map(|root| root.as_str().unwrap().to_string()).collect();
-        assert_eq!(roots, ["~/code", "/src/app/.git/objects", "/src/app/.git/refs", "/src/app/.git/logs", "/src/app/.git/worktrees/1"], "the user's own roots stay, as a -c list replaces them");
+        let home = std::env::var("HOME").unwrap();
+        let caches: Vec<String> = [".cargo/registry", ".cargo/git", ".npm", ".cache"].iter().map(|cache| format!("{home}/{cache}")).collect();
+        let commits = ["/src/app/.git/objects", "/src/app/.git/refs", "/src/app/.git/logs", "/src/app/.git/worktrees/1"].map(str::to_string);
+        let wanted: Vec<String> = std::iter::once("~/code".to_string()).chain(caches.iter().cloned()).chain(commits.iter().cloned()).collect();
+        assert_eq!(roots, wanted, "the user's own roots stay, as a -c list replaces them, and the package caches open as with the sandbox on");
         assert_eq!(value_of(&args, "sandbox_workspace_write.network_access"), ["true"], "Claude runs unsandboxed here, network and all");
         assert!(after(&args, "--sandbox").is_empty() && value_of(&args, "default_permissions").is_empty(), "the user's own sandbox mode decides: {args:?}");
         let main = start_args(None, &profile(None, None), &files(false, Some(Path::new("/src/app/.git/kebbie-tmp")), &[]), &Session::New("x".to_string()));
-        assert_eq!(toml_value(value_of(&main, "sandbox_workspace_write.writable_roots")[0]).as_array().unwrap().len(), 3, "a main checkout's git dir is the common dir");
+        assert_eq!(toml_value(value_of(&main, "sandbox_workspace_write.writable_roots")[0]).as_array().unwrap().len(), 4 + 3, "a main checkout's git dir is the common dir");
+        let mut own = profile(None, None);
+        own.sandbox.writes = Some(["~/.gradle", "/opt/build", "relative/dir"].map(str::to_string).to_vec());
+        let configured = start_args(None, &own, &files(false, Some(Path::new(TMP)), &[]), &Session::New("x".to_string()));
+        let roots: Vec<String> = toml_value(value_of(&configured, "sandbox_workspace_write.writable_roots")[0]).as_array().unwrap().iter().map(|root| root.as_str().unwrap().to_string()).collect();
+        let wanted: Vec<String> = [format!("{home}/.gradle"), "/opt/build".to_string()].into_iter().chain(commits.iter().cloned()).collect();
+        assert_eq!(roots, wanted, "a profile's own allow_write replaces the caches, ~/ expanded and a relative path left out");
         for mode in ["plan", "bypassPermissions"] {
             let args = start_args(Some(mode), &profile(None, None), &files(false, Some(Path::new(TMP)), &[]), &Session::New("x".to_string()));
             assert!(!args.iter().any(|word| word.starts_with("sandbox_workspace_write") || word.starts_with("default_permissions")), "{mode}: {args:?}");
