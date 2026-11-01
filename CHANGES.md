@@ -121,7 +121,6 @@ What each kebbie release brings, one line per change, as you would tell someone 
 - Messages to the lead, kebbie's notices and desktop notifications name a task the way the board does, by its title with its name
 - kebbie tells the lead live only what asks it to act; a passed review, a task started, pushed or closed, and a rebase or red CI the task resolves itself come with your next prompt to the lead, grouped by task
 - While you talk with the lead, what asks it to act waits, and goes as one message grouped by task once you have been quiet for 3 minutes and the lead is idle; a prompt on a task's screen comes first, and in away mode nothing waits
-- kebbie doctor lists worktrees and open tasks left from kelpie, and kebbie doctor --fix installs kebbie's push block where kelpie's was
 - With [report] inbox_token set, an error signal at least three installs report for the same version, component and kind on one UTC day becomes one kebbie bug, such as "board.render: panic in 0.28.0 (4 installs on 2026-10-28)"; later days update that bug, and a new version opens its own
 - A bug report or signal the inbox files adds one line under messages on the board, "New bug report: <title>", and leaves the lead alone
 - Once a day kebbie sends its maintainers an install signal, so they can count active installs per version and OS: a random id made for this install, kebbie's version, the OS and architecture and the update channel, and nothing else; [report] signals = false turns it off with the error signals
@@ -134,12 +133,8 @@ What each kebbie release brings, one line per change, as you would tell someone 
 - c in the review split's diff comments on lines selected with a drag or V
 - A question answered in your own words that asks the task something gets an answer from the task, as a new question on the board, before it writes code
 - prefix+space in a lead Space whose board is not running starts the board, instead of leaving the lead
-- Moving over from kelpie points herdr's sidebar sync and key descriptions at kebbie too, and reloads herdr, so the sidebar runs and prefix+space works without restarting herdr
-- Running the install command again no longer moves kelpie over a second time because of the log the old keeper leaves as it exits
-- Moving over from a kelpie linked from a local checkout unlinks it from herdr and leaves the checkout, so the next install no longer moves kelpie over again
 - A CI run that GitHub cancelled, because a deploy window refused it or a newer push superseded it, is no failure: the task stays under CI running, says which workflow waits for the next run on main, and closes once a later run on main that holds the pushed commit passes
-- A worktree whose push block kelpie installed takes kebbie's own push again: kebbie update and kebbie doctor --fix install kebbie's block there, and a task that starts or restarts in it gets it too
-- A task whose hooks still run kelpie's removed binary restarts once it is idle, with settings that run kebbie, so its test runs and its vault gate work again; kebbie restart says what it restarted each session for
+- A task whose hooks run a kebbie binary that is gone restarts once it is idle, with settings that run kebbie, so its test runs and its vault gate work again; kebbie restart says what it restarted each session for
 - A task that follows main is not rebased while it waits on you, with an open question or under Needs you, and follows again once it moves on
 - A task's git push to a local path or a file:// URL, such as a repo a test makes, goes through; every network URL stays blocked
 - A task's git push to a host:path URL such as git@github.com:acme/app.git fails at once, as every other network URL does, instead of starting ssh to a host named kebbie-blocks-push; kebbie update renews the block in every pooled worktree
@@ -153,7 +148,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 ## 0.28.1
 
 ### What's new
-- The install command says what it installs, from which tag and commit, and what it changes, then asks once; kelpie is only moved over after that yes, and herdr's own listing shows only when the install fails
+- The install command says what it installs, from which tag and commit, and what it changes, then asks once, and herdr's own listing shows only when the install fails
 - kebbie setup has no hub step and never touches the hub; once it is done, a machine that is not connected gets a box offering the board on your phone: h connects now, any other key closes, and kebbie hub connect or H on the board connects later
 - kebbie setup fixes the kebbie doctor warnings it can as rows of its review, shown before ⏎ like every other: kebbie's statusLine in Claude Code, the keeper and kebbie's herdr plugin; it ends with the doctor's count and next steps of a command and why each, and a warning that needs your choice is one line to kebbie doctor
 - kebbie setup's review says each line in a few words, such as ~/.local/bin/kebbie or prefix+f added, herdr reloaded
@@ -164,7 +159,6 @@ What each kebbie release brings, one line per change, as you would tell someone 
 ## 0.28.0
 
 ### What's new
-- Coming from kelpie: the install command moves your settings, state and herdr keys over to kebbie and removes kelpie's plugins from herdr and Claude Code
 - kebbie setup is a guide of eight steps, one box each with the steps on the left: this machine's name, the agents (Claude Code, and Codex on or off), herdr's keys, the backlog's sources, the vault (a folder or an S3 bucket, configured for you with nothing to paste), the hub (straight to its connect card) and error signals, then a list of everything it will write or run, applied on ⏎ line by line, and next steps: what is still yours to do, each with its command or key, such as codex login, kebbie hub connect or a kebbie doctor fix; nothing is written before that, s skips a step, ← goes back and esc quits
 - Run again, kebbie setup starts from this machine's values and marks what is already in place; kebbie setup --yes takes the defaults without asking, for scripts, and kebbie setup vault and kebbie setup codex open the guide at their step
 - A herdr key you already use for something else is named in the setup guide, with a free key offered for kebbie's

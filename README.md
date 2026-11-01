@@ -47,8 +47,6 @@ The script checks those tools, installs the latest release as a herdr plugin wit
 
 Installing from herdr's plugin list instead? `herdr plugin install gronare/kebbie` builds the default branch with `cargo`, so it needs Rust, and runs no setup: the first board you open starts the setup guide, and the next `kebbie update` moves you to the latest release.
 
-Coming from kelpie, kebbie's earlier name? Run the same command: it moves your settings, state and herdr keys over to kebbie and removes the old plugin first.
-
 Press `prefix+space` and tell the lead what you want done. [Your first task](docs/tutorial.md) walks through it step by step.
 
 ## Documentation
