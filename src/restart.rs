@@ -127,13 +127,12 @@ fn program(command: &str) -> String {
     }
 }
 
-// The kebbie a settings file's hooks run that is no kebbie on this machine, as the kelpie binary the rename removed, so evidence and gate hooks fail without a word.
+// The kebbie a settings file's hooks run that is no file on this machine, so evidence and gate hooks fail without a word.
 pub fn gone_hooks(settings: &Value) -> Vec<String> {
     let commands = settings["hooks"].as_object().into_iter().flatten().flat_map(|(_, entries)| entries.as_array().into_iter().flatten())
         .flat_map(|entry| entry["hooks"].as_array().into_iter().flatten()).filter_map(|hook| hook["command"].as_str());
     let mut gone: Vec<String> = commands.map(program).filter(|program| {
-        let name = base(program);
-        (name == "kelpie" || name == "kebbie") && (name == "kelpie" || !Path::new(program).is_file())
+        base(program) == "kebbie" && !Path::new(program).is_file()
     }).collect();
     gone.sort();
     gone.dedup();
@@ -1028,12 +1027,10 @@ mod tests {
         crate::executable::write(&kebbie, "#!/bin/sh\n").unwrap();
         let written = |program: &str| serde_json::from_str::<Value>(&crate::agent::claude::settings(program, "billing@app", Some("billing@app"), None, None)).unwrap();
         assert!(gone_hooks(&written(&kebbie.to_string_lossy())).is_empty());
-        let kelpie = "/home/u/.local/share/kelpie/current/target/release/kelpie";
-        assert_eq!(gone_hooks(&written(kelpie)), [kelpie], "kelpie's binary is gone after the rename, so its evidence and gate hooks fail silently");
         let missing = dir.join("gone/kebbie");
-        assert_eq!(gone_hooks(&written(&missing.to_string_lossy())), [missing.to_string_lossy().to_string()]);
+        assert_eq!(gone_hooks(&written(&missing.to_string_lossy())), [missing.to_string_lossy().to_string()], "a kebbie binary that is gone fails its evidence and gate hooks silently");
         let file = dir.join("billing@app.settings.json");
-        std::fs::write(&file, written(kelpie).to_string()).unwrap();
+        std::fs::write(&file, written(&missing.to_string_lossy()).to_string()).unwrap();
         let argv = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
         assert!(hooks_gone_in(&argv(&["claude", "--settings", &file.to_string_lossy(), "--resume", "x"])));
         assert!(hooks_gone_in(&argv(&["claude", &format!("--settings={}", file.display())])));

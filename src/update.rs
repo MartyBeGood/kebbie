@@ -194,7 +194,7 @@ fn finish_in(claude_dir: &Path, state: &Path, tracker: &mut Option<Tracker>) -> 
     let mut lines = vec![claude];
     lines.extend(vault);
     lines.extend(crate::agent::codex::refresh_line(crate::agent::codex::home().as_deref(), &crate::peers::kebbie_command().unwrap_or_default()));
-    lines.extend(crate::push_block::move_from_kelpie(&crate::status::known_repos(&crate::herdr::workspaces().unwrap_or_default(), crate::repo::pooled_checkouts()).into_iter().collect::<Vec<_>>(), state));
+    lines.extend(crate::push_block::renew_old_blocks(&crate::status::known_repos(&crate::herdr::workspaces().unwrap_or_default(), crate::repo::pooled_checkouts()).into_iter().collect::<Vec<_>>(), state));
     step(tracker, progress::RESTART, "Restarting sessions", false);
     update_check::forget(state);
     crate::restart::mark_updated(state, crate::restart::now())?;
@@ -579,10 +579,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_update_moves_kelpies_push_blocks_over_before_it_restarts_the_sessions() {
+    fn an_update_renews_earlier_push_blocks_before_it_restarts_the_sessions() {
         let source = include_str!("update.rs");
         let finish = &source[source.find("\nfn finish_in(").unwrap()..];
-        assert!(finish.find("move_from_kelpie(").unwrap() < finish.find("restart::run_counted(").unwrap());
+        assert!(finish.find("renew_old_blocks(").unwrap() < finish.find("restart::run_counted(").unwrap());
     }
     use serde_json::json;
 

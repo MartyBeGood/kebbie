@@ -1456,8 +1456,8 @@ fn the_lead_spaces_tab_is_named_kebbie_unless_you_named_it() {
 
     let synced = lab.root.join("xdg-state/herdr-sync");
     fs::create_dir_all(&synced).unwrap();
-    fs::write(synced.join("w_lead_t1"), "✻ kelpie\n").unwrap();
-    for (label, renamed) in [("✻ kelpie", true), ("kebbie", false), ("my lead", false)] {
+    fs::write(synced.join("w_lead_t1"), "✻ lead\n").unwrap();
+    for (label, renamed) in [("✻ lead", true), ("kebbie", false), ("my lead", false)] {
         lead_at_shell(&lab, false);
         tab_named(&lab, label);
         let went = lab.command().env("KEBBIE_LEAD_DIR", &dir).env("CLAUDE_CONFIG_DIR", &claude).env("XDG_STATE_HOME", lab.root.join("xdg-state")).args(["lead"]).output().unwrap();

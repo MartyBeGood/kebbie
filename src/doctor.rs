@@ -456,22 +456,12 @@ pub fn push_block(repo: &Path) -> Check {
     }
 }
 
-// What a machine keeps from before kelpie became kebbie: worktrees whose push block refuses kebbie's own push, and task sessions whose hooks run kelpie's removed binary.
-pub fn kelpie_leftovers(worktrees: &[PathBuf], sessions: &[String]) -> Check {
-    if worktrees.is_empty() && sessions.is_empty() {
-        return ok("kelpie leftovers", "no worktree or task settings name kelpie");
+// Task sessions whose hooks run a kebbie binary that is gone, so their test runs and edits go unrecorded.
+pub fn task_hooks(sessions: &[String]) -> Check {
+    if sessions.is_empty() {
+        return ok("task hooks", "every open task's hooks run a kebbie that is there");
     }
-    let mut facts = Vec::new();
-    let mut fix = Vec::new();
-    if !worktrees.is_empty() {
-        facts.push(format!("{} still {} kelpie's push block, which refuses kebbie's own push ({})", if worktrees.len() == 1 { "1 worktree".to_string() } else { format!("{} worktrees", worktrees.len()) }, if worktrees.len() == 1 { "has" } else { "have" }, worktrees.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(", ")));
-        fix.push("kebbie doctor --fix".to_string());
-    }
-    if !sessions.is_empty() {
-        facts.push(format!("the hooks of {} run a kebbie that is gone, so their test runs and edits go unrecorded", sessions.join(", ")));
-        fix.push("kebbie restart (a busy session restarts once it is idle; the restart writes its settings again)".to_string());
-    }
-    warn("kelpie leftovers", facts.join("; "), fix)
+    warn("task hooks", format!("the hooks of {} run a kebbie that is gone, so their test runs and edits go unrecorded", sessions.join(", ")), one("kebbie restart (a busy session restarts once it is idle; the restart writes its settings again)"))
 }
 
 // The open tasks and the lead whose settings file names hooks that no longer run.
@@ -496,9 +486,8 @@ fn known_repos() -> Vec<PathBuf> {
 // kebbie doctor --fix: what the doctor can mend by itself before it checks.
 pub fn fix(state: &Path) -> Vec<String> {
     let mut lines = crate::herdr_link::heal().unwrap_or_else(|error| vec![error]);
-    let moved = crate::push_block::move_from_kelpie(&known_repos(), state);
-    lines.extend(moved);
-    if lines.is_empty() { vec!["Nothing to fix: herdr's kebbie folder is there and no worktree has kelpie's push block.".to_string()] } else { lines }
+    lines.extend(crate::push_block::renew_old_blocks(&known_repos(), state));
+    if lines.is_empty() { vec!["Nothing to fix: herdr's kebbie folder is there and no worktree has an earlier push block.".to_string()] } else { lines }
 }
 
 pub const GH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -826,7 +815,7 @@ pub fn checks(env: &Env) -> Vec<Check> {
     checks.extend(config::resolve(env.repo.as_deref()).ok().and_then(|loaded| crate::review::doctor(&env.profiles_dir, &loaded.settings)).map(|wrong| warn("reviewer", format!("kebbie review refuses: {wrong}"), one("pick a review profile for review.profile and review.second on the Settings page (,)"))));
     checks.extend(env.repo.as_deref().map(push_block));
     let repos = known_repos();
-    checks.push(kelpie_leftovers(&crate::push_block::kelpie_era_worktrees(&repos), &sessions_with_gone_hooks(&env.kebbie_state.join("roles"), &open_addresses(&repos))));
+    checks.push(task_hooks(&sessions_with_gone_hooks(&env.kebbie_state.join("roles"), &open_addresses(&repos))));
     let (Some(machine), Some(own)) = (machine, own) else {
         return checks;
     };
@@ -889,15 +878,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kelpie_leftovers_name_the_worktrees_and_sessions_and_how_to_mend_them() {
-        assert_eq!(kelpie_leftovers(&[], &[]).level, Level::Ok);
-        let found = kelpie_leftovers(&[PathBuf::from("/src/wt1.app")], &["billing@app".to_string()]);
+    fn task_hooks_name_the_sessions_whose_kebbie_is_gone_and_how_to_mend_them() {
+        assert_eq!(task_hooks(&[]).level, Level::Ok);
+        let found = task_hooks(&["billing@app".to_string()]);
         assert_eq!(found.level, Level::Warn);
-        assert!(found.fact.contains("1 worktree still has kelpie's push block") && found.fact.contains("/src/wt1.app") && found.fact.contains("the hooks of billing@app run a kebbie that is gone"), "{}", found.fact);
-        assert_eq!(found.fix[0], "kebbie doctor --fix");
-        assert!(found.fix[1].starts_with("kebbie restart"));
+        assert!(found.fact.contains("the hooks of billing@app run a kebbie that is gone"), "{}", found.fact);
+        assert!(found.fix[0].starts_with("kebbie restart"));
         let roles = crate::sh::test_dir("doctor-gone-hooks");
-        std::fs::write(roles.join("billing@app.settings.json"), crate::agent::claude::settings("/home/u/.local/share/kelpie/current/target/release/kelpie", "billing@app", None, None, None)).unwrap();
+        std::fs::write(roles.join("billing@app.settings.json"), crate::agent::claude::settings("/home/u/.local/share/kebbie/gone/target/release/kebbie", "billing@app", None, None, None)).unwrap();
         let kebbie = roles.join("kebbie");
         crate::executable::write(&kebbie, "#!/bin/sh\n").unwrap();
         std::fs::write(roles.join("search@app.settings.json"), crate::agent::claude::settings(&kebbie.to_string_lossy(), "search@app", None, None, None)).unwrap();
@@ -1050,8 +1038,8 @@ mod tests {
     #[test]
     fn a_herdr_link_to_a_missing_folder_fails_with_the_relink_and_a_healthy_one_is_ok() {
         use crate::herdr_link::Link;
-        let gone = herdr_link(&Link::Gone { linked: PathBuf::from("/home/me/projects/kelpie"), target: Some(PathBuf::from("/home/me/projects/kebbie")) }).unwrap();
-        assert_eq!((gone.level, gone.name.as_str(), gone.fact.as_str()), (Level::Fail, "herdr link", "herdr links kebbie from /home/me/projects/kelpie, which is gone, so its startup starts neither the board nor the keeper"));
+        let gone = herdr_link(&Link::Gone { linked: PathBuf::from("/home/me/projects/kebbie-old"), target: Some(PathBuf::from("/home/me/projects/kebbie")) }).unwrap();
+        assert_eq!((gone.level, gone.name.as_str(), gone.fact.as_str()), (Level::Fail, "herdr link", "herdr links kebbie from /home/me/projects/kebbie-old, which is gone, so its startup starts neither the board nor the keeper"));
         assert_eq!(gone.fix, ["kebbie doctor --fix links it again from /home/me/projects/kebbie and starts both; a running keeper does it within the hour", "or herdr plugin unlink kebbie && herdr plugin link /home/me/projects/kebbie"]);
         let nowhere = herdr_link(&Link::Gone { linked: PathBuf::from("/k"), target: None }).unwrap();
         assert!(nowhere.level == Level::Fail && nowhere.fact.contains("no kebbie checkout is found"), "{}", nowhere.fact);

@@ -40,61 +40,9 @@ commit=$(git ls-remote "https://github.com/$repo" "refs/tags/$tag*" 2>/dev/null 
 
 if (exec </dev/tty) 2>/dev/null; then tty=/dev/tty; else tty=""; fi
 
-installed() { herdr plugin list --json 2>/dev/null | jq -r --arg id "${1:-kebbie}" '.result.plugins[]? | select(.plugin_id == $id) | "\(.source.kind) \(.plugin_root)"' || true; }
+installed() { herdr plugin list --json 2>/dev/null | jq -r --arg id kebbie '.result.plugins[]? | select(.plugin_id == $id) | "\(.source.kind) \(.plugin_root)"' || true; }
 
 state_home=${XDG_STATE_HOME:-$HOME/.local/state}
-config_home=${XDG_CONFIG_HOME:-$HOME/.config}
-herdr_config=${HERDR_CONFIG_PATH:-$config_home/herdr/config.toml}
-
-# The old keeper writes keeper.log as it exits, which recreates its state dir after the move.
-only_logs() { [ -d "$1" ] && [ -z "$(find "$1" -mindepth 1 ! -name '*.log' -print -quit)" ]; }
-leftover() { [ -e "$2" ] && only_logs "$1"; }
-kelpie_lines='command = "kelpie\.|/kelpie/current/|description = "kelpie|# kelpie.s |a kelpie task'
-
-# kebbie's folder gives way only when it holds nothing but logs; otherwise kelpie's is kept beside it, never deleted.
-move_dir() {
-  if [ ! -e "$1" ]; then return 0; fi
-  if leftover "$1" "$2"; then rm -r "$1"; return 0; fi
-  if only_logs "$2"; then rm -r "$2"; fi
-  if [ -e "$2" ]; then
-    backup="$2.kelpie-backup"
-    while [ -e "$backup" ]; do backup="$backup-$$"; done
-    mv "$1" "$backup" && ok "kept kelpie's $(short "$1") as $(short "$backup"); kebbie runs on $(short "$2")"
-    return 0
-  fi
-  mv "$1" "$2" && moved=1
-}
-
-old_plugin=$(installed kelpie)
-left() { [ -e "$1" ] && ! leftover "$1" "$2"; }
-if [ -n "$old_plugin" ] || left "$config_home/kelpie" "$config_home/kebbie" || left "$state_home/kelpie" "$state_home/kebbie" || { [ -f "$herdr_config" ] && grep -qE "$kelpie_lines" "$herdr_config"; }; then had_kelpie=1; else had_kelpie=""; fi
-
-move_from_kelpie() {
-  [ -n "$had_kelpie" ] || return 0
-  heading "Moving kelpie over to kebbie"
-  moved=""; removed=""
-  move_dir "$config_home/kelpie" "$config_home/kebbie"
-  move_dir "$state_home/kelpie" "$state_home/kebbie"
-  [ -z "$moved" ] || ok "settings and state now live under kebbie"
-  if [ -f "$herdr_config" ] && grep -qE "$kelpie_lines" "$herdr_config"; then
-    cp "$herdr_config" "$herdr_config.kelpie-backup"
-    sed -e 's/command = "kelpie\./command = "kebbie./' -e 's#/kelpie/current/#/kebbie/current/#' -e 's/description = "kelpie/description = "kebbie/' -e "s/# kelpie's /# kebbie's /" -e 's/a kelpie task/a kebbie task/' "$herdr_config.kelpie-backup" > "$herdr_config"
-    herdr server reload-config >/dev/null 2>&1 || true
-    ok "herdr keys and sidebar run kebbie   $dim(backup: $(short "$herdr_config").kelpie-backup)$off"
-  fi
-  case "$old_plugin" in
-    local\ *) herdr plugin unlink kelpie >/dev/null 2>&1 && ok "kelpie unlinked from herdr   $dim(its checkout at $(short "${old_plugin#local }") stays)$off" ;;
-    ?*) herdr plugin uninstall kelpie >/dev/null 2>&1 && removed=1 ;;
-  esac
-  if [ -L "$HOME/.local/bin/kelpie" ]; then rm "$HOME/.local/bin/kelpie"; fi
-  old_data="${XDG_DATA_HOME:-$HOME/.local/share}/kelpie"
-  if [ -d "$old_data" ]; then rm -r "$old_data"; fi
-  for id in $(claude plugin list --json 2>/dev/null | jq -r '.[]?.id // empty' | grep '^kelpie@' || true); do
-    claude plugin uninstall "$id" >/dev/null 2>&1 && removed=1
-  done
-  if claude plugin marketplace remove kelpie >/dev/null 2>&1; then removed=1; fi
-  [ -z "$removed" ] || ok "old kelpie plugin removed from herdr and Claude Code"
-}
 
 case "$(installed)" in local\ *) linked=1 ;; *) linked="" ;; esac
 
@@ -104,7 +52,6 @@ if [ -z "$linked" ]; then
   row installs "a herdr plugin with a prebuilt binary"
   row adds "the board and the lead as panes, key actions, and a"
   row "" "start hook that brings the lead back when herdr starts"
-  [ -z "$had_kelpie" ] || row replaces "kelpie, moving its settings, state and herdr keys over"
   row "then" "kebbie setup, which shows everything before it writes"
   row details "github.com/$repo/blob/$tag/herdr-plugin.toml"
   say ""
@@ -115,13 +62,10 @@ if [ -z "$linked" ]; then
   fi
 fi
 
-move_from_kelpie
-
 if [ -n "$linked" ]; then
   heading "kebbie"
   ok "linked from a local checkout, so the install leaves it as it is"
 else
-  [ -z "$had_kelpie" ] || heading "Installing kebbie $version"
   log=$(mktemp)
   if herdr plugin install --yes --ref "$tag" "$repo" >"$log" 2>&1 </dev/null; then
     rm -f "$log"; ok "kebbie $version installed"

@@ -112,9 +112,9 @@ mod tests {
         let state = home.join("state");
         std::fs::create_dir_all(&state).unwrap();
         let current = checkout(&home.join("projects/kebbie"));
-        let mut fake = Fake { list: list("local", &home.join("projects/kelpie")), server: true, calls: Vec::new() };
+        let mut fake = Fake { list: list("local", &home.join("projects/kebbie-old")), server: true, calls: Vec::new() };
         let line = relinked(&mut fake, &state, &home, Some(&current)).unwrap();
-        assert_eq!(line.as_deref(), Some("herdr linked kebbie from ~/projects/kelpie, which is gone; linked it again from ~/projects/kebbie"));
+        assert_eq!(line.as_deref(), Some("herdr linked kebbie from ~/projects/kebbie-old, which is gone; linked it again from ~/projects/kebbie"));
         assert_eq!(fake.calls, ["plugin list --json", "workspace list", "plugin unlink kebbie", &format!("plugin link {}", current.display())]);
         let logged = crate::messages::load_in(&state);
         let said = logged.last().unwrap();
@@ -147,11 +147,11 @@ mod tests {
         let state = home.join("state");
         std::fs::create_dir_all(&state).unwrap();
         let current = checkout(&home.join("kebbie"));
-        let mut fake = Fake { list: list("local", &home.join("kelpie")), server: false, calls: Vec::new() };
+        let mut fake = Fake { list: list("local", &home.join("kebbie-old")), server: false, calls: Vec::new() };
         let error = relinked(&mut fake, &state, &home, Some(&current)).unwrap_err();
         assert!(error.contains("its server does not answer") && error.contains("the next round links it again"), "{error}");
         assert!(!fake.calls.iter().any(|call| call.contains("link kebbie") || call.starts_with("plugin link")), "never unlinked while the server is down: {:?}", fake.calls);
-        let mut fake = Fake { list: list("local", &home.join("kelpie")), server: true, calls: Vec::new() };
+        let mut fake = Fake { list: list("local", &home.join("kebbie-old")), server: true, calls: Vec::new() };
         assert_eq!(relinked(&mut fake, &state, &home, None).unwrap(), None, "with no checkout to link, only the doctor names it");
         assert_eq!(fake.calls, ["plugin list --json"]);
         let _ = std::fs::remove_dir_all(home);

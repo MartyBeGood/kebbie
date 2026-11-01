@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 #[path = "../src/executable.rs"]
@@ -32,16 +32,6 @@ impl Home {
         Home { dir, home }
     }
 
-    fn file(&self, path: &str, text: &str) {
-        let file = self.home.join(path);
-        fs::create_dir_all(file.parent().unwrap()).unwrap();
-        fs::write(file, text).unwrap();
-    }
-
-    fn read(&self, path: &str) -> Option<String> {
-        fs::read_to_string(self.home.join(path)).ok()
-    }
-
     fn install(&self) -> String {
         let output = Command::new("sh").arg(SCRIPT).env_clear().env("HOME", &self.home).env("PATH", format!("{}:/usr/bin:/bin", self.dir.join("bin").display())).env("NO_COLOR", "1").stdin(std::process::Stdio::null()).output().unwrap();
         let said = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
@@ -57,27 +47,8 @@ impl Drop for Home {
 }
 
 #[test]
-fn kelpies_settings_replace_a_kebbie_folder_that_holds_only_logs() {
-    let home = Home::new("logs");
-    home.file(".config/kelpie/config.toml", "kelpie's\n");
-    home.file(".config/kebbie/keeper.log", "log\n");
+fn an_install_links_the_plugin_checkout_as_the_current_kebbie() {
+    let home = Home::new("current");
     home.install();
-    assert_eq!(home.read(".config/kebbie/config.toml").as_deref(), Some("kelpie's\n"));
-    assert!(!home.home.join(".config/kelpie").exists() && !home.home.join(".config/kebbie.kelpie-backup").exists());
-}
-
-#[test]
-fn kelpies_folder_is_kept_as_a_backup_beside_a_kebbie_folder_that_holds_more_than_logs() {
-    let home = Home::new("both");
-    home.file(".config/kelpie/config.toml", "kelpie's\n");
-    home.file(".config/kebbie/config.toml", "kebbie's\n");
-    home.file(".local/state/kelpie/tasks.json", "kelpie's tasks\n");
-    home.file(".local/state/kebbie/notes/billing@app.md", "kebbie's note\n");
-    let said = home.install();
-    assert_eq!(home.read(".config/kebbie/config.toml").as_deref(), Some("kebbie's\n"), "kebbie's own settings stay");
-    assert_eq!(home.read(".config/kebbie.kelpie-backup/config.toml").as_deref(), Some("kelpie's\n"), "{said}");
-    assert_eq!(home.read(".local/state/kebbie/notes/billing@app.md").as_deref(), Some("kebbie's note\n"));
-    assert_eq!(home.read(".local/state/kebbie.kelpie-backup/tasks.json").as_deref(), Some("kelpie's tasks\n"), "nothing of kelpie's is deleted");
-    assert!(!home.home.join(".config/kelpie").exists() && said.contains("kept kelpie's ~/.config/kelpie as ~/.config/kebbie.kelpie-backup"), "{said}");
-    assert!(Path::new(&home.home.join(".local/share/kebbie/current")).exists());
+    assert!(home.home.join(".local/share/kebbie/current/target/release/kebbie").exists());
 }

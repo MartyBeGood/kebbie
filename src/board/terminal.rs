@@ -114,7 +114,7 @@ mod tests {
     fn a_renewed_board_paints_over_the_shell_left_on_the_screen() {
         use ratatui::backend::TestBackend;
         use ratatui::widgets::Paragraph;
-        let shell = ["lead 5m41s ❯ kelpie", "board ❯ kelpie boar", "~ ❯ ls -la /Users/g"];
+        let shell = ["lead 5m41s ❯ kebbie", "board ❯ kebbie boar", "~ ❯ ls -la /Users/g"];
         let mut terminal = repaint_all(Terminal::new(TestBackend::with_lines(shell)).unwrap());
         terminal.draw(|frame| frame.render_widget(Paragraph::new("Work"), frame.area())).unwrap();
         terminal.backend().assert_buffer_lines(["Work               ", "                   ", "                   "]);

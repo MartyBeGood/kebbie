@@ -320,10 +320,10 @@ mod tests {
     #[test]
     fn only_a_tab_label_herdr_the_sync_or_an_earlier_kebbie_gave_is_renamed() {
         assert!(automatic_label("2", None, &[]), "herdr's number for an unnamed tab");
-        assert!(automatic_label("✻ kelpie", Some("✻ kelpie"), &[]), "the last name the sidebar sync gave it");
+        assert!(automatic_label("✻ lead", Some("✻ lead"), &[]), "the last name the sidebar sync gave it");
         assert!(automatic_label("claude", None, &["claude", "codex"]), "the agent's name an earlier kebbie gave a task's tab");
-        assert!(!automatic_label("notes", Some("✻ kelpie"), &["claude"]), "a name the user typed stays");
-        assert!(!automatic_label("✻ kelpie", None, &[]), "without the sync's record a name is the user's");
+        assert!(!automatic_label("notes", Some("✻ lead"), &["claude"]), "a name the user typed stays");
+        assert!(!automatic_label("✻ lead", None, &[]), "without the sync's record a name is the user's");
     }
 
     #[test]
