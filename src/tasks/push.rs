@@ -96,9 +96,10 @@ fn update_in(path: &Path, upstream: &str, options: &[&str], from: Option<&str>) 
     match git_writing(path, &[options, &rebase].concat()) {
         Ok(_) if touched.is_empty() => Ok(Updated::Clean),
         Ok(_) => Ok(Updated::Overlap(touched)),
-        Err(_) if rebase_in_progress(path) => {
+        Err(error) if rebase_in_progress(path) => {
+            let unmerged = git(path, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
             git_writing(path, &[options, &["rebase", "--abort"]].concat())?;
-            Ok(Updated::Conflict)
+            if unmerged.is_empty() { Err(refused(path, upstream, &error)) } else { Ok(Updated::Conflict) }
         }
         Err(error) => Err(refused(path, upstream, &error)),
     }
@@ -119,7 +120,7 @@ fn rebased_elsewhere(path: &Path, from: &str, sha: &str, upstream: &str) -> Resu
 }
 
 fn refused(path: &Path, upstream: &str, error: &str) -> String {
-    let said = Notice::new(Tone::Failed, format!("git would not start the rebase onto {}", main_of(upstream))).detail("folder", path.display().to_string()).detail("error", error);
+    let said = Notice::new(Tone::Failed, format!("git would not rebase it onto {}", main_of(upstream))).detail("folder", path.display().to_string()).detail("error", error);
     match hidden_from_status(path) {
         Ok(hidden) if !hidden.is_empty() => said
             .you("Unhide the files below with git update-index --no-skip-worktree or --no-assume-unchanged, commit or stash them, then try again.")
@@ -1089,6 +1090,18 @@ mod tests {
         assert!(refused.contains("would be overwritten") || refused.contains("overwritten"), "git's own reason: {refused}");
         assert!(refused.contains("skip-worktree") && refused.contains("hidden: a ("), "{refused}");
         assert!(!refused.contains("no rebase in progress") && !rebase_in_progress(&slot.path), "{refused}");
+        cleanup(dir, origin, &slot);
+    }
+
+    #[test]
+    fn a_rebase_git_stops_without_a_conflicted_file_reports_gits_reason_and_is_no_conflict() {
+        let (dir, origin, slot, upstream) = task_with_a_commit("billing");
+        upstream_commit(&dir, "elsewhere", "x", "someone else's work");
+        let head = git(&slot.path, &["rev-parse", "HEAD"]).unwrap();
+        git(&dir, &["config", "--unset", "user.email"]).unwrap();
+        let refused = update(&slot.path, &upstream).unwrap_err();
+        assert!(refused.contains(&format!("git would not rebase it onto {}", main_of(&upstream))) && refused.contains("no email was given"), "git's own reason: {refused}");
+        assert!(!rebase_in_progress(&slot.path) && git(&slot.path, &["rev-parse", "HEAD"]).unwrap() == head, "the stopped rebase is aborted and leaves the branch as it was");
         cleanup(dir, origin, &slot);
     }
 
