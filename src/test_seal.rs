@@ -7,8 +7,8 @@ const KEPT_PREFIXES: [&str; 3] = ["LC_", "RUST_", "CARGO_"];
 
 static ROOT: OnceLock<PathBuf> = OnceLock::new();
 
-// git's auto maintenance detaches and goes on writing into a repo after the command returns, so a test removing its repos would race it.
-const GIT_CONFIG: &str = "[maintenance]\n\tauto = false\n[receive]\n\tautoGc = false\n";
+// git's auto maintenance detaches and goes on writing into a repo after the command returns, so a test removing its repos would race it; useConfigOnly keeps git from taking an identity from the host name, which a Mac has and a CI runner does not.
+const GIT_CONFIG: &str = "[maintenance]\n\tauto = false\n[receive]\n\tautoGc = false\n[user]\n\tuseConfigOnly = true\n";
 
 // Runs before main, while the test binary has one thread, so no test ever sees the environment it was started in.
 #[used]
@@ -152,7 +152,7 @@ mod tests {
         let found = Command::new("git").args(["rev-parse", "--git-dir"]).current_dir(&dir).output().unwrap();
         assert!(!found.status.success(), "git found a repo above the sealed temp dir: {}", String::from_utf8_lossy(&found.stdout));
         let config = Command::new("git").args(["config", "--list", "--show-origin"]).current_dir(&dir).output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&config.stdout), ["maintenance.auto=false", "receive.autogc=false"].map(|line| format!("file:{}\t{line}\n", root().join("gitconfig").display())).concat(), "git reads no config but the sealed one");
+        assert_eq!(String::from_utf8_lossy(&config.stdout), ["maintenance.auto=false", "receive.autogc=false", "user.useconfigonly=true"].map(|line| format!("file:{}\t{line}\n", root().join("gitconfig").display())).concat(), "git reads no config but the sealed one");
     }
 
     #[test]

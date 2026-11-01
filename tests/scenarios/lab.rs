@@ -104,6 +104,7 @@ impl Lab {
         fs::write(lab.root.join("agents/lead.json"), r#"{"name":"lead","agent":"claude","workspace_id":"w_lead","pane_id":"p_lead","agent_status":"idle","interactive_ready":true}"#).unwrap();
         fs::write(lab.root.join("screens/p_lead"), CLAUDE_SCREEN).unwrap();
         fs::write(&lab.config, "[keeper]\nenabled = false\n").unwrap();
+        fs::write(lab.root.join("gitconfig"), format!("[include]\n\tpath = {}\n[user]\n\tname = Ada\n\temail = ada@example.com\n", crate::test_seal::root().join("gitconfig").display())).unwrap();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         fs::write(lab.state.join("agent-check.json"), format!(r#"{{"checked_at":{now},"findings":[]}}"#)).unwrap();
         fs::write(lab.state.join("update-check.json"), format!(r#"{{"checked_at":{now},"channel":"release","components":[]}}"#)).unwrap();
@@ -143,6 +144,8 @@ impl Lab {
             .env("KEBBIE_GH_BIN", self.root.join("gh"))
             .env("PATH", self.path())
             .env("KEBBIE_CODEX_LATEST", "0.163.0")
+            .env("GIT_CONFIG_GLOBAL", self.root.join("gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .env_remove("CLAUDE_CODE_MESSAGING_SOCKET")
             .env_remove("CLAUDE_CODE_MESSAGING_TOKEN")
             .current_dir(&self.root)
