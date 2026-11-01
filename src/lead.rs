@@ -586,7 +586,7 @@ pub fn renew_board() -> Result<String> {
     if pid == std::process::id() || pid == std::os::unix::process::parent_id() {
         return Ok("board: restarts on the new kebbie once the update's window closes".to_string());
     }
-    let started = crate::restart::started(pid, crate::restart::now()).ok_or("board: cannot read when it started")?;
+    let started = crate::restart::started(pid).ok_or("board: cannot read when it started")?;
     if started > built {
         return Ok("board: up to date".to_string());
     }

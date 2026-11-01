@@ -491,9 +491,10 @@ pub fn agent_process(info: &Value, agent: Agent) -> Option<Process> {
     })
 }
 
-pub(crate) fn started(pid: u32, now: u64) -> Option<u64> {
+// The clock is read after ps answers, so the start is never earlier than the process's own start second.
+pub(crate) fn started(pid: u32) -> Option<u64> {
     let elapsed = sh::run("ps", &["-o", "etime=", "-p", &pid.to_string()], None).ok()?;
-    parse_etime(&elapsed).map(|elapsed| now.saturating_sub(elapsed))
+    parse_etime(&elapsed).map(|elapsed| now().saturating_sub(elapsed))
 }
 
 pub fn now() -> u64 {
@@ -780,7 +781,7 @@ pub fn with_draft(mode: Mode, verdict: Verdict, draft: impl FnOnce() -> Draft) -
 pub fn background_in(pane: &str, session: &str) -> Vec<String> {
     let Some(process) = herdr::process_info(pane).ok().as_ref().and_then(claude_process) else { return Vec::new() };
     let at = now();
-    let Some(start) = started(process.pid, at) else { return Vec::new() };
+    let Some(start) = started(process.pid) else { return Vec::new() };
     let found = crate::agent::claude::home().and_then(|home| transcript(&home, process.cwd.as_deref(), session));
     found.map(|path| Memory::default().background(&path, start, at)).unwrap_or_default()
 }
@@ -862,7 +863,7 @@ pub fn run_counted(mode: Mode, memory: &mut Memory, only: Option<&str>, counted:
             continue;
         };
         live.insert(session.clone(), process.pid);
-        let Some(start) = started(process.pid, at) else {
+        let Some(start) = started(process.pid) else {
             lines.push(line(&Verdict::Skip("its start time cannot be read".to_string())));
             continue;
         };

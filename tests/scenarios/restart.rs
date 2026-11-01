@@ -48,7 +48,8 @@ fn after_a_kebbie_update_restart_resumes_an_idle_claude_task_and_an_idle_codex_t
     let codex = lab.start("filters", "Add the filters", &["--profile", "coder"]);
     with_session(&lab, "search", &claude, false);
     with_session(&lab, "filters", &codex, true);
-    assert!(stdout(&lab.run(&["restart"])).contains("search: up to date"), "nothing to restart before the update");
+    let before = stdout(&lab.run(&["restart"]));
+    assert!(before.contains("search: up to date"), "nothing to restart before the update: {before}");
     kebbie_updated(&lab);
     let said = lab.ok(&["restart"]);
     for task in ["search", "filters"] {
