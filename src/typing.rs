@@ -497,17 +497,34 @@ pub fn check() {
     }
 }
 
+#[derive(Debug, PartialEq)]
+pub enum Unsent {
+    Busy(String),
+    Asks(crate::agent::Started),
+}
+
 // A new Codex's composer can already hold text, and what kebbie pastes would join it, so a start types into Codex only when its composer is empty: Some says why it typed nothing.
-pub fn prompt_into_empty(target: &str, text: &str, label: &str) -> Result<Option<String>> {
+pub fn prompt_into_empty(target: &str, text: &str, label: &str) -> Result<Option<Unsent>> {
     let Place { pane, agent, .. } = place(target);
-    if agent == Agent::Codex {
-        match draft_in(&pane, agent) {
-            Draft::Empty => {}
-            Draft::Typed(held) => return Ok(Some(format!("already holds \"{}\"", held.lines().next().unwrap_or_default().chars().take(60).collect::<String>()))),
-            Draft::Unreadable => return Ok(Some("is not one kebbie can read as empty".to_string())),
-        }
+    if agent == Agent::Codex
+        && let Some(unsent) = unsent_into_codex(&screen(&pane).unwrap_or_default())
+    {
+        return Ok(Some(unsent));
     }
     prompt_confirmed(target, text, label).map(|()| None)
+}
+
+// A start-up question's menu opens its focused option with the same › as the composer, so the question is read before the box.
+fn unsent_into_codex(screen: &str) -> Option<Unsent> {
+    let plain = screen.lines().map(|line| styled(line).text).collect::<Vec<_>>().join("\n");
+    if let Some(asked) = crate::agent::codex::startup_question(&plain) {
+        return Some(Unsent::Asks(asked));
+    }
+    match Agent::Codex.draft(screen) {
+        Draft::Empty => None,
+        Draft::Typed(held) => Some(Unsent::Busy(format!("already holds \"{}\"", held.lines().next().unwrap_or_default().chars().take(60).collect::<String>()))),
+        Draft::Unreadable => Some(Unsent::Busy("is not one kebbie can read as empty".to_string())),
+    }
 }
 
 pub fn prompt_confirmed(target: &str, text: &str, label: &str) -> Result<()> {
@@ -585,6 +602,16 @@ mod tests {
         assert_eq!(draft(&empty), Draft::Empty);
         let boxed = ["╭──────────────────────────────────────╮", "│ ❯ typed in an old box               │", "╰──────────────────────────────────────╯"].join("\n");
         assert_eq!(draft(&boxed), Draft::Typed("typed in an old box".to_string()));
+    }
+
+    const CODEX_TRUST: &str = "  \x1b[1mFolder access\x1b[0m\n\n  You are in /Users/me/src/app\n\n  Trust this folder? Codex can read and edit files here.\n\n\x1b[36m› 1. Trust and continue\x1b[0m\n  2. Quit\n\n  \x1b[2menter continue · esc quit\x1b[0m";
+
+    #[test]
+    fn a_codex_start_up_question_is_reported_as_that_question_and_never_as_text_in_its_composer() {
+        assert_eq!(unsent_into_codex(CODEX_TRUST), Some(Unsent::Asks(crate::agent::Started::AwaitsTrust)), "the trust menu's \"› 1. Trust and continue\" is no draft");
+        assert_eq!(unsent_into_codex("\x1b[1mTrust this folder?\x1b[0m\n› 1. Trust and \x1b[1mcontinue\x1b[0m"), Some(Unsent::Asks(crate::agent::Started::AwaitsTrust)), "styling between the words is dropped before the question is read");
+        assert_eq!(unsent_into_codex("› \x1b[2mAsk Codex to do anything\x1b[0m\n\n  100% context left"), None);
+        assert_eq!(unsent_into_codex("› check the deploy\n\n  100% context left"), Some(Unsent::Busy("already holds \"check the deploy\"".to_string())));
     }
 
     #[test]

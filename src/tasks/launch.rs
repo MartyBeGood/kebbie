@@ -13,6 +13,7 @@ use crate::peers;
 use crate::profiles::{self, Profile};
 use crate::repo::{branch_exists, default_branch, git, git_writing, main_checkout, name_of};
 use crate::sh::Result;
+use crate::typing::Unsent;
 use super::{fetch, slug};
 use super::pool::{Slot, claim_slot, slots};
 use super::started::{read_start, start_entry, started_file};
@@ -717,35 +718,50 @@ impl Asks {
     }
 }
 
-// The prompt goes in as a paste: as an argument, herdr would have to quote it for the shell; type_now says why it typed nothing when the input box is not empty.
-fn send_prompt(name: &str, started: &Started, prompt: Option<&str>, type_now: impl FnOnce(&str) -> Result<Option<String>>, hold: impl FnOnce(&str) -> Result<()>) -> Result<Asks> {
-    let asks = match started {
-        Started::AwaitsTrust => format!("Answer {name}'s question in its Space: whether you trust the repo's folder."),
-        Started::AwaitsBypass => format!("Answer {name}'s question in its Space: whether to accept bypass permissions mode."),
-        Started::AwaitsHooks => format!("Answer {name}'s question in its Space: whether to trust the hooks it found new or changed."),
-        Started::AwaitsSignIn => format!("Answer {name}'s question in its Space: how you sign in, on its welcome screen."),
-        Started::AwaitsModel => format!("Answer {name}'s question in its Space: which model to use, after its notice of a new one."),
-        Started::AwaitsUpdate => format!("Answer {name}'s question in its Space: whether to update it first, on its update screen."),
-        Started::Ready | Started::BypassDisabled => {
-            if let Some(prompt) = prompt
-                && let Some(busy) = type_now(prompt)?
-            {
+// The prompt goes in as a paste: as an argument, herdr would have to quote it for the shell; type_now says why it typed nothing when the input box is not empty or a start-up question stands in front of it.
+fn send_prompt(name: &str, started: &Started, prompt: Option<&str>, type_now: impl FnOnce(&str) -> Result<Option<Unsent>>, hold: impl FnOnce(&str) -> Result<()>) -> Result<Asks> {
+    let found;
+    let started = match started {
+        Started::Ready | Started::BypassDisabled => match prompt.map(type_now).transpose()?.flatten() {
+            Some(Unsent::Asks(asked)) => {
+                found = asked;
+                &found
+            }
+            Some(Unsent::Busy(busy)) => {
+                let prompt = prompt.unwrap_or_default();
                 return Ok(match hold(prompt) {
                     Ok(()) => Asks { next: Some(format!("{name}'s input box {busy}, so kebbie holds the task's prompt and types it in once the box is empty, while the keeper or an open board runs.")), ..Asks::default() },
                     Err(error) => Asks { you: Some(format!("Paste the task's prompt into its {name}: its input box {busy}, and kebbie could not keep the prompt ({error}).")), ..Asks::default() },
                 });
             }
-            let disabled = "Claude's managed settings disable bypass permissions mode (permissions.disableBypassPermissionsMode), so it runs with permission prompts";
-            return Ok(Asks { detail: (*started == Started::BypassDisabled).then(|| disabled.to_string()), ..Asks::default() });
-        }
+            None => {
+                let disabled = "Claude's managed settings disable bypass permissions mode (permissions.disableBypassPermissionsMode), so it runs with permission prompts";
+                return Ok(Asks { detail: (*started == Started::BypassDisabled).then(|| disabled.to_string()), ..Asks::default() });
+            }
+        },
+        asked => asked,
     };
+    let Some(asks) = question(name, started) else { return Ok(Asks::default()) };
     Ok(match prompt {
-        None => Asks { you: Some(asks.to_string()), ..Asks::default() },
+        None => Asks { you: Some(asks), ..Asks::default() },
         Some(prompt) => match hold(prompt) {
-            Ok(()) => Asks { you: Some(asks.to_string()), next: Some("Once you answer, kebbie types the task's prompt in while the keeper or an open board runs.".to_string()), detail: None },
+            Ok(()) => Asks { you: Some(asks), next: Some("Once you answer, kebbie types the task's prompt in while the keeper or an open board runs.".to_string()), detail: None },
             Err(error) => Asks { you: Some(format!("{asks} Then paste the task's prompt there yourself: kebbie could not keep it ({error}).")), ..Asks::default() },
         },
     })
+}
+
+fn question(name: &str, started: &Started) -> Option<String> {
+    let asks = match started {
+        Started::AwaitsTrust => "whether you trust the repo's folder.",
+        Started::AwaitsBypass => "whether to accept bypass permissions mode.",
+        Started::AwaitsHooks => "whether to trust the hooks it found new or changed.",
+        Started::AwaitsSignIn => "how you sign in, on its welcome screen.",
+        Started::AwaitsModel => "which model to use, after its notice of a new one.",
+        Started::AwaitsUpdate => "whether to update it first, on its update screen.",
+        Started::Ready | Started::BypassDisabled => return None,
+    };
+    Some(format!("Answer {name}'s question in its Space: {asks}"))
 }
 
 #[cfg(test)]
@@ -865,9 +881,14 @@ mod tests {
         assert!(said.unwrap().you.unwrap().contains("paste the task's prompt there yourself"), "a prompt kebbie could not keep is the user's to paste, and the start still stands");
         assert_eq!(sent(Started::AwaitsTrust, None, true).0.unwrap().you.as_deref(), Some("Answer Claude's question in its Space: whether you trust the repo's folder."));
         let held = std::cell::RefCell::new(Vec::new());
-        let busy = send_prompt("Codex", &Started::Ready, Some("Fix the flaky test"), |_| Ok(Some("already holds \"check the deploy\"".to_string())), |text| { held.borrow_mut().push(text.to_string()); Ok(()) }).unwrap();
+        let busy = send_prompt("Codex", &Started::Ready, Some("Fix the flaky test"), |_| Ok(Some(Unsent::Busy("already holds \"check the deploy\"".to_string()))), |text| { held.borrow_mut().push(text.to_string()); Ok(()) }).unwrap();
         assert_eq!(held.into_inner(), ["Fix the flaky test"], "a composer that holds text gets the prompt once it is empty, never glued onto it");
         assert_eq!(busy.next.as_deref(), Some("Codex's input box already holds \"check the deploy\", so kebbie holds the task's prompt and types it in once the box is empty, while the keeper or an open board runs."));
+        let held = std::cell::RefCell::new(Vec::new());
+        let trust = send_prompt("Codex", &Started::Ready, Some("Fix the flaky test"), |_| Ok(Some(Unsent::Asks(Started::AwaitsTrust))), |text| { held.borrow_mut().push(text.to_string()); Ok(()) }).unwrap();
+        assert_eq!(held.into_inner(), ["Fix the flaky test"]);
+        assert_eq!(trust.you.as_deref(), Some("Answer Codex's question in its Space: whether you trust the repo's folder."), "a trust screen drawn after herdr called Codex ready is the user's question, never composer text");
+        assert_eq!(trust.next.as_deref(), Some("Once you answer, kebbie types the task's prompt in while the keeper or an open board runs."));
         let source = include_str!("launch.rs");
         let launch = &source[source.find("\nfn launch(").unwrap()..];
         let launch = &launch[..launch.find("\n}\n").unwrap()];

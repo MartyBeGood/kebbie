@@ -79,7 +79,7 @@ fn type_agent(screens: &Screens, name: &str, pane: &str, args: &[&str], trusted:
     let mut last = String::new();
     for _ in 0..30 {
         match herdr::start_agent(name, screens.kind, pane, args) {
-            Ok(()) => return Ok(Launched::Up((screens.running)(&herdr::read_pane(pane).unwrap_or_default()))),
+            Ok(()) => return settle(screens, || Ok((herdr::foreground(pane)?.is_none(), herdr::read_pane(pane)?)), |key| herdr::send_keys(pane, &[key]), || std::thread::sleep(Duration::from_millis(500)), trusted),
             Err(error) => match refusal(&error) {
                 Refusal::NotYet => last = error,
                 Refusal::Starting => return wait_until_ready(screens, name, pane, trusted),
@@ -183,6 +183,15 @@ fn wait_until_ready(screens: &Screens, name: &str, pane: &str, trusted: bool) ->
     let press = |key: &str| herdr::send_keys(pane, &[key]);
     ready_with(screens, look, || herdr::agent_ready(name).unwrap_or(false), press, || std::thread::sleep(Duration::from_millis(500)), trusted, 120)?
         .ok_or_else(|| format!("{} in pane {pane} never became ready; see what it waits for there", screens.name))
+}
+
+const SETTLE_LOOKS: usize = 10;
+
+// herdr can call an agent ready before its first screen is drawn, as a Codex whose trust question follows, so the screen decides; a screen that never settles keeps herdr's word.
+fn settle(screens: &Screens, mut look: impl FnMut() -> Result<(bool, String)>, press: impl FnMut(&str) -> Result<()>, pause: impl FnMut(), trusted: bool) -> Result<Launched> {
+    let mut last = String::new();
+    let looked = ready_with(screens, || look().inspect(|(_, screen)| last.clone_from(screen)), || true, press, pause, trusted, SETTLE_LOOKS)?;
+    Ok(looked.unwrap_or_else(|| Launched::Up((screens.running)(&last))))
 }
 
 // Claude wraps a dialog's lines to the pane's width and draws them inside a box.
@@ -590,6 +599,25 @@ mod tests {
         assert_eq!(readied(&[TRUST, TRUST_YES, "❯ "], 0, true), (Some(Launched::Up(Started::Ready)), vec!["down".to_string(), "enter".to_string()]), "Claude Code 2.1.306 focuses No, exit first, inside a box");
         assert_eq!(readied(&["Do you trust this folder?\n❯ 1. Yes, I trust this folder\n  2. No, exit", "❯ "], 0, true), (Some(Launched::Up(Started::Ready)), vec!["enter".to_string()]), "Claude numbers its choices");
         assert_eq!(readied(&["", "", "❯ "], 2, false), (Some(Launched::Up(Started::Ready)), Vec::new()), "a folder Claude does not ask about is ready as before");
+    }
+
+    const CODEX_TRUST: &str = "  Folder access\n\n  You are in /Users/me/src/app\n\n  Trust this folder? Codex can read and edit files here.\n\n› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit";
+
+    #[test]
+    fn a_start_herdr_calls_ready_waits_for_the_first_screen_and_reports_codexs_trust_question_drawn_after_it() {
+        let settled = |screens: &[&str], trusted: bool| {
+            let mut screens = screens.iter().map(|screen| screen.to_string());
+            let keys = std::cell::RefCell::new(Vec::new());
+            let launched = settle(&super::super::codex::SCREENS, || Ok((false, screens.next().unwrap_or_default())), |key| { keys.borrow_mut().push(key.to_string()); Ok(()) }, || {}, trusted).unwrap();
+            (launched, keys.into_inner())
+        };
+        assert_eq!(settled(&["", "", CODEX_TRUST], false), (Launched::Up(Started::AwaitsTrust), Vec::new()), "the screen seen live after herdr said ready");
+        assert_eq!(settled(&["", CODEX_TRUST, "› Ask Codex to do anything"], true), (Launched::Up(Started::Ready), vec!["enter".to_string()]), "a folder the user trusts is answered as on the slow path");
+        assert_eq!(settled(&["› Ask Codex to do anything"], false), (Launched::Up(Started::Ready), Vec::new()));
+        assert_eq!(settled(&[], false), (Launched::Up(Started::Ready), Vec::new()), "a screen that never settles keeps herdr's ready");
+        let source = include_str!("claude.rs");
+        let typed = &source[source.find("fn type_agent(").unwrap()..];
+        assert!(typed[..typed.find("\n}\n").unwrap()].contains("Ok(()) => return settle("), "herdr's ready alone never declares the start");
     }
 
     #[test]
