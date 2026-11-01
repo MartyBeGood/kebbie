@@ -103,7 +103,7 @@ kebbie restarts a Codex only in a task: the lead is Claude, and your own Codex s
 
 A restart is `claude --resume <session id>` in the same pane, with the process's own flags such as `--model`, `--permission-mode` and `--add-dir`. The conversation stays, and the new process loads the new Claude Code, plugins, MCP servers and hooks.
 
-A Codex task restarts with `codex resume <session id>` in its pane, with its own flags, kebbie's plugin enabled and trusted and the update check off. Its role is written anew, and its `SessionStart` hook gives it to the resumed session.
+A Codex task restarts with `codex resume <session id>` in its pane, with the arguments a start of the task gets today: its profile's model and effort, its permission mode, kebbie's sandbox and permissions, and kebbie's plugin enabled and trusted with the update check off. The flags its old process ran with are not kept, so a task an older kebbie started picks up kebbie's current sandbox on its restart. Its role is written anew, and its `SessionStart` hook gives it to the resumed session.
 
 A task's Claude gets its role and settings written anew, as `kebbie start` writes them, in place of the ones it ran with, from the profile it started with. When that profile no longer loads, the task restarts as the built-in `task`, and the lead is told which file failed and why. The lead is restarted through `kebbie lead --restart`, which also rewrites its role.
 
@@ -205,7 +205,7 @@ The status line shows `↻ N stale` while sessions wait. With `restart.auto = fa
 
 ## Sessions kebbie cannot restart safely are skipped
 
-A session kebbie cannot restart safely is skipped with the reason: one whose session id herdr and the task's record do not know, whose command line cannot be read or has an option kebbie does not know, whose Claude runs in another folder than its pane, or whose conversation file or Codex rollout is missing. A Codex task whose profile no longer loads, or no longer runs Codex, is skipped with the profile and its error, since a Claude task falls back to the built-in task's role and a Codex session must not.
+A session kebbie cannot restart safely is skipped with the reason: one whose session id herdr and the task's record do not know, a Claude whose command line cannot be read or has an option kebbie does not know, whose Claude runs in another folder than its pane, or whose conversation file or Codex rollout is missing. A Codex task whose profile no longer loads, or no longer runs Codex, is skipped with the profile and its error, since a Claude task falls back to the built-in task's role and a Codex session must not.
 
 ## The update names only what needs you
 

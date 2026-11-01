@@ -7,6 +7,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 ### What's new
 
 ### Fixed
+- A restarted Codex task runs with its task's profile, sandbox and permissions as kebbie starts it today, so a task an older kebbie started can write its worktree's git folder again without asking for every commit
 
 ## 0.33.0
 

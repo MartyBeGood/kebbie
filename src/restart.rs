@@ -653,7 +653,7 @@ fn wait_for_agent(pane: &str, name: &str) -> Result<()> {
     Err(format!("{name} did not come back in pane {pane}; see what the pane shows"))
 }
 
-fn perform(pane: &Pane, own: Option<&Path>, args: &[String], lead: bool) -> Result<tasks::Started> {
+fn perform(pane: &Pane, own: Option<&Path>, args: Option<&[String]>, session: &str, lead: bool) -> Result<tasks::Started> {
     if lead {
         return match sh::attempt(&crate::peers::kebbie_command()?, &["lead", "--restart", "--anyway"], None)? {
             Ok(_) => Ok(tasks::Started::Ready),
@@ -664,8 +664,13 @@ fn perform(pane: &Pane, own: Option<&Path>, args: &[String], lead: bool) -> Resu
     if pane.agent == Agent::Codex {
         crate::agent::codex::ready_to_start(crate::agent::codex::home().as_deref(), &crate::peers::kebbie_command()?)?;
     }
-    let role = own.or(pane.cwd.as_deref()).map(tasks::task_role).transpose()?.flatten();
-    let args = role.map_or_else(|| args.to_vec(), |(settings, role)| pane.agent.with_role(args, &settings, &role));
+    let args = match args {
+        Some(args) => {
+            let role = own.or(pane.cwd.as_deref()).map(tasks::task_role).transpose()?.flatten();
+            role.map_or_else(|| args.to_vec(), |(settings, role)| pane.agent.with_role(args, &settings, &role))
+        }
+        None => own.or(pane.cwd.as_deref()).map(|cwd| tasks::codex_resume_args(cwd, session)).transpose()?.flatten().ok_or("its task is not found")?,
+    };
     pane.agent.end(&pane.pane)?;
     // A Claude started in a worktree from a pane in the main checkout resumes only from the worktree, where its conversation is kept.
     if let Some(own) = own.filter(|own| pane.cwd.as_deref().is_none_or(|shell| !same_folder(own, shell))) {
@@ -760,6 +765,14 @@ pub fn with_screen(mode: Mode, verdict: Verdict, agent: Agent, title: &str, unpr
         return Verdict::Busy;
     }
     with_draft(mode, verdict, || screen.map_or(Draft::Unreadable, |screen| agent.draft(&screen)))
+}
+
+// None is a task's Codex, whose arguments are its task's as a start gives them now; any other pane resumes with its own command line's flags.
+fn resume_from(agent: Agent, argv: Option<&[String]>, session: &str, in_task: bool) -> std::result::Result<Option<Vec<String>>, String> {
+    if agent == Agent::Codex && in_task {
+        return Ok(None);
+    }
+    argv.ok_or("its command line cannot be read".to_string()).and_then(|argv| agent.resume_args(argv, session)).map(Some)
 }
 
 fn task_address(cwd: Option<&Path>) -> Option<String> {
@@ -898,10 +911,7 @@ pub fn run_counted(mode: Mode, memory: &mut Memory, only: Option<&str>, counted:
             lines.push(Line { label: pane.label.clone(), said: format!("{HELD}{why}"), stale: lead, reasons: reasons.clone() });
             continue;
         }
-        let args = match process.argv.as_deref().map(|argv| pane.agent.resume_args(argv, &session)) {
-            None => Err("its command line cannot be read".to_string()),
-            Some(args) => args,
-        };
+        let args = resume_from(pane.agent, process.argv.as_deref(), &session, task.is_some());
         let transcript = pane.agent.home().and_then(|home| pane.agent.session_transcript(&home, cwd.as_deref(), &session));
         let mode = mode_for(mode, lead);
         let entry = asked_for(&asked, &session, process.pid);
@@ -934,7 +944,7 @@ pub fn run_counted(mode: Mode, memory: &mut Memory, only: Option<&str>, counted:
             lines.push(Line { reasons: if verdict.stale() { reasons.clone() } else { Vec::new() }, ..line(&verdict) });
             continue;
         }
-        let done = SessionLock::take(&state, &session).and_then(|_lock| perform(&pane, process.cwd.as_deref(), args.as_deref().unwrap_or_default(), lead));
+        let done = SessionLock::take(&state, &session).and_then(|_lock| perform(&pane, process.cwd.as_deref(), args.as_ref().map_or(Some(&[][..]), Option::as_deref), &session, lead));
         if note_attempt(&mut restarted, &session, record, &done) {
             crate::state::write(&restarted_file(&state)?, Value::Object(restarted.clone()).to_string())?;
         }
@@ -1516,6 +1526,20 @@ mod tests {
         let held = held_back(Some(&entry(1000, "/r/0.163/bin/codex", &["a newer Codex"], None, None)), &entry(99_999, "/r/0.163/bin/codex", &["a newer Codex"], None, None), true).unwrap();
         assert_eq!(held, "a restart brought back the same Codex (/r/0.163/bin/codex), so the pane starts that one; restarting again cannot update it");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_task_codex_resumes_from_its_task_and_any_other_pane_from_its_own_command_line() {
+        let old = argv(&["/Users/u/.local/bin/codex", "resume", "--model", "gpt-6.1-sol", "-c", "check_for_update_on_startup=false", "019b3136"]);
+        assert_eq!(resume_from(Agent::Codex, Some(&old), "019b3136", true), Ok(None), "an older kebbie's flags never reach a task's restart");
+        assert_eq!(resume_from(Agent::Codex, None, "019b3136", true), Ok(None), "a task's Codex needs no readable command line");
+        assert_eq!(resume_from(Agent::Codex, Some(&old), "019b3136", false), Ok(Some(argv(&["resume", "--model", "gpt-6.1-sol", "-c", "check_for_update_on_startup=false", "019b3136"]))));
+        assert_eq!(resume_from(Agent::Claude, Some(&argv(&["claude", "--model", "opus"])), "id", true), Ok(Some(argv(&["--model", "opus", "--resume", "id"]))), "a Claude keeps its own flags");
+        assert!(resume_from(Agent::Claude, None, "id", true).unwrap_err().contains("cannot be read"));
+        let source = include_str!("restart.rs");
+        let perform = &source[source.find("\nfn perform(").unwrap()..];
+        let perform = &perform[..perform.find("\n}\n").unwrap()];
+        assert!(perform.find("tasks::codex_resume_args(cwd, session)").unwrap() < perform.find(".end(&pane.pane)").unwrap(), "a task's Codex arguments are built before the old one ends");
     }
 
     #[test]

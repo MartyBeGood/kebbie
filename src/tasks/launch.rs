@@ -504,13 +504,15 @@ pub(crate) fn task_at(cwd: &Path) -> Option<(PathBuf, Slot)> {
     Some((repo, slot))
 }
 
-pub(crate) fn task_role(cwd: &Path) -> Result<Option<(PathBuf, PathBuf)>> {
+// A running task's place as a start of it would have now: its recorded profile and mode, its skills and its note.
+fn running_task<T>(cwd: &Path, then: impl FnOnce(&Launch) -> Result<T>) -> Result<Option<T>> {
     let Some((repo, slot)) = task_at(cwd) else { return Ok(None) };
     let task = slot.task.clone().unwrap_or_default();
     let (setup_skill, setup_command, rules_skill) = skills(&repo)?;
     let note = read_start(&task, &repo).and_then(|text| crate::task_note::note_in(&text));
     let vault = note.is_some() && crate::vault_cli::detect().is_some();
-    let (profile, fell_back) = task_profile(&repo, None, recorded_session(&task, &repo).profile.as_deref())?;
+    let record = recorded_session(&task, &repo);
+    let (profile, fell_back) = task_profile(&repo, None, record.profile.as_deref())?;
     if let Some(why) = fell_back {
         let said = format!("{} restarts as the built-in task: {why}.", peers::address(&task, &name_of(&repo)));
         eprintln!("{said}");
@@ -518,8 +520,44 @@ pub(crate) fn task_role(cwd: &Path) -> Result<Option<(PathBuf, PathBuf)>> {
             eprintln!("Could not tell the lead: {error}");
         }
     }
-    let place = Launch { repo: &repo, task: &task, mode: None, profile: &profile, setup_skill: &setup_skill, setup_command: setup_command.as_deref(), rules_skill: &rules_skill, worktree: slot.path.clone(), vault, note: note.as_deref() };
-    prepare(&place, true).map(|prepared| Some((prepared.settings, prepared.role)))
+    let configured = profile.permission_mode.clone().or(configured_mode(&repo)?);
+    let mode = chosen_mode(None, record.mode.as_deref(), configured.as_deref());
+    let place = Launch { repo: &repo, task: &task, mode, profile: &profile, setup_skill: &setup_skill, setup_command: setup_command.as_deref(), rules_skill: &rules_skill, worktree: slot.path.clone(), vault, note: note.as_deref() };
+    then(&place).map(Some)
+}
+
+pub(crate) fn task_role(cwd: &Path) -> Result<Option<(PathBuf, PathBuf)>> {
+    running_task(cwd, |place| prepare(place, true).map(|prepared| (prepared.settings, prepared.role)))
+}
+
+// A task's Codex resumes with the arguments a start of the task has now, so its profile, sandbox and plugin are kebbie's of today, never an older kebbie's flags.
+pub(crate) fn codex_resume_args(cwd: &Path, session: &str) -> Result<Option<Vec<String>>> {
+    running_task(cwd, |place| {
+        let profile = profile_to_start(place.profile, place.task)?;
+        let prepared = prepare(place, true)?;
+        let place = Launch { profile: &profile, worktree: place.worktree.clone(), ..*place };
+        Ok(task_args(&place, &prepared, &codex_session(profile.agent), &codex_roots(profile.agent), &Session::Resume(session.to_string())))
+    })
+}
+
+fn profile_to_start(profile: &Profile, task: &str) -> Result<Profile> {
+    let models = (profile.agent == Agent::Codex).then(crate::agent::codex::home).flatten().and_then(|home| crate::agent::codex::cached_models(&home));
+    let (moved, gone) = start_profile(profile, models.as_deref());
+    if let Some(said) = &gone {
+        let _ = messages::log_for_user_in(&state_dir()?, said, crate::agent_check::KIND);
+        let _ = messages::to_lead(messages::ToLead::Notice, &format!("{task}: {said}"));
+    }
+    Ok(moved)
+}
+
+fn codex_roots(agent: Agent) -> Vec<String> {
+    if agent == Agent::Codex { crate::agent::codex::writable_roots_in(&crate::agent::codex_setup::read_config(crate::agent::codex::home().as_deref())) } else { Vec::new() }
+}
+
+fn task_args(place: &Launch, prepared: &Prepared, codex: &crate::agent::codex_setup::Session, codex_roots: &[String], session: &Session) -> Vec<String> {
+    let address = peers::address(place.task, &name_of(place.repo));
+    let files = TaskFiles { address: &address, settings: &prepared.settings, role: &prepared.role, sandboxed: prepared.sandboxed, tmp: Some(&prepared.tmp), hidden: &codex.hidden, codex_roots };
+    place.profile.agent.start_args(place.mode, place.profile, &files, session)
 }
 
 // The task's role as kebbie gives it now, written to its role file alone: the file, and the role without its peer list.
@@ -537,12 +575,7 @@ pub(crate) fn task_role_now(cwd: &Path) -> Result<Option<(PathBuf, String)>> {
 // Starts the task's agent in the pane with its role and settings; the outer error is setup, the inner one is the agent not starting.
 fn launch(place: &Launch, pane: &str, session: Session) -> Result<(String, Result<Started>)> {
     let Launch { repo, task, mode, profile, .. } = *place;
-    let models = (profile.agent == Agent::Codex).then(crate::agent::codex::home).flatten().and_then(|home| crate::agent::codex::cached_models(&home));
-    let (moved, gone) = start_profile(profile, models.as_deref());
-    if let Some(said) = &gone {
-        let _ = messages::log_for_user_in(&state_dir()?, said, crate::agent_check::KIND);
-        let _ = messages::to_lead(messages::ToLead::Notice, &format!("{task}: {said}"));
-    }
+    let moved = profile_to_start(profile, task)?;
     let profile = &moved;
     if profile.agent == Agent::Codex {
         crate::agent::codex::ready_to_start(crate::agent::codex::home().as_deref(), &peers::kebbie_command()?)?;
@@ -555,11 +588,7 @@ fn launch(place: &Launch, pane: &str, session: Session) -> Result<(String, Resul
     let taken = herdr::agents()?.iter().any(|agent| agent["name"] == task);
     let agent_name: String = if taken { format!("{task}_{}", slug(&name_of(repo))?) } else { task.to_string() }.chars().take(32).collect();
     let agent = profile.agent;
-    let address = peers::address(task, &name_of(repo));
-    let codex = codex_session(agent);
-    let codex_roots = if agent == Agent::Codex { crate::agent::codex::writable_roots_in(&crate::agent::codex_setup::read_config(crate::agent::codex::home().as_deref())) } else { Vec::new() };
-    let files = TaskFiles { address: &address, settings: &prepared.settings, role: &prepared.role, sandboxed: prepared.sandboxed, tmp: Some(&prepared.tmp), hidden: &codex.hidden, codex_roots: &codex_roots };
-    let agent_args = agent.start_args(mode, profile, &files, &session);
+    let agent_args = task_args(&Launch { profile, worktree: place.worktree.clone(), ..*place }, &prepared, &codex_session(agent), &codex_roots(agent), &session);
     let started = agent.start(&agent_name, pane, &agent_args.iter().map(String::as_str).collect::<Vec<_>>(), agent.trusted_by_user(repo));
     if let Ok(started) = &started {
         let id = started_session(agent, &session);
@@ -851,6 +880,24 @@ mod tests {
         assert_eq!(start_profile(&own, Some(&models)).1, None, "kebbie's own profiles follow the agent's default");
         assert_eq!(start_profile(&coder, None).1, None, "no list, no verdict");
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_restarted_codex_task_resumes_with_the_args_a_start_of_it_has_now() {
+        let coder = Profile { name: "coder".to_string(), agent: Agent::Codex, model: Some("gpt-6.1-sol".to_string()), effort: Some("high".to_string()), ..profiles::built_in(profiles::TASK).unwrap() };
+        let place = |profile| Launch { repo: Path::new("/src/app"), task: "hub-leave-message", mode: None, profile, setup_skill: "", setup_command: None, rules_skill: "", worktree: PathBuf::from("/src/wt1.app"), vault: false, note: None };
+        let prepared = Prepared { settings: PathBuf::from("/s/roles/hub-leave-message@app.settings.json"), role: PathBuf::from("/s/roles/hub-leave-message@app.md"), sandboxed: true, tmp: PathBuf::from("/src/app/.git/worktrees/wt1.app/kebbie-tmp") };
+        let codex = crate::agent::codex_setup::Session::default();
+        let fresh = task_args(&place(&coder), &prepared, &codex, &[], &Session::New("x".to_string()));
+        let resumed = task_args(&place(&coder), &prepared, &codex, &[], &Session::Resume("019b3136".to_string()));
+        assert_eq!(resumed, [&["resume".to_string()][..], &fresh, &["019b3136".to_string()]].concat(), "a restart runs the start's arguments, with resume and the session id");
+        assert!(resumed.windows(2).any(|pair| pair == ["--ask-for-approval", "on-request"]) && resumed.iter().any(|arg| arg == "default_permissions=\"kebbie-task\"") && resumed.iter().any(|arg| arg.starts_with("permissions.kebbie-task=")), "{resumed:?}");
+        let changed = Profile { model: Some("gpt-6.2".to_string()), ..coder.clone() };
+        let resumed = task_args(&place(&changed), &prepared, &codex, &[], &Session::Resume("019b3136".to_string()));
+        assert!(resumed.windows(2).any(|pair| pair == ["--model", "gpt-6.2"]) && !resumed.iter().any(|arg| arg == "gpt-6.1-sol"), "a profile changed since the start is the one the restart runs: {resumed:?}");
+        let source = include_str!("launch.rs");
+        let body = |name: &str| { let start = source.find(&format!("\nfn {name}(")).or_else(|| source.find(&format!("\npub(crate) fn {name}("))).unwrap(); &source[start..start + source[start..].find("\n}\n").unwrap()] };
+        assert!(body("launch").contains("task_args(") && body("codex_resume_args").contains("task_args(") && body("codex_resume_args").contains("prepare(place, true)") && body("codex_resume_args").contains("profile_to_start("), "a restart and a start build a task's Codex arguments the same way");
     }
 
     #[test]
@@ -1211,8 +1258,8 @@ mod tests {
         let body = |name: &str| { let start = source.find(&format!("\nfn {name}(")).or_else(|| source.find(&format!("\npub fn {name}("))).or_else(|| source.find(&format!("\npub(crate) fn {name}("))).unwrap(); &source[start..start + source[start..].find("\n}\n").unwrap()] };
         assert!(body("launch").contains("profile: Some(profile.name.clone())") && body("launch").contains("record_text(&record)"), "every start records the profile it ran with");
         assert!(body("begin").contains("recorded_session(&task, &repo).profile") && body("begin").find("task_profile(").unwrap() < body("begin").find("fetch(").unwrap(), "a running task keeps its profile, and a missing one is refused before a worktree is claimed");
-        assert!(body("task_role").contains("recorded_session(&task, &repo).profile"), "kebbie restart writes the role and settings of the profile the task started with");
-        assert!(body("begin").contains("detail(\"careful\", why)") && body("task_role").contains("messages::to_lead(messages::ToLead::TaskRestarted, &said)"), "a recorded profile that no longer loads is said where the restart reports, and the restart goes on");
+        assert!(body("running_task<T>").contains("let record = recorded_session(&task, &repo);") && body("running_task<T>").contains("task_profile(&repo, None, record.profile.as_deref())") && body("task_role").contains("running_task(cwd,") && body("codex_resume_args").contains("running_task(cwd,"), "kebbie restart writes the role and settings of the profile the task started with");
+        assert!(body("begin").contains("detail(\"careful\", why)") && body("running_task<T>").contains("messages::to_lead(messages::ToLead::TaskRestarted, &said)"), "a recorded profile that no longer loads is said where the restart reports, and the restart goes on");
     }
 
     #[test]
