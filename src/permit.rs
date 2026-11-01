@@ -313,6 +313,43 @@ pub fn confined_as(found: Caller, sandboxed: impl FnOnce() -> bool) -> Caller {
     }
 }
 
+// What a refusal adds when the lead's Claude runs without kebbie's lead settings, as herdr's own restore resumes it, so it reads as an agent.
+pub const LEAD_WITHOUT_ROLE: &str = "kebbie takes this for an agent because the lead's Claude runs without kebbie's lead settings, as after herdr resumed it on its own: ask the user to press L on the board and choose Resume this conversation, which restarts you as the lead in this same conversation";
+
+// Every Claude above the caller started without --settings, as herdr's restore starts it; one with kebbie's settings, or a Codex, is something else.
+pub fn plain_claude_in(processes: &[(u32, u32, String)], pid: u32) -> bool {
+    let mut current = pid;
+    let mut plain = false;
+    for _ in 0..64 {
+        let Some((_, parent, args)) = processes.iter().find(|(id, _, _)| *id == current) else { return false };
+        if current != pid && let Some(role) = role_of(args) {
+            let words: Vec<&str> = args.split_whitespace().collect();
+            let claude = words.first().is_some_and(|program| Path::new(program).file_name().is_some_and(|name| name == "claude")) || args.contains("@anthropic-ai/claude-code");
+            if role != Caller::Agent || !claude || words.iter().any(|word| *word == "--settings" || word.starts_with("--settings=")) {
+                return false;
+            }
+            plain = true;
+        }
+        if *parent <= 1 || *parent == current {
+            return plain;
+        }
+        current = *parent;
+    }
+    false
+}
+
+pub fn lead_without_role() -> bool {
+    crate::peers::in_lead_space() && crate::sh::run(PS, &["-A", "-o", "pid=,ppid=,args="], None).is_ok_and(|table| plain_claude_in(&processes(&table), std::process::id()))
+}
+
+// An agent's refusal in the lead Space under a plain Claude says how the lead gets its settings back.
+pub fn with_lead_hint(error: String, lead_without_role: impl FnOnce() -> bool) -> String {
+    if error.contains(&describe(&Caller::Agent)) && lead_without_role() {
+        return format!("{error}\n{LEAD_WITHOUT_ROLE}");
+    }
+    error
+}
+
 pub fn user_only(what: &str) -> Result<()> {
     user_only_as(&caller(), what)
 }
@@ -505,6 +542,25 @@ mod tests {
         }
         let board = processes(&format!("  1 0 /sbin/launchd\n 40 1 /usr/local/bin/herdr server\n 50 40 {task}\n 70 40 /plugin/target/release/kebbie board --overlay\n"));
         assert_eq!(caller_in(&board, 70), Caller::User, "the board herdr opens as a plugin pane is the user's");
+    }
+
+    #[test]
+    fn the_leads_claude_that_herdr_resumed_without_its_settings_is_refused_with_the_way_back() {
+        let table = |claude: &str| processes(&format!("  1     0 /sbin/launchd\n 40     1 /usr/bin/herdr server\n 50    40 {claude}\n 60    50 /bin/zsh -c kebbie approve billing\n 70    60 /bin/kebbie approve billing\n"));
+        let restored = table("/Users/ada/.local/bin/claude --resume 1b2c3d4e");
+        assert_eq!(caller_in(&restored, 70), Caller::Agent, "a Claude without the lead's settings never gets the lead's rights");
+        assert!(plain_claude_in(&restored, 70), "herdr's restore starts the lead as a plain claude --resume");
+        assert!(!plain_claude_in(&table("claude --settings /state/roles/lead.settings.json --resume 1b2c3d4e"), 70), "the lead kebbie started is the lead");
+        assert!(!plain_claude_in(&table("claude -p --settings /state/roles/billing@app.review.settings.json"), 70), "a reviewer is no lead that lost its settings");
+        assert!(!plain_claude_in(&table("codex resume 1b2c"), 70));
+        let nested = processes("  1 0 launchd\n 50 1 claude --settings /state/roles/lead.settings.json\n 55 50 claude -p\n 70 55 kebbie approve billing\n");
+        assert!(!plain_claude_in(&nested, 70), "an agent the lead started is not the lead");
+        assert!(!plain_claude_in(&table("/bin/zsh -l"), 70), "no Claude above, nothing to restore");
+        let refused = user_only_as(&caller_in(&restored, 70), "issue add").unwrap_err();
+        let told = with_lead_hint(refused.clone(), || true);
+        assert!(told.starts_with(&refused) && told.contains("press L on the board and choose Resume this conversation"), "{told}");
+        assert_eq!(with_lead_hint(refused.clone(), || false), refused, "outside the lead Space an agent's refusal stays as it was");
+        assert_eq!(with_lead_hint("approve is the lead's check; the task billing@app cannot".to_string(), || panic!("only an agent's refusal looks")), "approve is the lead's check; the task billing@app cannot");
     }
 
     #[test]

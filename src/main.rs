@@ -868,6 +868,7 @@ fn main() -> ExitCode {
                 (None, _) => String::new(),
             };
             let error = if sandbox::TASK_COMMANDS.contains(&command.as_str()) { sandbox::ran_sandboxed(&command, &error, sandbox::confined(), std::env::var_os(agent::codex::TASK_VAR).is_some()) } else { error };
+            let error = permit::with_lead_hint(error, permit::lead_without_role);
             eprintln!("{error}");
             ExitCode::FAILURE
         }

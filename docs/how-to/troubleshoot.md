@@ -37,6 +37,7 @@ Find what is wrong with kebbie, and the fix for each message it shows.
 | A new task asks "Do you trust this folder?" | You have not trusted the repo in Claude Code, so kebbie leaves the answer to you. Answer it in the task's Space. kebbie then types the task's prompt in while the keeper or an open board runs; if neither runs, paste the prompt yourself. |
 | A task shows `no Space` | Its Space was closed; herdr reopens Spaces after a restart, so a restart alone does not cause it. Press `g` to restart the task. It resumes its last conversation. |
 | A task shows `no Claude` | Its Claude exited, or herdr has not resumed it yet: herdr resumes each Claude once a client is attached after a restart. Press `g` if it stays with herdr open, or with herdr's `[session] resume_agents_on_restore = false`. |
+| The lead is refused `kebbie approve` or `kebbie issue add` as an agent session | Its Claude runs without kebbie's lead settings, as when herdr resumed it on its own after a restart and kebbie could not restart it yet. Press `L` on the board and choose Resume this conversation. |
 | A task with an approval stays out of Ready to push, marked `N uncommitted files` | Tracked files have uncommitted changes. Commit or discard them; untracked files do not count. |
 | A task worktree has no push block | The repo's shared git config sets `core.worktree` or `core.bare = true`. Move those settings out of the shared config. `kebbie doctor` in the repo shows when the block applies. |
 

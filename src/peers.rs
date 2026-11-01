@@ -76,10 +76,12 @@ pub fn me(cwd: &Path) -> Option<String> {
     {
         return Some(address(&task, &name_of(&repo)));
     }
-    let workspace = std::env::var("HERDR_WORKSPACE_ID").ok()?;
-    herdr::workspaces().ok()?.iter()
-        .any(|space| space["workspace_id"] == workspace.as_str() && space["label"] == LEAD_LABEL)
-        .then(|| LEAD_LABEL.to_string())
+    in_lead_space().then(|| LEAD_LABEL.to_string())
+}
+
+pub fn in_lead_space() -> bool {
+    let Ok(workspace) = std::env::var("HERDR_WORKSPACE_ID") else { return false };
+    herdr::workspaces().is_ok_and(|spaces| spaces.iter().any(|space| space["workspace_id"] == workspace.as_str() && space["label"] == LEAD_LABEL))
 }
 
 // `task` reaches every half of that task but the sender's own; `task@repo` and `lead` reach one session.
@@ -122,7 +124,17 @@ pub fn list(me: Option<&str>, sessions: &[Session]) -> String {
 }
 
 pub fn peers(cwd: &Path) -> Result<String> {
-    Ok(list(me(cwd).as_deref(), &sessions()?))
+    let me = me(cwd);
+    let listed = list(me.as_deref(), &sessions()?);
+    Ok(standing(listed, me.as_deref() == Some(LEAD_LABEL) && crate::permit::lead_without_role()))
+}
+
+// The lead's Space with a Claude kebbie refuses the lead's commands is not told it is the lead without the way back.
+fn standing(listed: String, without_role: bool) -> String {
+    if !without_role {
+        return listed;
+    }
+    listed.replacen(&format!("You are {LEAD_LABEL}."), &format!("You are {LEAD_LABEL}, but {}.", crate::permit::LEAD_WITHOUT_ROLE), 1)
 }
 
 // The stable link when it leads to this binary, so a task's settings survive reinstalls.
@@ -618,6 +630,15 @@ mod tests {
         assert!(ask.contains("before you change anything for it") && ask.contains("has the user's answer"), "{ask}");
         let placed = role(AlsoNoticed::Backlog, false);
         assert!(placed.find("## Questions").unwrap() < placed.find("## What you notice").unwrap() && placed.find("## What you notice").unwrap() < placed.find("## Reports").unwrap());
+    }
+
+    #[test]
+    fn the_lead_whose_claude_lost_its_settings_hears_it_is_refused_the_leads_commands_and_how_to_mend_it() {
+        let listed = list(Some(LEAD_LABEL), &sessions());
+        assert_eq!(standing(listed.clone(), false), listed);
+        let told = standing(listed.clone(), true);
+        assert!(told.starts_with("You are lead, but kebbie takes this for an agent") && told.contains("press L on the board"), "{told}");
+        assert_eq!(told.lines().skip(1).collect::<Vec<_>>(), listed.lines().skip(1).collect::<Vec<_>>(), "the rest of the list stays");
     }
 
     #[test]
