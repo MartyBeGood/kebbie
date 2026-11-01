@@ -265,6 +265,11 @@ impl Page {
         self.areas.iter().filter_map(|area| area.repo.clone())
     }
 
+    // Nothing gathered yet, so the board looks for it more often than it waits for keys.
+    pub fn waiting(&self) -> bool {
+        !self.loaded
+    }
+
     pub fn refresh(&self) {
         if let Some((_, refresh)) = &self.updates {
             let _ = refresh.send(());

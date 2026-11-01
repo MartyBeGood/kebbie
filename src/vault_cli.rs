@@ -190,6 +190,20 @@ impl Cli {
         self.call(&["log", "path", "--repo", repo]).map(|value| field(&value, "path")).and_then(|path| if path.is_empty() { Err("vault log path: no path".to_string()) } else { Ok(path) })
     }
 
+    // Many repos in one call, answered as {repo: path}; a server older than that answers {"path"} for the last --repo alone, which is None here.
+    pub fn log_paths(&self, repos: &[String]) -> Result<Option<std::collections::HashMap<String, String>>> {
+        let mut args = vec!["log", "path"];
+        for repo in repos {
+            args.extend(["--repo", repo.as_str()]);
+        }
+        let value = self.call(&args)?;
+        let map = value.as_object().ok_or("vault log path: not an object")?;
+        if map.get("path").is_some_and(Value::is_string) && !repos.iter().any(|repo| repo == "path") {
+            return Ok(None);
+        }
+        Ok(Some(map.iter().filter_map(|(repo, path)| Some((repo.clone(), path.as_str()?.to_string()))).filter(|(_, path)| !path.is_empty()).collect()))
+    }
+
     // A vault server older than the task commands answers status but refuses `task --help`, and one older than claims lists no `claim` there; writes are tried only with try_write, which doctor alone asks for.
     pub fn probe(&self, try_write: bool) -> Result<Probe> {
         let status = self.call(if try_write { &["status", "--probe"] } else { &["status"] })?;
@@ -335,14 +349,69 @@ pub fn is_note(item: &str) -> bool {
     item.ends_with(".md") && !item.starts_with(crate::backlog_file::PREFIX)
 }
 
-pub fn log_note(cli: &Cli, state: &Path, repo: &str) -> Option<String> {
-    let file = state.join("vault-logs").join(repo);
-    if let Some(known) = std::fs::read_to_string(&file).ok().map(|path| path.trim().to_string()).filter(|path| !path.is_empty()) {
-        return Some(known);
+#[derive(Debug, PartialEq)]
+pub enum KeptLog {
+    Known(String),
+    Refused,
+    Unasked,
+}
+
+const LOG_RETRY: Duration = Duration::from_secs(3600);
+
+fn log_file(state: &Path, repo: &str) -> PathBuf {
+    state.join("vault-logs").join(repo)
+}
+
+// What the vault last said a repo's log note is; a refusal is kept as an empty file and asked again after LOG_RETRY.
+pub fn kept_log_note(state: &Path, repo: &str, now: std::time::SystemTime) -> KeptLog {
+    let file = log_file(state, repo);
+    match std::fs::read_to_string(&file).map(|text| text.trim().to_string()) {
+        Ok(path) if !path.is_empty() => KeptLog::Known(path),
+        Ok(_) if std::fs::metadata(&file).and_then(|meta| meta.modified()).is_ok_and(|at| now.duration_since(at).unwrap_or_default() < LOG_RETRY) => KeptLog::Refused,
+        _ => KeptLog::Unasked,
     }
-    let path = cli.log_path(repo).ok()?;
-    let _ = crate::state::write(&file, &path);
-    Some(path)
+}
+
+fn keep_log_note(state: &Path, repo: &str, path: Option<&str>) {
+    let _ = crate::state::write(&log_file(state, repo), path.unwrap_or_default());
+}
+
+// One batched call where the server takes one, else each repo alone, four at a time; every answer is kept, a refusal too.
+pub fn ask_log_notes(cli: &Cli, state: &Path, repos: &[String]) {
+    if repos.len() > 1
+        && let Ok(Some(paths)) = cli.log_paths(repos)
+    {
+        for repo in repos {
+            keep_log_note(state, repo, paths.get(repo).map(String::as_str));
+        }
+        return;
+    }
+    crate::sh::in_parallel(repos, 4, |repo| {
+        let path = cli.log_path(repo).ok();
+        keep_log_note(state, repo, path.as_deref());
+    });
+}
+
+// Asks for the log notes on a thread of its own, so a reader never waits on the vault command; a name already being asked is not asked twice.
+pub fn ask_log_notes_later(state: &Path, repos: Vec<String>) {
+    static ASKING: std::sync::Mutex<std::collections::BTreeSet<String>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let repos: Vec<String> = {
+        let mut asking = ASKING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        repos.into_iter().filter(|repo| asking.insert(repo.clone())).collect()
+    };
+    if repos.is_empty() {
+        return;
+    }
+    let state = state.to_path_buf();
+    std::thread::spawn(move || {
+        if let Some(cli) = detect() {
+            ask_log_notes(&cli, &state, &repos);
+        }
+        let mut asking = ASKING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for repo in &repos {
+            asking.remove(repo);
+        }
+    });
 }
 
 pub fn warn_log(state: &Path, text: &str) {
@@ -612,9 +681,41 @@ mod tests {
         let fake = Fake::new("logs");
         let state = fake.state();
         fake.answer("log-path", r#"{"path":"Log/kebbie-logg.md"}"#);
-        assert_eq!(log_note(&fake.cli, &state, "kebbie").as_deref(), Some("Log/kebbie-logg.md"));
-        assert_eq!(log_note(&fake.cli, &state, "kebbie").as_deref(), Some("Log/kebbie-logg.md"));
+        ask_log_notes(&fake.cli, &state, &["kebbie".to_string()]);
+        assert_eq!(kept_log_note(&state, "kebbie", std::time::SystemTime::now()), KeptLog::Known("Log/kebbie-logg.md".to_string()));
         assert_eq!(fake.calls(), ["log path --repo kebbie"]);
+    }
+
+    #[test]
+    fn a_refused_log_note_is_kept_too_and_asked_again_only_after_a_while() {
+        let fake = Fake::new("logs-refused");
+        let state = fake.state();
+        let now = std::time::SystemTime::now();
+        assert_eq!(kept_log_note(&state, "web", now), KeptLog::Unasked);
+        fake.fail("log-path", "no repo named web");
+        ask_log_notes(&fake.cli, &state, &["web".to_string()]);
+        assert_eq!(kept_log_note(&state, "web", now), KeptLog::Refused);
+        assert_eq!(kept_log_note(&state, "web", std::time::SystemTime::now() + LOG_RETRY), KeptLog::Unasked, "a refusal is asked again after an hour");
+    }
+
+    #[test]
+    fn many_log_notes_are_asked_in_one_call_where_the_server_takes_it_and_one_by_one_where_not() {
+        let fake = Fake::new("logs-batch");
+        let state = fake.state();
+        let now = std::time::SystemTime::now();
+        let repos = ["api".to_string(), "web".to_string()];
+        fake.answer("log-path", r#"{"api":"Log/api-logg.md","web":""}"#);
+        ask_log_notes(&fake.cli, &state, &repos);
+        assert_eq!(fake.calls(), ["log path --repo api --repo web"]);
+        assert_eq!(kept_log_note(&state, "api", now), KeptLog::Known("Log/api-logg.md".to_string()));
+        assert_eq!(kept_log_note(&state, "web", now), KeptLog::Refused);
+        let old = Fake::new("logs-batch-old");
+        let state = old.state();
+        old.answer("log-path", r#"{"path":"Log/web-logg.md"}"#);
+        ask_log_notes(&old.cli, &state, &repos);
+        let mut calls = old.calls();
+        calls.sort();
+        assert_eq!(calls, ["log path --repo api", "log path --repo api --repo web", "log path --repo web"], "an older server answers for the last repo alone, so each is asked again");
     }
 
     #[test]

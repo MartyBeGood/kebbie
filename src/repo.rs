@@ -56,6 +56,27 @@ pub fn main_checkout(cwd: &Path) -> Result<PathBuf> {
     Ok(Path::new(&common_dir).parent().ok_or("git common dir has no parent")?.to_path_buf())
 }
 
+// main_checkout without running git: the nearest .git above dir, a worktree's .git file followed to its commondir, every path real as git makes it.
+pub fn main_checkout_of(dir: &Path) -> Option<PathBuf> {
+    let start = dir.canonicalize().ok()?;
+    let common = start.ancestors().find_map(|place| common_dir(&place.join(".git")))?;
+    Some(common.parent()?.to_path_buf())
+}
+
+fn common_dir(dot_git: &Path) -> Option<PathBuf> {
+    let git_dir = if dot_git.is_dir() {
+        dot_git.to_path_buf()
+    } else {
+        let text = std::fs::read_to_string(dot_git).ok()?;
+        dot_git.parent()?.join(text.strip_prefix("gitdir:")?.trim())
+    };
+    if !git_dir.join("HEAD").exists() {
+        return None;
+    }
+    let common = std::fs::read_to_string(git_dir.join("commondir")).ok().map_or_else(|| git_dir.clone(), |relative| git_dir.join(relative.trim()));
+    common.canonicalize().ok()
+}
+
 // origin/HEAD is unset in some older clones.
 pub fn default_branch(repo: &Path) -> Result<String> {
     let listed = git(repo, &["for-each-ref", "--format=%(refname)%09%(symref:short)", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"]).unwrap_or_default();
@@ -351,6 +372,26 @@ mod tests {
         git_writing(&dir, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "a"]).unwrap();
         assert!(!ran.exists(), "neither ran");
         assert_eq!(git(&dir, &["config", "--get", "core.hooksPath"]).unwrap(), "hooks", "git config reads the repo's own value, not kebbie's override");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_main_checkout_is_found_without_git_where_git_finds_it() {
+        let dir = crate::sh::test_dir("main-of");
+        let (main, worktree, plain) = (dir.join("app"), dir.join("wt1.app"), dir.join("plain"));
+        std::fs::create_dir_all(main.join("lib/deep")).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+        git(&main, &["init", "--quiet"]).unwrap();
+        git(&main, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "--allow-empty", "-m", "a"]).unwrap();
+        git(&main, &["worktree", "add", "--quiet", worktree.to_str().unwrap()]).unwrap();
+        std::fs::create_dir_all(worktree.join("lib")).unwrap();
+        std::os::unix::fs::symlink(&main, dir.join("link")).unwrap();
+        std::fs::create_dir_all(plain.join(".git")).unwrap();
+        for place in [main.clone(), main.join("lib/deep"), worktree.clone(), worktree.join("lib"), dir.join("link/lib")] {
+            assert_eq!(main_checkout_of(&place), Some(main_checkout(&place).unwrap()), "{}", place.display());
+        }
+        assert_eq!(main_checkout_of(&plain), None, "a .git folder without HEAD is no repo, and nothing above is one");
+        assert_eq!(main_checkout_of(&dir.join("missing")), None);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

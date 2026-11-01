@@ -1203,7 +1203,8 @@ pub fn run(overlay: bool) -> Result<String> {
                 let error = rebuild.restart(&app);
                 app.show_as(Err(error), true);
             }
-            if event::poll(Duration::from_millis(250)).map_err(|error| error.to_string())? {
+            let wait = if app.page == Page::Areas && app.areas.waiting() { 20 } else { 250 };
+            if event::poll(Duration::from_millis(wait)).map_err(|error| error.to_string())? {
                 match event::read().map_err(|error| error.to_string())? {
                     Event::Resize(..) => repaint = true,
                     Event::Key(key) if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('l') && key.modifiers.contains(KeyModifiers::CONTROL) => repaint = true,

@@ -1,11 +1,12 @@
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::actions::{self, Action, Work};
-use crate::repo::{self, default_branch, git, main_checkout, name_of};
+use crate::repo::{self, default_branch, git, main_checkout_of, name_of};
 use crate::sh::Result;
 use crate::vault::{self, Index, LogLine, Note};
+use crate::vault_cli::KeptLog;
 
 #[derive(Clone)]
 pub struct Release {
@@ -67,13 +68,12 @@ pub struct Areas {
 }
 
 // The system note's path, else where the vault's hooks saw the repo, else a checkout named after the area.
-fn repo_for(note: &Note, index: &Index, checkouts: &mut HashMap<PathBuf, Option<PathBuf>>) -> Option<PathBuf> {
-    let mut main_of = |dir: &Path| checkouts.entry(dir.to_path_buf()).or_insert_with(|| main_checkout(dir).ok()).clone();
+fn repo_for(note: &Note, index: &Index, checkouts: &OnceCell<Vec<PathBuf>>) -> Option<PathBuf> {
     let from_paths = note.paths.iter().map(|path| vault::expand(path)).filter(|path| path.exists())
-        .find_map(|path| main_of(if path.is_dir() { &path } else { path.parent()? }));
+        .find_map(|path| main_checkout_of(if path.is_dir() { &path } else { path.parent()? }));
     from_paths
-        .or_else(|| index.known_root(&note.stem).filter(|root| root.exists()).and_then(|root| main_of(&root)))
-        .or_else(|| repo::checkout_named(&note.stem))
+        .or_else(|| index.known_root(&note.stem).filter(|root| root.exists()).and_then(|root| main_checkout_of(&root)))
+        .or_else(|| checkouts.get_or_init(repo::checkouts).iter().find(|path| name_of(path) == note.stem).cloned())
 }
 
 fn count(text: &str) -> usize {
@@ -117,28 +117,23 @@ fn repo_facts(repo: Option<&Path>) -> RepoFacts {
     RepoFacts { git: repo.and_then(|repo| repo_state(repo).ok()), actions, errors, sandbox }
 }
 
-fn in_parallel<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    let next = AtomicUsize::new(0);
-    let mut done: Vec<(usize, R)> = std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..items.len().min(8)).map(|_| scope.spawn(|| {
-            let mut own = Vec::new();
-            loop {
-                let index = next.fetch_add(1, Ordering::Relaxed);
-                let Some(item) = items.get(index) else { return own };
-                own.push((index, work(item)));
-            }
-        })).collect();
-        workers.into_iter().flat_map(|worker| worker.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))).collect()
-    });
-    done.sort_by_key(|(index, _)| *index);
-    done.into_iter().map(|(_, result)| result).collect()
+fn kept_log(state: Option<&Path>, name: &str, now: std::time::SystemTime, unasked: &mut Vec<String>) -> Option<String> {
+    match state.map(|state| crate::vault_cli::kept_log_note(state, name, now)) {
+        Some(KeptLog::Known(path)) => Some(path),
+        Some(KeptLog::Unasked) => {
+            unasked.push(name.to_string());
+            None
+        }
+        _ => None,
+    }
 }
 
-fn own_logs(cli: Option<&crate::vault_cli::Cli>, logs: &[(String, String)], stem: &str, repo: Option<&str>) -> Vec<String> {
-    let state = crate::lead::state_dir().ok();
+// What the vault said before names a repo's own log note; until it has said, a guess stands in and the name goes to `unasked`.
+fn own_logs(state: Option<&Path>, logs: &[(String, String)], names: [Option<&str>; 2], unasked: &mut Vec<String>) -> Vec<String> {
+    let now = std::time::SystemTime::now();
     let mut own: Vec<String> = Vec::new();
-    for name in [Some(stem), repo].into_iter().flatten() {
-        let named = cli.zip(state.as_deref()).and_then(|(cli, state)| crate::vault_cli::log_note(cli, state, name)).or_else(|| vault::own_log_guess(logs, name));
+    for name in names.into_iter().flatten() {
+        let named = kept_log(state, name, now, unasked).or_else(|| vault::own_log_guess(logs, name));
         own.extend(named.filter(|key| !own.contains(key)));
     }
     own
@@ -146,21 +141,23 @@ fn own_logs(cli: Option<&crate::vault_cli::Cli>, logs: &[(String, String)], stem
 
 pub fn gather() -> Result<Areas> {
     let index = Index::open()?;
-    gather_from(&index, crate::vault_cli::detect().as_ref(), repo_facts)
+    let state = crate::lead::state_dir().ok();
+    gather_from(&index, state.as_deref(), repo_facts, |unasked| if let Some(state) = &state { crate::vault_cli::ask_log_notes_later(state, unasked) })
 }
 
-// Repo-keyed facts are read once per repo, however many areas share it.
-fn gather_from(index: &Index, cli: Option<&crate::vault_cli::Cli>, facts_of: impl Fn(Option<&Path>) -> RepoFacts + Sync) -> Result<Areas> {
+// Repo-keyed facts are read once per repo, however many areas share it, and the vault command is never waited on.
+fn gather_from(index: &Index, state: Option<&Path>, facts_of: impl Fn(Option<&Path>) -> RepoFacts + Sync, ask: impl FnOnce(Vec<String>)) -> Result<Areas> {
     let logs = index.logs()?;
-    let mut checkouts = HashMap::new();
+    let checkouts = OnceCell::new();
     let notes: Vec<(Note, Option<PathBuf>)> = index.areas()?.into_iter().map(|note| {
-        let repo = repo_for(&note, index, &mut checkouts);
+        let repo = repo_for(&note, index, &checkouts);
         (note, repo)
     }).collect();
     let mut repos: Vec<Option<PathBuf>> = notes.iter().map(|(_, repo)| repo.clone()).collect();
     repos.sort();
     repos.dedup();
-    let facts: HashMap<Option<PathBuf>, RepoFacts> = repos.iter().cloned().zip(in_parallel(&repos, |repo| facts_of(repo.as_deref()))).collect();
+    let facts: HashMap<Option<PathBuf>, RepoFacts> = repos.iter().cloned().zip(crate::sh::in_parallel(&repos, 16, |repo| facts_of(repo.as_deref()))).collect();
+    let mut unasked = Vec::new();
     let mut list = Vec::new();
     for (note, repo) in notes {
         let (open, backlog): (Vec<Note>, Vec<Note>) = index.notes_of(&note.stem)?.into_iter()
@@ -169,7 +166,7 @@ fn gather_from(index: &Index, cli: Option<&crate::vault_cli::Cli>, facts_of: imp
         let RepoFacts { git, actions, errors, sandbox } = facts[&repo].clone();
         list.push(Area {
             sandbox,
-            log: vault::log_for(&logs, &note.stem, &own_logs(cli, &logs, &note.stem, repo.as_deref().map(name_of).as_deref())),
+            log: vault::log_for(&logs, &note.stem, &own_logs(state, &logs, [Some(note.stem.as_str()), repo.as_deref().map(name_of).as_deref()], &mut unasked)),
             git,
             key: note.key,
             stem: note.stem,
@@ -180,6 +177,11 @@ fn gather_from(index: &Index, cli: Option<&crate::vault_cli::Cli>, facts_of: imp
             actions,
             errors,
         });
+    }
+    unasked.sort();
+    unasked.dedup();
+    if !unasked.is_empty() {
+        ask(unasked);
     }
     Ok(Areas { list, synced: index.last_sync() })
 }
@@ -294,6 +296,22 @@ mod tests {
     }
 
     #[test]
+    fn a_repos_own_log_is_the_kept_answer_else_a_guess_while_it_is_asked() {
+        let dir = crate::sh::test_dir("areas-own-logs");
+        let state = dir.join("state");
+        std::fs::create_dir_all(state.join("vault-logs")).unwrap();
+        std::fs::write(state.join("vault-logs/api"), "Log/api-changes.md").unwrap();
+        std::fs::write(state.join("vault-logs/web"), "").unwrap();
+        let logs: Vec<(String, String)> = ["Log/web-logg.md", "Log/app-logg.md"].iter().map(|key| (key.to_string(), String::new())).collect();
+        let mut unasked = Vec::new();
+        assert_eq!(own_logs(Some(&state), &logs, [Some("api"), Some("web")], &mut unasked), ["Log/api-changes.md", "Log/web-logg.md"], "kept, then a refusal guessed");
+        assert!(unasked.is_empty(), "a kept refusal is not asked again on every gather");
+        assert_eq!(own_logs(Some(&state), &logs, [Some("app"), None], &mut unasked), ["Log/app-logg.md"]);
+        assert_eq!(unasked, ["app"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn many_areas_on_one_repo_read_that_repo_once() {
         let dir = crate::sh::test_dir("areas-once");
         let (shared, other) = (dir.join("shared"), dir.join("other"));
@@ -324,7 +342,7 @@ mod tests {
         let areas = gather_from(&Index::at(&path).unwrap(), None, |repo| {
             reads.lock().unwrap().push(repo.map(Path::to_path_buf));
             RepoFacts { git: None, actions: Vec::new(), errors: vec![repo.map_or("none".to_string(), name_of)], sandbox: repo.is_none() }
-        }).unwrap();
+        }, |_| unreachable!("without a state dir nothing is asked")).unwrap();
         let mut reads = reads.into_inner().unwrap();
         reads.sort();
         assert_eq!(reads.len(), 3, "one read per repo and one for the areas without: {reads:?}");

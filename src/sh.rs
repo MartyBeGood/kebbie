@@ -21,6 +21,25 @@ fn command(program: &str, args: &[&str], cwd: Option<&Path>) -> Command {
     command
 }
 
+// The work of each item on up to `workers` threads, the results in the items' order.
+pub fn in_parallel<T: Sync, R: Send>(items: &[T], workers: usize, work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let mut done: Vec<(usize, R)> = std::thread::scope(|scope| {
+        let spawned: Vec<_> = (0..items.len().min(workers.max(1))).map(|_| scope.spawn(|| {
+            let mut own = Vec::new();
+            loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(item) = items.get(index) else { return own };
+                own.push((index, work(item)));
+            }
+        })).collect();
+        spawned.into_iter().flat_map(|worker| worker.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))).collect()
+    });
+    done.sort_by_key(|(index, _)| *index);
+    done.into_iter().map(|(_, result)| result).collect()
+}
+
 // The outer error is a program that would not run; the inner one is its stderr when it failed.
 pub fn attempt(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<std::result::Result<String, String>> {
     let output = command(program, args, cwd).output().map_err(|error| format!("{program}: {error}"))?;
