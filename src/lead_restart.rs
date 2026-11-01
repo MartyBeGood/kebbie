@@ -2,7 +2,7 @@ use crate::keys::{self, Act};
 use crate::keeper::REASONS;
 use crate::known::{self, Record};
 use crate::notice::{Notice, Tone};
-use crate::restart::{HELD, HOOKS_GONE, KEBBIE_UPDATE, OUTSIDE_LEAD_DIR};
+use crate::restart::{HELD, HOOKS_GONE, KEBBIE_UPDATE, LEAD_NO_ROLE, OUTSIDE_LEAD_DIR};
 use crate::sh::Result;
 use crate::status::LEAD_LABEL;
 
@@ -22,11 +22,13 @@ struct Cause {
     short: String,
 }
 
-// A kebbie update outranks the other reasons, and a line without reasons comes from a keeper older than this kebbie, so it is the update's.
+// A lead without its role outranks the other reasons, as kebbie refuses it the lead's commands, then a kebbie update; a line without reasons comes from a keeper older than this kebbie, so it is the update's.
 fn cause(reasons: &[&str]) -> Cause {
     let cause = |runs: &str, on: &str, short: &str| Cause { runs: runs.to_string(), on: on.to_string(), short: short.to_string() };
-    let reason = reasons.iter().find(|reason| **reason == KEBBIE_UPDATE).or_else(|| reasons.first()).copied().unwrap_or(KEBBIE_UPDATE);
-    if reason == KEBBIE_UPDATE {
+    let reason = [LEAD_NO_ROLE, KEBBIE_UPDATE].into_iter().find(|first| reasons.contains(first)).or_else(|| reasons.first().copied()).unwrap_or(KEBBIE_UPDATE);
+    if reason == LEAD_NO_ROLE {
+        cause("without kebbie's lead settings", "with kebbie's lead settings", "Lead without its settings")
+    } else if reason == KEBBIE_UPDATE {
         cause("the old kebbie", "on the new kebbie", "Lead on old kebbie")
     } else if claude_reason(reason) {
         cause("an older Claude Code", "on the new Claude Code", "Lead on old Claude Code")
@@ -170,6 +172,8 @@ mod tests {
         assert_eq!(line(&lead(&manual, &["MCP servers changed", KEBBIE_UPDATE]), false, 120).unwrap(), "↻ The lead runs the old kebbie until you restart it · L restarts it", "a kebbie update is named first");
         assert_eq!(line(&lead(&manual, &["it runs without its task role"]), false, 120).unwrap(), "↻ The lead runs older code until you restart it · L restarts it", "a reason without its own wording claims no kebbie update");
         assert_eq!(line(&lead("restarted", &[KEBBIE_UPDATE]), true, 120), None, "the reasons do not keep the restarted round's line up");
+        assert_eq!(line(&lead(&manual, &[KEBBIE_UPDATE, LEAD_NO_ROLE]), false, 120).unwrap(), "↻ The lead runs without kebbie's lead settings until you restart it · L restarts it", "a lead kebbie refuses its commands is named first");
+        assert_eq!(line(&lead(&crate::restart::Verdict::Focused.words(true), &[LEAD_NO_ROLE]), true, 120).unwrap(), "↻ The lead restarts with kebbie's lead settings when you leave it · L restarts it now");
         for reasons in [["MCP servers changed"], [OUTSIDE_LEAD_DIR], ["a newer Claude Code"], [HOOKS_GONE], [KEBBIE_UPDATE]] {
             let shown = line(&lead(&manual, &reasons), false, 40).unwrap();
             assert!(crate::board::widgets::text_width(&shown) <= 40, "{shown} is cut at 40");

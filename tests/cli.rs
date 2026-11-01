@@ -1230,7 +1230,7 @@ fn lead_space(lab: &Lab, in_lead: bool, zoomed: bool, focused: &str) {
 }
 
 fn changes(lab: &Lab) -> Vec<Vec<String>> {
-    lab.herdr_calls().into_iter().filter(|call| !matches!((call[0].as_str(), call[1].as_str()), ("workspace", "list") | ("pane", "list" | "layout" | "process-info" | "get") | ("tab", "get"))).collect()
+    lab.herdr_calls().into_iter().filter(|call| !matches!((call[0].as_str(), call[1].as_str()), ("workspace", "list") | ("agent", "list") | ("pane", "list" | "layout" | "process-info" | "get") | ("tab", "get"))).collect()
 }
 
 #[test]
@@ -1325,10 +1325,11 @@ fn kebbie_lead_starts_a_quit_chat_again_in_the_leads_folder() {
 }
 
 #[test]
-fn herdrs_startup_starts_the_board_in_a_restored_lead_space_and_leaves_the_chat_to_herdr() {
+fn herdrs_startup_starts_the_board_in_a_restored_lead_space_once_and_looks_at_the_leads_claude() {
     let lab = Lab::new("revive-board");
     lead_space(&lab, false, false, "w_lead:p1");
     let answers = lab.root.join("answers");
+    fs::write(answers.join("agent-list.json"), r#"{"result":{"agents":[{"name":"lead","agent":"claude","workspace_id":"w_lead","pane_id":"w_lead:p2","agent_status":"idle","interactive_ready":true,"agent_session":{"value":"1b2c"}}]}}"#).unwrap();
     fs::write(answers.join("pane-process-info.json"), r#"{"result":{"process_info":{"shell_pid":1,"foreground_processes":[{"pid":1,"argv":["-zsh"]}]}}}"#).unwrap();
     fs::write(answers.join("pane-run.json"), r#"{"result":{}}"#).unwrap();
     let revived = lab.run(&["lead", "--revive-board", "--wait"]);
@@ -1337,7 +1338,7 @@ fn herdrs_startup_starts_the_board_in_a_restored_lead_space_and_leaves_the_chat_
     assert_eq!(started.len(), 1, "{started:?}");
     assert_eq!(started[0][..3], ["pane", "run", "w_lead:p1"]);
     assert!(started[0][3].ends_with("kebbie' board"), "{started:?}");
-    assert!(!lab.herdr_calls().iter().any(|call| call.iter().any(|arg| arg == "w_lead:p2")), "herdr resumes the lead's Claude itself; the chat pane is never looked at");
+    assert!(lab.herdr_calls().iter().any(|call| call[..2] == ["pane", "process-info"] && call.iter().any(|arg| arg == "w_lead:p2")), "the lead's Claude herdr resumed is read for kebbie's role: {:?}", lab.herdr_calls());
 
     lead_space(&lab, false, false, "w_lead:p1");
     let running = lab.run(&["lead", "--revive-board", "--wait"]);
@@ -1403,7 +1404,7 @@ fn going_to_the_lead_puts_a_closed_board_pane_back_left_of_the_chat_and_starts_n
     }
     let lead = lab.command().env("KEBBIE_LEAD_DIR", lab.root.join("lead")).args(["lead"]).output().unwrap();
     assert_eq!(stdout(&lead), "In the lead.", "{}", stderr(&lead));
-    let calls: Vec<_> = changes(&lab).into_iter().filter(|call| call[..2] != ["agent", "list"]).collect();
+    let calls = changes(&lab);
     assert_eq!(calls.len(), 4, "{calls:?}");
     assert_eq!(calls[0], ["workspace", "focus", "w_lead"]);
     assert_eq!(calls[1][..6], ["pane", "split", "w_lead:p2", "--direction", "right", "--ratio"]);

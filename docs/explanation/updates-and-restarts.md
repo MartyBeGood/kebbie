@@ -88,7 +88,8 @@ A running Claude session keeps the code it started with. kebbie calls it stale w
 - a plugin was updated after it started,
 - your MCP server config changed after it started,
 - `kebbie update` ran after it started, or
-- it is a task's Claude running without the role and settings kebbie gives a task, or its role file is gone. Such a session has none of kebbie's hooks and never reports, so the board would keep it under Needs you.
+- it is a task's Claude running without the role and settings kebbie gives a task, or its role file is gone. Such a session has none of kebbie's hooks and never reports, so the board would keep it under Needs you, or
+- it is the lead's Claude running without the lead's role and settings. kebbie then takes it for an agent and refuses it the lead's commands, such as `kebbie approve` and `kebbie issue add`.
 
 A Codex task keeps the role and hooks it started with too. It is stale when:
 
@@ -297,8 +298,10 @@ herdr saves its Spaces and panes and restores them when its server starts again.
 Any other program comes back as a bare shell, the board in the lead Space too. So herdr's startup hook runs `kebbie lead --revive-board`. It returns at once and leaves a background kebbie to wait for the lead Space, looking every 2 seconds for up to a minute.
 
 - When the lead Space's board pane sits at a shell prompt, it starts the board there.
-- A board already running, or a program of your own in that pane, is left alone, and the lead's chat is left to herdr.
+- A board already running, or a program of your own in that pane, is left alone.
 - Without a lead Space it does nothing.
+
+herdr resumes each Claude as a plain `claude --resume <session id>`, without the role and settings kebbie started it with. So once the lead's Claude is back, the same background kebbie restarts the lead and every task that herdr resumed that way, resuming the same conversation with its role and settings. It does this at once, with `restart.auto` off or you in the pane, but never mid-turn or over an input box that holds text or cannot be read. A session it leaves, or one herdr resumes later, is restarted by the keeper as any stale session is.
 
 It runs whether or not the keeper is enabled, and only when the herdr server starts, never when the keeper restarts itself after an update. So a board you quit on purpose stays quit until herdr starts again or you go to the lead. What it did is in `lead.log` in the state directory.
 

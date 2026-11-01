@@ -23,11 +23,12 @@ pub enum Mode {
     Routine { min_idle: u64 },
     Update,
     Manual { all: bool },
+    Restore,
 }
 
 impl Mode {
     fn follows_auto(self) -> bool {
-        !matches!(self, Mode::Manual { .. })
+        !matches!(self, Mode::Manual { .. } | Mode::Restore)
     }
 }
 
@@ -95,7 +96,7 @@ pub fn decide(mode: Mode, auto: bool, facts: &Facts, background: impl FnOnce() -
     if !facts.waiting {
         return Verdict::Busy;
     }
-    if facts.focused {
+    if facts.focused && mode != Mode::Restore {
         return Verdict::Focused;
     }
     if let Mode::Routine { min_idle } = mode
@@ -149,6 +150,7 @@ fn base(path: &str) -> &str {
 
 pub const HELD: &str = "stale, held: ";
 pub const NO_ROLE: &str = "it runs without its task role";
+pub const LEAD_NO_ROLE: &str = "it runs without the lead's role and settings";
 pub const HOOKS_GONE: &str = "its hooks run a kebbie that is gone";
 pub const OUTSIDE_LEAD_DIR: &str = "it runs outside the lead's folder";
 
@@ -522,7 +524,7 @@ pub const KEBBIE_UPDATE: &str = "kebbie update";
 
 // The reasons a second restart cannot satisfy when the first left them standing: the pane's PATH starts the same agent binary, or the restart did not give a task its role or working hooks.
 fn sticky(entry: &Value) -> Vec<&str> {
-    entry["reasons"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|reason| binary_reason(reason) || *reason == NO_ROLE || *reason == HOOKS_GONE).collect()
+    entry["reasons"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|reason| binary_reason(reason) || *reason == NO_ROLE || *reason == LEAD_NO_ROLE || *reason == HOOKS_GONE).collect()
 }
 
 // A session kebbie recorded starting on the installed kebbie already runs it, whatever the update's time says.
@@ -772,7 +774,7 @@ pub fn with_draft(mode: Mode, verdict: Verdict, draft: impl FnOnce() -> Draft) -
     }
     match draft() {
         Draft::Typed(_) => Verdict::Drafted,
-        Draft::Unreadable if mode.follows_auto() => Verdict::Drafted,
+        Draft::Unreadable if mode.follows_auto() || mode == Mode::Restore => Verdict::Drafted,
         Draft::Empty | Draft::Unreadable => Verdict::Restart,
     }
 }
@@ -872,14 +874,15 @@ pub fn run_counted(mode: Mode, memory: &mut Memory, only: Option<&str>, counted:
             Agent::Claude => changes.reasons(exe.as_deref(), start, cwd.as_deref()),
             Agent::Codex => changes.codex_reasons(exe.as_deref(), start),
         };
-        if process.argv.as_deref().is_some_and(|argv| pane.agent.lacks_role(argv)) && cwd.as_deref().and_then(tasks::task_at).is_some() {
-            reasons.push(NO_ROLE.to_string());
-        }
+        reasons.extend(process.argv.as_deref().and_then(|argv| role_reason(pane.agent, argv, lead, cwd.as_deref().and_then(tasks::task_at).is_some())).map(str::to_string));
         if process.argv.as_deref().is_some_and(hooks_gone_in) {
             reasons.push(HOOKS_GONE.to_string());
         }
         if lead && lead::lead_dir().is_ok_and(|own| outside_lead_dir(cwd.as_deref(), &own)) {
             reasons.push(OUTSIDE_LEAD_DIR.to_string());
+        }
+        if mode == Mode::Restore {
+            reasons.retain(|reason| restores(reason));
         }
         let (kebbie, started_on) = if reasons.iter().any(|reason| reason == KEBBIE_UPDATE) {
             let address = if lead { Some(crate::status::LEAD_LABEL.to_string()) } else { task_address(cwd.as_deref()) };
@@ -891,7 +894,7 @@ pub fn run_counted(mode: Mode, memory: &mut Memory, only: Option<&str>, counted:
             (None, None)
         };
         let record = json!({ "at": at, "exe": exe.as_deref().map(|exe| exe.to_string_lossy().to_string()), "reasons": reasons, "kebbie": kebbie, "started": started_on });
-        if !reasons.is_empty() && let Some(why) = held_back(restarted.get(&session), &record, matches!(mode, Mode::Manual { .. })) {
+        if !reasons.is_empty() && let Some(why) = held_back(restarted.get(&session), &record, matches!(mode, Mode::Manual { .. } | Mode::Restore)) {
             lines.push(Line { label: pane.label.clone(), said: format!("{HELD}{why}"), stale: lead, reasons: reasons.clone() });
             continue;
         }
@@ -941,6 +944,8 @@ pub fn run_counted(mode: Mode, memory: &mut Memory, only: Option<&str>, counted:
                 live.remove(&session);
                 if matches!(mode, Mode::Routine { .. }) || started.asks().is_some() {
                     tell_board(&restarted_said(&pane.label, pane.agent, &reasons, &started));
+                } else if mode == Mode::Restore {
+                    tell_board(&format!("Restarted {label} with kebbie's role and settings, which herdr's own restore had left off; it resumes its conversation.", label = pane.label));
                 }
                 lines.push(match started.asks() {
                     None => Line { reasons: reasons.clone(), ..line(&Verdict::Restart) },
@@ -997,6 +1002,25 @@ pub fn report(lines: &[Line]) -> Vec<String> {
     out
 }
 
+// A lead or task agent started without the role and settings kebbie gives it, as herdr's own restore resumes it, runs none of kebbie's hooks and is refused its commands.
+pub fn role_reason(agent: Agent, argv: &[String], lead: bool, task: bool) -> Option<&'static str> {
+    if !agent.lacks_role(argv) {
+        return None;
+    }
+    if lead { Some(LEAD_NO_ROLE) } else { task.then_some(NO_ROLE) }
+}
+
+// herdr resumes each agent of a restored pane as a plain claude --resume or codex resume, so only the reasons that restore leaves count.
+fn restores(reason: &str) -> bool {
+    reason == NO_ROLE || reason == LEAD_NO_ROLE
+}
+
+// After herdr's restore, each session it resumed without kebbie's role is restarted with it at once, focused or not, while it waits with an empty input box.
+pub fn restore() -> Result<Vec<String>> {
+    let lines = run(Mode::Restore, &mut Memory::default(), None)?;
+    Ok(lines.iter().filter(|line| line.said == "restarted" || line.said.starts_with("restart failed") || line.said.starts_with("restarted;")).map(|line| format!("restore: {}: {}", line.label, line.said)).collect())
+}
+
 pub fn now_cli(all: bool) -> Result<String> {
     Ok(report(&with_reasons(run(Mode::Manual { all }, &mut Memory::default(), None)?)).join("\n"))
 }
@@ -1047,6 +1071,29 @@ mod tests {
         let restarted = Line { label: "billing@app".to_string(), said: "restarted".to_string(), stale: false, reasons: vec![HOOKS_GONE.to_string()] };
         assert_eq!(report(&with_reasons(vec![restarted.clone()]))[1], "  billing@app: restarted, as its hooks run a kebbie that is gone", "kebbie restart says why it restarted a session");
         assert_eq!(report(&[restarted])[1], "  billing@app: restarted");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_lead_or_task_that_herdr_resumed_without_kebbies_role_is_restarted_with_it_at_once() {
+        let dir = scratch("restart-role");
+        let (role, settings) = (dir.join("lead.md"), dir.join("lead.settings.json"));
+        std::fs::write(&role, "").unwrap();
+        std::fs::write(&settings, "{}").unwrap();
+        let argv = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
+        let restored = argv(&["claude", "--resume", "1b2c"]);
+        assert_eq!(role_reason(Agent::Claude, &restored, true, false), Some(LEAD_NO_ROLE), "herdr's restore resumes the lead as a plain claude --resume");
+        assert_eq!(role_reason(Agent::Claude, &restored, false, true), Some(NO_ROLE));
+        assert_eq!(role_reason(Agent::Claude, &restored, false, false), None, "a Claude of the user's own is none of kebbie's");
+        let kebbies = argv(&["claude", "--append-system-prompt-file", &role.to_string_lossy(), "--settings", &settings.to_string_lossy(), "--resume", "1b2c"]);
+        assert_eq!(role_reason(Agent::Claude, &kebbies, true, false), None);
+        assert!(restores(LEAD_NO_ROLE) && restores(NO_ROLE) && !restores(KEBBIE_UPDATE) && !restores(HOOKS_GONE), "after a restore only what herdr left off counts");
+        let restore = |focused: bool| decide(Mode::Restore, false, &facts(true, true, focused, 0), || false);
+        assert_eq!((restore(false), restore(true)), (Verdict::Restart, Verdict::Restart), "with restart.auto off and the user in its pane, the restored lead gets its role back");
+        assert_eq!(decide(Mode::Restore, true, &facts(true, false, false, 0), || false), Verdict::Busy, "a turn is never cut off");
+        assert_eq!(with_draft(Mode::Restore, Verdict::Restart, || Draft::Unreadable), Verdict::Drafted, "a box kebbie cannot read may hold what the user typed since");
+        let entry = |at: u64| json!({ "at": at, "exe": "/bin/claude", "reasons": [LEAD_NO_ROLE] });
+        assert!(held_back(Some(&entry(0)), &entry(10), true).is_some_and(|why| why.contains("restarting again would not mend it")), "a restart that left it without its role is not repeated");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1258,7 +1305,7 @@ mod tests {
         assert!(lacks_role(&argv(&["claude", "--settings", &settings, "--resume", "id"])));
         assert!(lacks_role(&argv(&["claude", "--settings", &settings, "--append-system-prompt-file", &format!("{role}.gone")])), "its role file was lost");
         let source = include_str!("restart.rs").split("#[cfg(test)]").next().unwrap();
-        assert!(source.contains("is_some_and(|argv| pane.agent.lacks_role(argv)) && cwd.as_deref().and_then(tasks::task_at).is_some()") && source.contains("reasons.push(NO_ROLE.to_string())"), "a task Claude without its role counts as stale, so it is restarted with it");
+        assert!(source.contains("role_reason(pane.agent, argv, lead, cwd.as_deref().and_then(tasks::task_at).is_some())"), "a lead or task Claude without its role counts as stale, so it is restarted with it");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1509,7 +1556,7 @@ mod tests {
         assert!(run.contains("tasks::codex_restart_refusal(") && run.find("tasks::codex_restart_refusal(").unwrap() < run.find("perform(").unwrap(), "a Codex task whose profile no longer loads is skipped before anything ends it");
         assert!(run.contains("Agent::Codex => changes.codex_reasons(") && run.contains("pane.agent.session_transcript("), "a Codex is judged by its own binary and its rollout");
         assert!(run.contains("|| pane.agent == Agent::Claude && transcript"), "Claude's background-work check reads a Claude transcript only");
-        assert!(run.find("lacks_role(argv)").unwrap() < run.find("held_back(").unwrap(), "a Codex task started on kebbie@kebbie or without its hooks is stale like a Claude without its role");
+        assert!(run.find("role_reason(pane.agent, argv").unwrap() < run.find("held_back(").unwrap(), "a Codex task started on kebbie@kebbie or without its hooks is stale like a Claude without its role");
         let perform = &source[source.find("\nfn perform(").unwrap()..];
         assert!(perform.find("codex::ready_to_start(").unwrap() < perform.find(".end(&pane.pane)").unwrap(), "a Codex is ended only when kebbie's plugin is the one it writes, so the resumed session reports");
     }

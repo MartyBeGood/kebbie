@@ -537,7 +537,7 @@ fn lead_board() -> Option<String> {
     places(&lead).ok()?.board
 }
 
-fn wait_for_board(mut look: impl FnMut() -> Option<String>, mut pause: impl FnMut(), tries: usize) -> Option<String> {
+fn wait_for(mut look: impl FnMut() -> Option<String>, mut pause: impl FnMut(), tries: usize) -> Option<String> {
     for _ in 0..tries {
         if let Some(board) = look() {
             return Some(board);
@@ -547,10 +547,20 @@ fn wait_for_board(mut look: impl FnMut() -> Option<String>, mut pause: impl FnMu
     None
 }
 
-// herdr restores the lead Space but not the board in it, and resumes the chat's Claude itself, so only the board pane is touched.
+// herdr restores the lead Space but not the board in it, and resumes each pane's agent itself without kebbie's role and settings, so those are restarted with them once the lead's Claude is back.
 pub fn revive_board() -> Result<String> {
-    let Some(board) = wait_for_board(lead_board, || std::thread::sleep(REVIVE_PAUSE), REVIVE_TRIES) else { return Ok(String::new()) };
-    Ok(if start_board_at_shell(&board)? { format!("board: started in {board} after herdr's restore") } else { String::new() })
+    let Some(board) = wait_for(lead_board, || std::thread::sleep(REVIVE_PAUSE), REVIVE_TRIES) else { return Ok(String::new()) };
+    let mut lines: Vec<String> = start_board_at_shell(&board)?.then(|| format!("board: started in {board} after herdr's restore")).into_iter().collect();
+    if wait_for(lead_claude_ready, || std::thread::sleep(REVIVE_PAUSE), REVIVE_TRIES).is_some() {
+        lines.extend(crate::restart::restore().unwrap_or_else(|error| vec![format!("restore: {error}")]));
+    }
+    Ok(lines.join("\n"))
+}
+
+fn lead_claude_ready() -> Option<String> {
+    let lead = lead_workspace(&herdr::workspaces().ok()?)?;
+    let agents = herdr::agents().ok()?;
+    lead_agent(&agents, &lead).filter(|agent| agent["interactive_ready"] == true).and_then(|agent| agent["pane_id"].as_str()).map(str::to_string)
 }
 
 // A build still writing the binary changes its mtime between looks; only the same mtime on two looks is a finished one.
@@ -715,10 +725,10 @@ mod tests {
     fn the_board_is_revived_once_the_lead_space_shows_up_and_never_after_the_wait() {
         let mut looks = 0;
         let mut pauses = 0;
-        let late = wait_for_board(|| { looks += 1; (looks == 4).then(|| "w_lead:p1".to_string()) }, || pauses += 1, REVIVE_TRIES);
+        let late = wait_for(|| { looks += 1; (looks == 4).then(|| "w_lead:p1".to_string()) }, || pauses += 1, REVIVE_TRIES);
         assert_eq!((late.as_deref(), looks, pauses), (Some("w_lead:p1"), 4, 3), "a lead Space herdr restores late is still found");
         let (mut looks, mut pauses) = (0, 0);
-        assert_eq!(wait_for_board(|| { looks += 1; None }, || pauses += 1, REVIVE_TRIES), None);
+        assert_eq!(wait_for(|| { looks += 1; None }, || pauses += 1, REVIVE_TRIES), None);
         assert_eq!(looks, REVIVE_TRIES, "without a lead Space the wait ends quietly");
         assert!(REVIVE_PAUSE * REVIVE_TRIES as u32 <= std::time::Duration::from_secs(60) && REVIVE_PAUSE >= std::time::Duration::from_secs(1));
     }
@@ -728,6 +738,10 @@ mod tests {
         let script = include_str!("../scripts/herdr-startup.sh");
         let revive = script.lines().find(|line| line.ends_with("kebbie\" lead --revive-board")).expect("the startup revives the board");
         assert!(!revive.contains("&&") && !script.contains("enabled"), "the revive runs whether or not the keeper is enabled");
+        let source = include_str!("lead.rs");
+        let body = &source[source.find("\npub fn revive_board() ").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert!(body.find("wait_for(lead_claude_ready").unwrap() < body.find("crate::restart::restore()").unwrap(), "once herdr has resumed the lead's Claude without kebbie's role, the revive restarts it with it");
     }
 
     #[test]
