@@ -10,7 +10,9 @@ Starts one real Claude task, and one real Codex task when kebbie's Codex plugin
 is installed and a profile runs Codex, in a sandbox repo (default
 ~/projects/kebbie-sandbox). Each adds a line to SMOKE.md and commits it. The
 script waits for each to report ready, restarts it and waits for it to resume,
-then drops both tasks. It never pushes and touches no other repo.
+then drops both tasks. A task that waits on you, as an agent asking whether to
+trust the repo's folder, fails at once with what it waits for. It never pushes
+and touches no other repo.
 
 The repo must be a git checkout with nothing uncommitted.
 
@@ -69,6 +71,7 @@ item() {
   "$kebbie" status --json 2>/dev/null | jq -c --arg name "$1" --arg place "$place" '[.items[] | select(.name == $name and .place == $place)][0] // empty'
 }
 
+# 0 on the ready report, 2 with what it waits for in $waits once it sits under NEEDS YOU, 1 at the timeout.
 wait_ready() {
   task=$1 word=$2 deadline=$(($(date +%s) + timeout))
   while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -76,9 +79,20 @@ wait_ready() {
     if [ -n "$shown" ] && [ "$(printf '%s' "$shown" | jq -r '.report.state // empty')" = ready ] && printf '%s' "$shown" | jq -r '.report.summary // empty' | grep -qi "$word"; then
       return 0
     fi
+    if [ -n "$shown" ] && [ "$(printf '%s' "$shown" | jq -r '.group // empty')" = "NEEDS YOU" ]; then
+      waits=$(printf '%s' "$shown" | jq -r '.next_for_you // .summary // "nothing it names"')
+      return 2
+    fi
     sleep "$poll"
   done
   return 1
+}
+
+waited() {
+  case $1 in
+    2) record "$label" FAIL "waits on you: $waits" ;;
+    *) record "$label" FAIL "$2" ;;
+  esac
 }
 
 prompt="This is kebbie's release smoke test. Append the line 'kebbie release smoke $stamp' to SMOKE.md, commit it with a subject and a body that says why, then report ready with the summary: smoke done. Do nothing else."
@@ -93,8 +107,10 @@ smoke() {
   fi
   started="$started $task"
   record "$label" PASS "started $task"
-  if ! wait_ready "$task" "smoke"; then
-    record "$label" FAIL "no ready report within ${timeout}s"
+  wait_ready "$task" "smoke"
+  got=$?
+  if [ "$got" -ne 0 ]; then
+    waited "$got" "no ready report within ${timeout}s"
     return
   fi
   ahead=$(item "$task" | jq -r '.git.ahead // 0')
@@ -108,7 +124,9 @@ smoke() {
     record "$label" FAIL "restart did not resume: $(printf '%s' "$said" | tr '\n' ' ' | cut -c1-120)"
     return
   fi
-  if wait_ready "$task" "resumed"; then record "$label" PASS "restarted and resumed its conversation"; else record "$label" FAIL "no report after the restart within ${timeout}s"; fi
+  wait_ready "$task" "resumed"
+  got=$?
+  if [ "$got" -eq 0 ]; then record "$label" PASS "restarted and resumed its conversation"; else waited "$got" "no report after the restart within ${timeout}s"; fi
 }
 
 smoke claude "smoke-claude-$stamp"

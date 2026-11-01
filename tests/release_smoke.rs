@@ -10,7 +10,7 @@ mod test_seal;
 
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/release-smoke.sh");
 
-// A kebbie that keeps each started task as a file, reports it ready at once (resumed once it was started again), logs every call, and a herdr that closes Spaces.
+// A kebbie that keeps each started task as a file, reports it ready at once (resumed once it was started again) or holds a Codex task under NEEDS YOU on what codex-asks says, logs every call, and a herdr that closes Spaces.
 const KEBBIE: &str = r#"#!/bin/sh
 d=$(dirname "$(dirname "$0")")
 echo "$*" >> "$d/kebbie.log"
@@ -26,7 +26,9 @@ case "$1" in
       name=$(basename "$file")
       case "$(cat "$file")" in resumed) summary=resumed ;; *) summary='smoke done' ;; esac
       [ -f "$d/never-ready" ] && state=working || state=ready
-      printf '%s{"name":"%s","place":"sandbox","workspace":"w_%s","git":{"ahead":1},"report":{"state":"%s","summary":"%s"}}' "$sep" "$name" "$name" "$state" "$summary"
+      group='"READY TO PUSH"' next=null
+      case "$name" in smoke-codex-*) [ -f "$d/codex-asks" ] && state=working group='"NEEDS YOU"' next="\"$(cat "$d/codex-asks")\"" ;; esac
+      printf '%s{"name":"%s","place":"sandbox","workspace":"w_%s","group":%s,"next_for_you":%s,"git":{"ahead":1},"report":{"state":"%s","summary":"%s"}}' "$sep" "$name" "$name" "$group" "$next" "$state" "$summary"
       sep=,
     done
     printf ']}\n' ;;
@@ -142,6 +144,21 @@ fn without_kebbies_codex_plugin_the_smoke_skips_codex_and_a_task_that_never_repo
     assert_eq!(output.status.code(), Some(1), "{shown}");
     assert!(shown.contains("claude   FAIL  no ready report within 5s") && shown.contains("codex    PASS  skipped: kebbie's Codex plugin is not installed") && shown.ends_with("release-smoke: FAILED\n"), "{shown}");
     assert!(sandbox.calls().iter().any(|call| call.contains(" drop smoke-claude-")), "the failed task is dropped too");
+}
+
+#[test]
+fn a_task_under_needs_you_fails_at_once_with_what_it_waits_for_and_is_dropped() {
+    let sandbox = Sandbox::new("asks");
+    fs::write(sandbox.dir.join("codex"), "").unwrap();
+    fs::write(sandbox.dir.join("codex-asks"), "answer Codex in its Space: it asks whether you trust its folder").unwrap();
+    let begun = Instant::now();
+    let output = sandbox.command(&[sandbox.repo.to_str().unwrap()]).env("SMOKE_TIMEOUT", "60").output().unwrap();
+    let shown = said(&output);
+    assert_eq!(output.status.code(), Some(1), "{shown}");
+    assert!(begun.elapsed() < Duration::from_secs(30), "the smoke waited out its timeout: {shown}");
+    assert!(shown.contains("codex    FAIL  waits on you: answer Codex in its Space: it asks whether you trust its folder"), "{shown}");
+    assert!(shown.contains("claude   PASS  restarted and resumed its conversation") && shown.ends_with("release-smoke: FAILED\n"), "{shown}");
+    assert!(sandbox.calls().iter().any(|call| call.contains(" drop smoke-codex-")), "the task that waits is dropped too");
 }
 
 #[test]

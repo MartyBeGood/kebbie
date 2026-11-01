@@ -514,6 +514,8 @@ With nothing waiting, it prints `Nothing needs you.` and what is on its way in.
 
 | Field | Value |
 | --- | --- |
+| `group` | The board's group it sits under, such as `NEEDS YOU` or `READY TO PUSH`. |
+| `next_for_you` | What it waits on you for, such as `answer Codex in its Space: it asks whether you trust its folder`, or `null`. |
 | `push_waits` | `user` or `lead` while a push it asked for waits in its repo's push line or for the task's Claude. |
 | `push_ahead` | How many pushes of its repo go before it while it waits its turn. |
 | `profile` | The profile it started with: `task` for the built-in one, `null` for a session that is no task. |

@@ -585,6 +585,7 @@ impl Item {
     pub fn to_json(&self) -> Value {
         let mut shown = self.shown_json();
         shown["staged"] = json!(self.staged);
+        shown["next_for_you"] = json!(self.next_for_you());
         shown["assessment"] = json!(self.assessment.as_ref().map(crate::assessment::Word::text));
         shown["second_opinion"] = json!(self.second.as_ref().map(crate::review::SecondShown::to_json));
         shown["recipe"] = self.recipe.as_ref().map_or(Value::Null, crate::recipe::Recipe::to_json);
@@ -1769,6 +1770,7 @@ pub(crate) mod tests {
         assert_eq!(item.group(), Group::NeedsYou);
         assert_eq!(item.next_for_you(), Some("answer Codex in its Space: it asks whether you trust its folder"));
         assert_eq!(item.wanted("g").as_deref(), Some("answer Codex in its Space: it asks whether you trust its folder · g goes there"));
+        assert_eq!((item.to_json()["group"].clone(), item.to_json()["next_for_you"].clone()), (json!("NEEDS YOU"), json!("answer Codex in its Space: it asks whether you trust its folder")), "a script that waits for a report reads what holds the task");
     }
 
     #[test]
