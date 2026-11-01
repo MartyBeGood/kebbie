@@ -5,6 +5,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 ## Unreleased
 
 ### What's new
+- kebbie start --no-note starts a task without a vault note, for a throwaway task
 - task.require_accept = true holds every push until each commit it takes is accepted: kebbie push, the board's push and push in order refuse with the first step to accept and how, and a ready task with one waits under Needs you as accept step N; off by default, and no effect with task.steps off
 - v on a task opens a review menu, review · <task>, with its commits since main and the assessor's word: v sends it to the reviewer, and on a task in review v withdraws it; with review.second set, s reviews with a second opinion beside the reviewer and o runs the second opinion alone
 - review.profile picks who reviews, the built-in reviewer or a review profile of yours, and its verdict holds the push; review.model is that reviewer's model; the Settings page picks it from the review profiles whose agent you set up
@@ -36,6 +37,9 @@ What each kebbie release brings, one line per change, as you would tell someone 
 - The phone shows what the board shows: Next above the groups in the order N gives it, per machine; each task's title, agent and model, recipe and review assessment; a prompt on an agent's screen, Codex's approvals among them, under Questions with its command and options, counted in the badge; the task's review section with whether the push waits for the reviewer; the queued and parked tasks, routines and away mode; and a task's steps with how many wait for your accept and which is next only under task.require_accept, otherwise that push takes what is committed. Update the hub first: an older hub's web app refuses the new board
 
 ### Fixed
+- A push whose rebase git stops for a reason other than a conflict, such as no user.email in git, says git's own reason and leaves the branch as it was, where it was handed to the task as a conflict with nothing to resolve
+- kebbie restart no longer takes a session for one running an older Claude Code or Codex when the agent was installed in the same second the session started
+- A Codex start whose trust question is drawn after herdr calls Codex ready says Codex asks whether you trust its folder and holds the prompt, where it said Codex's input box already held "1. Trust and continue"
 - A Codex task commits, stashes and rebases without asking, and reaches kebbie's sandbox hosts, npm and crates.io among them, where every commit and every npm ci waited on an approval: with task.sandbox on it runs under kebbie's own Codex permission profile, which writes what a commit writes in .git but never its config, hooks or push block, and reaches only the sandbox's hosts through Codex's network proxy; with task.sandbox off, Codex's workspace-write gets the git dirs and the network
 - A Codex task's row says its Codex runs the tests, resolves the conflict, fixes the red CI, is taking a turn or says the failure is outside the code, where it said its Claude, and a task whose agent is gone says no agent
 - The update window scrolls a list of what's new and fixed taller than the screen with ↑ ↓, PgUp PgDn, Home End and the mouse wheel, its keys line staying at the bottom with ↓ more while there is more, where the list was cut and the wheel closed the window
