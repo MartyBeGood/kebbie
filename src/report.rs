@@ -165,7 +165,7 @@ fn rules_check(cwd: &Path) -> String {
     use crate::rules_check::Started;
     match crate::rules_check::start(cwd) {
         Ok(Started::Queued) => " The reviewer checks your commits against the rules in the background; kebbie tells you if one needs fixing.".to_string(),
-        Ok(Started::Retold(findings)) => format!(" The rules check already found these on this code; fix each, then report ready again:\n{findings}"),
+        Ok(Started::Retold(findings)) => format!(" The rules check already found these in these commits; fix each, then report ready again:\n{findings}"),
         Ok(Started::ByReview) => " Your reviewer's verdict covers the rules too.".to_string(),
         Ok(Started::Lead) => " The lead checks your commits against the rules next; it tells you if one needs fixing.".to_string(),
         Ok(Started::Nothing) => String::new(),

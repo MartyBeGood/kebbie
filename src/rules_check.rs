@@ -119,8 +119,7 @@ pub fn start(cwd: &Path) -> Result<Started> {
         None => {}
     }
     let head = git(&slot.path, &["rev-parse", "HEAD"])?;
-    let current = |sha: &str| tasks::same_code(&slot.path, &upstream, sha, &head);
-    let asked = asked_in(&state, &address, current)?;
+    let asked = asked_in(&state, &address, checked_as(&slot.path, &upstream, &head))?;
     if asked == Asked::Failed {
         ask_lead(&state, &address, &slot.path, Some("the reviewer gave no rules verdict on this code, so the check is yours"))?;
         return Ok(Started::Lead);
@@ -213,7 +212,12 @@ pub fn shown_in(state: &Path, address: &str, current: impl Fn(&str) -> bool) -> 
 
 pub fn shown(state: &Path, address: &str, path: &Path, upstream: &str) -> Option<Shown> {
     let head = git(path, &["rev-parse", "HEAD"]).ok()?;
-    shown_in(state, address, |sha| tasks::same_code(path, upstream, sha, &head))
+    shown_in(state, address, checked_as(path, upstream, &head))
+}
+
+// A rules check reads the commits, not only the code they make, so its word holds only while the commits are the ones it read.
+fn checked_as<'a>(path: &'a Path, upstream: &'a str, head: &'a str) -> impl Fn(&str) -> bool + 'a {
+    move |sha| tasks::same_commits(path, upstream, sha, head)
 }
 
 pub fn forget(task: &str, repo: &Path) {
@@ -268,7 +272,7 @@ pub fn run(cwd: &Path) -> Result<String> {
     };
     let settled = settle(&state, &address, &checked, outcome, reach);
     let head = git(&slot.path, &["rev-parse", "HEAD"]).unwrap_or_default();
-    let moved = !tasks::same_code(&slot.path, &upstream, &checked, &head);
+    let moved = !checked_as(&slot.path, &upstream, &head)(&checked);
     match again(&state, &address, &slot.path, settled.is_ok(), moved, round)? {
         Again::Run => {}
         Again::Lead => ask_lead(&state, &address, &slot.path, Some("its commits changed again while the reviewer checked them, so the check is yours"))?,
@@ -586,6 +590,35 @@ mod tests {
         assert!(!trusted(&Caller::User, "n0nce", None), "no run record, no keeper start");
         assert!(trusted(&Caller::User, "n0nce\n", Some(&record)));
         assert!(!trusted(&Caller::Sandboxed, "n0nce", Some(&record)));
+    }
+
+    #[test]
+    fn a_break_holds_through_a_clean_rebase_and_goes_once_the_commits_are_split_into_the_same_code() {
+        let (dir, origin, slot, upstream) = task_with_a_commit("billing");
+        let ada = ["-c", "user.name=Ada", "-c", "user.email=ada@example.com"];
+        for name in ["e", "f"] {
+            fs::write(slot.path.join(name), name).unwrap();
+        }
+        git(&slot.path, &["add", "e", "f"]).unwrap();
+        git(&slot.path, &[&ada[..], &["commit", "--quiet", "-m", "e and f"]].concat()).unwrap();
+        let head = || git(&slot.path, &["rev-parse", "HEAD"]).unwrap();
+        let state = state_of(&dir);
+        fs::create_dir_all(super::dir(&state)).unwrap();
+        fs::write(verdict_file(&state, "billing@app"), review::record("verdict: changes\n\n- commit abc1234 makes two changes; rule 2.\n", &head()).unwrap()).unwrap();
+        let broken = |state: &Path| (shown(state, "billing@app", &slot.path, &upstream), asked_in(state, "billing@app", checked_as(&slot.path, &upstream, &head())).unwrap());
+        assert!(matches!(broken(&state), (Some(Shown::Broken(1)), Asked::Broken(_))), "the break stands on the commits it read");
+        land_on_main(&dir, &upstream, |_| ());
+        git(&slot.path, &[&ada[..], &["rebase", "--quiet", &upstream]].concat()).unwrap();
+        assert!(matches!(broken(&state), (Some(Shown::Broken(1)), Asked::Broken(_))), "a clean rebase keeps the commits it read");
+        let tree = git(&slot.path, &["rev-parse", "HEAD^{tree}"]).unwrap();
+        git(&slot.path, &["reset", "--quiet", "HEAD~1"]).unwrap();
+        for name in ["e", "f"] {
+            git(&slot.path, &["add", name]).unwrap();
+            git(&slot.path, &[&ada[..], &["commit", "--quiet", "-m", name]].concat()).unwrap();
+        }
+        assert_eq!(git(&slot.path, &["rev-parse", "HEAD^{tree}"]).unwrap(), tree, "the split leaves every file as it was");
+        assert_eq!(broken(&state), (None, Asked::Fresh), "split commits are checked again, not told the break on the commit they replaced");
+        cleanup(dir, origin, &slot);
     }
 
     #[test]

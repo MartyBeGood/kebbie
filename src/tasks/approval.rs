@@ -29,6 +29,11 @@ pub fn same_code(path: &Path, upstream: &str, one: &str, other: &str) -> bool {
     one == other || matches!((code(path, upstream, one), code(path, upstream, other)), (Ok(one), Ok(other)) if one == other)
 }
 
+// The same commits, each its message and its change, so a clean rebase keeps them and a split, squash or reword does not.
+pub fn same_commits(path: &Path, upstream: &str, one: &str, other: &str) -> bool {
+    one == other || matches!((fingerprint_at(path, upstream, one), fingerprint_at(path, upstream, other)), (Ok(one), Ok(other)) if one == other)
+}
+
 // One line per commit, of its message and its added or removed lines without line numbers or context, so a clean rebase keeps each line and commits upstream absorbs below the task's own only drop lines.
 pub(super) fn fingerprint(path: &Path, upstream: &str) -> Result<String> {
     fingerprint_at(path, upstream, "HEAD")
