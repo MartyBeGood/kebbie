@@ -6,7 +6,12 @@ What each kebbie release brings, one line per change, as you would tell someone 
 
 ### What's new
 
+- **The hub protocol signs, seals and pairs under kebbie's own domain strings**, and the board sends its version as `kebbie`. A machine needs this release to reach hub.kebbie.dev, which now speaks only this protocol.
+- **`kebbie doctor` checks the task hooks**: it names open sessions and the lead whose hooks run a kebbie binary that no longer exists, and `--fix` restarts them on the current one.
+
 ### Fixed
+
+- A Codex task with `task.sandbox = false` can write the package caches (`~/.npm`, `~/.cache`, `~/.cargo`, or a profile's `allow_write`), so `npm ci` in its worktree no longer stops to ask you.
 
 ## 0.31.0
 
