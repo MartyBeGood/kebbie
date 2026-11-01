@@ -93,7 +93,8 @@ const USAGE: &str = "kebbie: herding coding agents in herdr
                                   --from <ref> branches off it
                                   instead of the default branch, --mode <mode> is Claude's permission mode,
                                   --profile <name> starts it with that profile instead of task.profile or task,
-                                  it takes focus only when you start it (--focus, --no-focus decide), --anyway
+                                  it takes focus only when you start it (--focus, --no-focus decide),
+                                  --no-note starts it without a vault note, --anyway
                                   starts from a vault note kebbie on
                                   another machine works on, --after <task[@repo]> (repeatable) queues it
                                   to start from the default branch once each of those tasks ended as done and,
@@ -564,7 +565,7 @@ fn run(arguments: &Arguments) -> Result<String> {
                 }
             }
             tasks::refuse_queued_name(name)?;
-            let options = tasks::Start { prompt, focus: takes_focus(arguments.flag("--focus"), arguments.flag("--no-focus"), &permit::caller()), from: arguments.value("--from"), mode: arguments.value("--mode"), profile: arguments.value("--profile"), backlog: arguments.value("--backlog"), note: true, anyway: arguments.flag("--anyway") };
+            let options = tasks::Start { prompt, focus: takes_focus(arguments.flag("--focus"), arguments.flag("--no-focus"), &permit::caller()), from: arguments.value("--from"), mode: arguments.value("--mode"), profile: arguments.value("--profile"), backlog: arguments.value("--backlog"), note: !arguments.flag("--no-note"), anyway: arguments.flag("--anyway") };
             // One task across repos: a half per repo, the first one focused.
             let started: Vec<Result<String>> = repos.iter().enumerate()
                 .map(|(index, repo)| tasks::start(repo, name, &tasks::Start { focus: options.focus && index == 0, ..options }))

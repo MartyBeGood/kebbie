@@ -59,6 +59,7 @@ Start a task in a pooled worktree, in its own herdr Space, with Claude.
 | `--profile <name>` | Start with this [profile](configuration.md#profiles) instead of `task.profile`, or the built-in `task`. |
 | `--focus` | Go to the task's Space, also when the lead or a task starts it. |
 | `--no-focus` | Stay where you are, also when you start it yourself. |
+| `--no-note` | Start it without a vault note, as for a throwaway task. |
 | `--after <task[@repo]>` | Queue the task until that task has ended as done. Repeat it to wait for several. See [`kebbie after`](#kebbie-after-name). |
 | `--at <time>` | Queue the task to start at that local time. |
 | `--why <reason>` | With `--after`: why the task waits, in a few words for the user, shown on the board's Queued row. |

@@ -129,6 +129,7 @@ fn the_smoke_runs_claude_then_codex_through_ready_restart_and_resume_drops_both_
     let calls = sandbox.calls();
     let repo = sandbox.repo.canonicalize().unwrap();
     assert!(calls.iter().filter(|call| call.contains(" start ")).all(|call| call.starts_with(&format!("-C {} start smoke-", repo.display()))), "every start names the sandbox: {calls:?}");
+    assert!(calls.iter().filter(|call| call.contains(" start ")).all(|call| call.contains(" --no-note")), "a smoke task never makes a vault note: {calls:?}");
     assert!(calls.iter().any(|call| call.contains("start smoke-codex-") && call.ends_with("--profile coder")), "a read-only or review Codex profile never commits, so the smoke takes one that writes: {calls:?}");
     assert_eq!(calls.iter().filter(|call| call.contains(" drop smoke-")).count(), 2, "{calls:?}");
     assert!(!calls.iter().any(|call| call.split_whitespace().any(|word| word == "push")), "{calls:?}");

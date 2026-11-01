@@ -101,7 +101,7 @@ again="kebbie restarted you for its release smoke test. Report ready again with 
 smoke() {
   label=$1 task=$2
   shift 2
-  if ! said=$("$kebbie" -C "$repo" start "$task" "$prompt" --no-focus "$@" 2>&1); then
+  if ! said=$("$kebbie" -C "$repo" start "$task" "$prompt" --no-focus --no-note "$@" 2>&1); then
     record "$label" FAIL "start: $(printf '%s' "$said" | head -n 1)"
     return
   fi
@@ -120,7 +120,7 @@ smoke() {
     record "$label" FAIL "could not close its Space to restart it"
     return
   fi
-  if ! said=$("$kebbie" -C "$repo" start "$task" "$again" --no-focus "$@" 2>&1) || ! printf '%s' "$said" | grep -q "It resumes its last conversation"; then
+  if ! said=$("$kebbie" -C "$repo" start "$task" "$again" --no-focus --no-note "$@" 2>&1) || ! printf '%s' "$said" | grep -q "It resumes its last conversation"; then
     record "$label" FAIL "restart did not resume: $(printf '%s' "$said" | tr '\n' ' ' | cut -c1-120)"
     return
   fi
