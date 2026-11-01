@@ -32,7 +32,7 @@ case "$1" in
     printf ']}\n' ;;
   drop) rm -f "$d/tasks/$2" ;;
   doctor) [ -f "$d/codex" ] && echo 'ok    codex plugin      kebbie'"'"'s plugin at ~/.codex'; echo 'fail  herdr plugin      not registered'; exit 1 ;;
-  profiles) echo '[{"name":"task","agent":"claude"},{"name":"coder","agent":"codex"}]' ;;
+  profiles) echo '[{"name":"task","agent":"claude"},{"name":"second","agent":"codex","permission_mode":"plan"},{"name":"codex-review","agent":"codex","kind":"review"},{"name":"coder","agent":"codex"}]' ;;
   *) echo "the fake kebbie does not know $1" >&2; exit 1 ;;
 esac
 "#;
@@ -127,7 +127,7 @@ fn the_smoke_runs_claude_then_codex_through_ready_restart_and_resume_drops_both_
     let calls = sandbox.calls();
     let repo = sandbox.repo.canonicalize().unwrap();
     assert!(calls.iter().filter(|call| call.contains(" start ")).all(|call| call.starts_with(&format!("-C {} start smoke-", repo.display()))), "every start names the sandbox: {calls:?}");
-    assert!(calls.iter().any(|call| call.contains("start smoke-codex-") && call.ends_with("--profile coder")), "{calls:?}");
+    assert!(calls.iter().any(|call| call.contains("start smoke-codex-") && call.ends_with("--profile coder")), "a read-only or review Codex profile never commits, so the smoke takes one that writes: {calls:?}");
     assert_eq!(calls.iter().filter(|call| call.contains(" drop smoke-")).count(), 2, "{calls:?}");
     assert!(!calls.iter().any(|call| call.split_whitespace().any(|word| word == "push")), "{calls:?}");
     assert_eq!(fs::read_to_string(sandbox.dir.join("herdr.log")).unwrap().lines().filter(|line| line.starts_with("workspace close w_smoke-")).count(), 2);

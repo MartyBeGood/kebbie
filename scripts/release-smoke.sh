@@ -114,7 +114,7 @@ smoke() {
 smoke claude "smoke-claude-$stamp"
 
 if "$kebbie" doctor 2>/dev/null | grep -Eq '^ok +codex plugin'; then
-  coder=$("$kebbie" profiles --json 2>/dev/null | jq -r '[.[] | select(.agent == "codex") | .name][0] // empty')
+  coder=$("$kebbie" profiles --json 2>/dev/null | jq -r '[.[] | select(.agent == "codex" and (.permission_mode // "") != "plan" and (.kind // "task") == "task") | .name][0] // empty')
   if [ -n "$coder" ]; then
     smoke codex "smoke-codex-$stamp" --profile "$coder"
   else
