@@ -7,6 +7,8 @@ What each kebbie release brings, one line per change, as you would tell someone 
 ### What's new
 
 ### Fixed
+- After herdr restores its Spaces, as after a reboot, kebbie restarts the lead and each task that herdr resumed without kebbie's role and settings, in the same conversation, so the lead keeps its commands and tasks their hooks; until then the keeper counts such a lead as stale, and a refused command and kebbie peers tell the lead that L on the board, Resume this conversation, restores it
+- A rules break holds only while the task's commits are the ones the rules check read, so splitting or rewording a commit gets a fresh check even when every file stays the same, where the old break was told again on a commit that no longer existed
 
 ## 0.32.0
 
