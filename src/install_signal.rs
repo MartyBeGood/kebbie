@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use crate::hub::http::{CALL, Client};
 use crate::sh::Result;
 
-const DOMAIN: &[u8] = b"kelpie-install-v1";
+const DOMAIN: &[u8] = b"kebbie-install-v1";
 const ID: &str = "install-id";
 const LEDGER: &str = "install-signal.json";
 const ID_BYTES: usize = 16;
@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn the_digest_matches_the_endpoints_vector() {
         let install = Install { id: "0123456789abcdef0123456789abcdef".to_string(), version: name("0.28.1"), os: name("macos"), arch: name("aarch64"), channel: name("release") };
-        assert_eq!(hex(&install.digest()), "776613dfb50beeff592247c55ccb8fd39a310351863c22ca67e4b5d381d650a2");
+        assert_eq!(hex(&install.digest()), "71220d0975c574d70999b023642034dcde90c376ec911c36188638c143229fe9");
     }
 
     #[test]
