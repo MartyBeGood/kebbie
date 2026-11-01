@@ -78,6 +78,7 @@ Outside a kebbie task's worktree each hook does nothing.
 - The plugin step never edits Codex's `config.toml` or `hooks.json`.
 - Codex loads the plugin only in the sessions kebbie starts. kebbie turns it on with `-c plugins.kebbie@kebbie-tasks.enabled=true` and trusts its three hooks by their hash with `-c hooks.state=…`, for that session alone. Your own Codex sessions don't load it.
 - kebbie also starts each Codex session with `-c check_for_update_on_startup=false`, so Codex's update screen never stands before the task's prompt. Your own Codex sessions still check. See [Codex updates](#codex-updates) for how kebbie offers a newer Codex.
+- Codex 0.164 and later also bind that trust to the plugin's files. kebbie writes the same files whatever its version, so Codex keeps trusting the hooks across kebbie's updates. A machine whose plugin an older kebbie wrote gets `Hooks need review` once after its first update past 0.32.0: answer it in the task's Space, and Codex trusts the hooks from then on.
 - Codex trusts the hooks by their command line, not by the launcher script they run. So kebbie starts a Codex task only when every file of the plugin is exactly what it writes, and a missing, out-of-date or changed plugin stops the start with `run kebbie setup codex`.
 - A second run that finds nothing to change writes nothing.
 - `kebbie setup codex` is yours to run: a task cannot run it.
@@ -132,7 +133,7 @@ The lead can choose the profile too, by its `for`.
   | `Codex just got an upgrade` with `Try new model` and `Use existing model` | `which model to use, after its notice of a new one` |
   | `Update available` with `Update now`, `Skip` and `Skip until next version`, in a Codex that checks for updates anyway, as under a managed config | `whether to update it first` |
   | `Trust this folder?`, the first time Codex runs in the repo | `whether you trust its folder` |
-  | `Hooks need review`, for hooks of your own that are new or changed | `whether to trust the hooks it found new or changed` |
+  | `Hooks need review`, for hooks of your own that are new or changed, or once for kebbie's after an update past 0.32.0 | `whether to trust the hooks it found new or changed` |
 
 - If you already trust the folder in Codex, that question is answered for you.
 - If Codex asks one of these after the start, as the trust question after you sign in, the task waits under Needs you with what Codex asks, and the lead hears it too. kebbie looks for these questions only until Codex has taken its first prompt since it started, so a task that later shows the same words, in code or a diff, stays where it is. A Codex task kebbie resumes or restarts is read for them again until its first turn.

@@ -46,6 +46,7 @@ Find what is wrong with kebbie, and the fix for each message it shows.
 | You see | Fix |
 | --- | --- |
 | `kebbie doctor` says `Codex replaced kebbie's plugin with …`, or a Codex task asks you to review a hook that is new or changed | `kebbie setup codex`. It writes kebbie's plugin again, which wins over the copy Codex installed from a repo's marketplace. |
+| A Codex task asks `Hooks need review` for kebbie's hooks right after an update past 0.32.0 | Answer it in the task's Space to trust them. Codex asks this once: kebbie's plugin keeps the same files across later updates. |
 | `kebbie doctor` names `codex old plugin` | Run the `rm -rf` it names. The folder is an unused copy under `kebbie@kebbie`, which Codex made from a repo's marketplace named kebbie, and nothing turns it on. |
 | A Codex task's start says Codex asks you to sign in | Codex found no login in its home. Sign in in the task's Space, or run `codex login` and start the task again; kebbie types the prompt once Codex takes it. `kebbie doctor`'s `codex login` line says what `codex login status` reads. |
 | A sandboxed Codex task asks approval each time it runs `kebbie tell`, `kebbie report` or another kebbie command | Codex's sandbox keeps those commands from kebbie's state and herdr's socket. Answer `p` once per command, in the task's Space or through the lead, and Codex stops asking for it: Codex writes that rule to `~/.codex/rules/default.rules`. See [How the sandbox and the permission mode map](run-a-task-with-codex.md#how-the-sandbox-and-the-permission-mode-map). |

@@ -9,6 +9,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 - A plan kept in a vault note shows on the board without a local vault index too, read through the vault server when the plan is opened
 
 ### Fixed
+- Codex 0.164 and later keep trusting kebbie's hooks across kebbie updates, so a Codex task starts without Hooks need review; Codex asks to trust them once more after this update
 - The Areas page shows its areas in about 0.2 s, where it took close to a second, and in 40 s or more on a machine whose vault had not named its repos' log notes yet
 - After herdr restores its Spaces, as after a reboot, kebbie restarts the lead and each task that herdr resumed without kebbie's role and settings, in the same conversation, so the lead keeps its commands and tasks their hooks; until then the keeper counts such a lead as stale, and a refused command and kebbie peers tell the lead that L on the board, Resume this conversation, restores it
 - A rules break holds only while the task's commits are the ones the rules check read, so splitting or rewording a commit gets a fresh check even when every file stays the same, where the old break was told again on a commit that no longer existed

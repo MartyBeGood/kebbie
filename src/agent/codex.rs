@@ -165,8 +165,9 @@ fn launcher(kebbie: &str) -> String {
     format!("#!/bin/sh\nkebbie={}\n[ -x \"$kebbie\" ] || exit 0\nexec \"$kebbie\" hook codex \"$@\"\n", crate::sh::quote(kebbie))
 }
 
+// Codex 0.164 asks again to trust a plugin's hooks whenever a byte of the plugin changes, so nothing here may follow kebbie's version.
 fn manifest() -> String {
-    serde_json::to_string_pretty(&json!({ "name": NAME, "version": env!("CARGO_PKG_VERSION"), "description": "kebbie's hooks for the Codex sessions it runs as tasks: it records the session, gives it its role, and asks for a report before a turn ends" })).unwrap_or_default() + "\n"
+    serde_json::to_string_pretty(&json!({ "name": NAME, "description": "kebbie's hooks for the Codex sessions it runs as tasks: it records the session, gives it its role, and asks for a report before a turn ends" })).unwrap_or_default() + "\n"
 }
 
 fn plugin_files(kebbie: &str) -> [(&'static str, String, bool); 3] {
@@ -1203,6 +1204,28 @@ mod tests {
         assert_eq!(installed(&home, "/opt/kebbie"), Installed::Current);
         assert_eq!(refresh_line(Some(&home), "/opt/kebbie").as_deref(), Some("Codex plugin: up to date"));
         assert_eq!(refresh_line(None, "/opt/kebbie"), None);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn the_plugin_is_the_same_bytes_whatever_kebbies_version_so_codex_keeps_trusting_it_across_updates() {
+        assert_eq!(manifest(), "{\n  \"description\": \"kebbie's hooks for the Codex sessions it runs as tasks: it records the session, gives it its role, and asks for a report before a turn ends\",\n  \"name\": \"kebbie\"\n}\n", "codex-rs/hooks/src/engine/plugin_fingerprint.rs at rust-v0.166.0 hashes every byte of the plugin, and a changed hash asks every Codex user to trust kebbie's hooks again");
+        for (file, text, _) in plugin_files("/opt/kebbie") {
+            assert!(!text.contains(env!("CARGO_PKG_VERSION")), "{file} names kebbie's version");
+        }
+    }
+
+    #[test]
+    fn an_update_drops_the_version_an_older_kebbie_wrote_into_the_manifest() {
+        let home = crate::sh::test_dir("codex-versioned");
+        install(&home, "/opt/kebbie").unwrap();
+        let older = r#"{"name":"kebbie","version":"0.32.0","description":"kebbie's hooks for the Codex sessions it runs as tasks: it records the session, gives it its role, and asks for a report before a turn ends"}"#;
+        std::fs::write(plugin_root(&home).join(MANIFEST), older).unwrap();
+        assert_eq!(installed(&home, "/opt/kebbie"), Installed::Stale(vec![MANIFEST]));
+        assert!(ready_to_start(Some(&home), "/opt/kebbie").is_err());
+        assert_eq!(refresh_line(Some(&home), "/opt/kebbie").as_deref(), Some("Codex plugin: updated .codex-plugin/plugin.json"));
+        assert!(serde_json::from_str::<Value>(&std::fs::read_to_string(plugin_root(&home).join(MANIFEST)).unwrap()).unwrap().get("version").is_none());
+        assert_eq!(refresh_line(Some(&home), "/opt/kebbie").as_deref(), Some("Codex plugin: up to date"), "rewritten once, then left alone");
         std::fs::remove_dir_all(home).unwrap();
     }
 
