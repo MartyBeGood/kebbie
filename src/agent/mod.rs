@@ -53,6 +53,7 @@ pub struct TaskFiles<'a> {
     pub sandboxed: bool,
     pub tmp: Option<&'a Path>,
     pub hidden: &'a [String],
+    pub codex_roots: &'a [String],
 }
 
 pub struct Reviewer<'a> {
@@ -129,7 +130,7 @@ impl Agent {
     pub fn start_args(self, mode: Option<&str>, profile: &Profile, files: &TaskFiles, session: &Session) -> Vec<String> {
         match self {
             Agent::Claude => claude::start_args(mode, profile, files.settings, files.role, session),
-            Agent::Codex => codex::start_args(mode, profile, files.address, files.sandboxed, files.tmp, files.hidden, session),
+            Agent::Codex => codex::start_args(mode, profile, files, session),
         }
     }
 

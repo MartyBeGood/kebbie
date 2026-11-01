@@ -557,7 +557,8 @@ fn launch(place: &Launch, pane: &str, session: Session) -> Result<(String, Resul
     let agent = profile.agent;
     let address = peers::address(task, &name_of(repo));
     let codex = codex_session(agent);
-    let files = TaskFiles { address: &address, settings: &prepared.settings, role: &prepared.role, sandboxed: prepared.sandboxed, tmp: Some(&prepared.tmp), hidden: &codex.hidden };
+    let codex_roots = if agent == Agent::Codex { crate::agent::codex::writable_roots_in(&crate::agent::codex_setup::read_config(crate::agent::codex::home().as_deref())) } else { Vec::new() };
+    let files = TaskFiles { address: &address, settings: &prepared.settings, role: &prepared.role, sandboxed: prepared.sandboxed, tmp: Some(&prepared.tmp), hidden: &codex.hidden, codex_roots: &codex_roots };
     let agent_args = agent.start_args(mode, profile, &files, &session);
     let started = agent.start(&agent_name, pane, &agent_args.iter().map(String::as_str).collect::<Vec<_>>(), agent.trusted_by_user(repo));
     if let Ok(started) = &started {
@@ -839,7 +840,7 @@ mod tests {
         let (started, said) = start_profile(&coder, Some(&models));
         assert_eq!(started.model.as_deref(), Some("gpt-6-astra"), "the hidden model's upgrade");
         assert_eq!(said.as_deref(), Some("coder: gpt-5.1-codex-max is gone; started on gpt-6-astra; pick one with m on the Settings page"));
-        let args = crate::agent::codex::start_args(None, &started, "billing@app", true, None, &[], &Session::New("x".to_string()));
+        let args = crate::agent::codex::start_args(None, &started, &TaskFiles { address: "billing@app", settings: Path::new("/unused"), role: Path::new("/unused"), sandboxed: true, tmp: None, hidden: &[], codex_roots: &[] }, &Session::New("x".to_string()));
         assert!(args.windows(2).any(|pair| pair == ["--model", "gpt-6-astra"]), "{args:?}");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "agent = \"codex\"\nmodel = \"gpt-5.1-codex-max\"\n", "the profile is never rewritten");
         let unknown = Profile { model: Some("gpt-4.1".to_string()), ..coder.clone() };
@@ -1237,7 +1238,7 @@ mod tests {
         assert_eq!(chosen_mode(None, None, configured.as_deref()), Some("acceptEdits"), "the profile's mode goes ahead of task.permission_mode");
         assert_eq!(chosen_mode(Some(BYPASS), None, configured.as_deref()), Some(BYPASS), "--mode goes ahead of the profile's");
         let (file, role) = (Path::new("/state/roles/billing@app.settings.json"), Path::new("/state/roles/billing@app.md"));
-        let files = TaskFiles { address: "billing@app", settings: file, role, sandboxed: true, tmp: None, hidden: &[] };
+        let files = TaskFiles { address: "billing@app", settings: file, role, sandboxed: true, tmp: None, hidden: &[], codex_roots: &[] };
         let args = Agent::Claude.start_args(chosen_mode(None, None, configured.as_deref()), &designer, &files, &Session::New("1f0c".to_string()));
         assert_eq!(args, ["--permission-mode", "acceptEdits", "--model", "opus", "--effort", "high", "--settings", "/state/roles/billing@app.settings.json", "--append-system-prompt-file", "/state/roles/billing@app.md", "--session-id", "1f0c"]);
         assert_eq!(Agent::Claude.start_args(None, &task, &files, &Session::Resume("1f0c".to_string())), claude_args(None, file, role, &Session::Resume("1f0c".to_string())));

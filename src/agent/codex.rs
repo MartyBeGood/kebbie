@@ -281,18 +281,77 @@ pub fn plugin_args() -> [String; 8] {
     ["-c".to_string(), enable_override(), "-c".to_string(), trust_override(), "-c".to_string(), NO_UPDATE_CHECK.to_string(), "-c".to_string(), TITLE_ITEMS.to_string()]
 }
 
+// --sandbox or --approve-for-me selects Codex's legacy workspace-write over kebbie's permission profile (core/src/config/mod.rs, resolve_permission_config_syntax).
 fn access(mode: Option<&str>, sandboxed: bool) -> Vec<String> {
     let words: &[&str] = match (mode, sandboxed) {
         (Some("plan"), _) => &["--sandbox", "read-only", "--ask-for-approval", "on-request"],
-        (Some("auto"), true) => &["--approve-for-me"],
-        (Some("bypassPermissions" | "dontAsk"), true) => &["--sandbox", "workspace-write", "--ask-for-approval", "never"],
-        (_, true) => &["--sandbox", "workspace-write", "--ask-for-approval", "on-request"],
+        (Some("auto"), _) => &["--ask-for-approval", "on-request", "-c", "approvals_reviewer=\"auto_review\""],
+        (Some("bypassPermissions" | "dontAsk"), true) => &["--ask-for-approval", "never"],
+        (_, true) => &["--ask-for-approval", "on-request"],
         (Some("bypassPermissions"), false) => &["--dangerously-bypass-approvals-and-sandbox"],
         (Some("dontAsk"), false) => &["--ask-for-approval", "never"],
-        (Some("auto"), false) => &["--ask-for-approval", "on-request", "-c", "approvals_reviewer=\"auto_review\""],
         (_, false) => &[],
     };
     words.iter().map(|word| word.to_string()).collect()
+}
+
+const PERMISSIONS: &str = "kebbie-task";
+
+fn commit_roots(tmp: Option<&Path>) -> Vec<PathBuf> {
+    let Some(dirs) = tmp.map(|tmp| crate::sandbox::TaskDirs::new(Path::new(""), tmp)) else { return Vec::new() };
+    let common = dirs.common_dir();
+    let mut roots: Vec<PathBuf> = ["objects", "refs", "logs"].iter().map(|dir| common.join(dir)).collect();
+    if dirs.git_dir() != common {
+        roots.push(dirs.git_dir());
+    }
+    roots
+}
+
+fn git_run_as_user(tmp: Option<&Path>) -> Vec<PathBuf> {
+    let Some(dirs) = tmp.map(|tmp| crate::sandbox::TaskDirs::new(Path::new(""), tmp)) else { return Vec::new() };
+    let (own, common) = (dirs.git_dir(), dirs.common_dir());
+    let mut paths: Vec<PathBuf> = ["config", "config.worktree", "hooks", "modules"].iter().map(|name| common.join(name)).collect();
+    if own != common {
+        paths.extend(["config.worktree", "commondir", "gitdir"].iter().map(|name| own.join(name)));
+    }
+    paths.push(own.join("kebbie-hooks"));
+    paths
+}
+
+// Codex keeps a worktree's git dir read-only unless it is itself a writable root, and a -c list replaces the user's own roots.
+fn unsandboxed_args(tmp: Option<&Path>, user_roots: &[String]) -> Vec<String> {
+    let roots: Vec<String> = user_roots.iter().cloned().chain(commit_roots(tmp).iter().map(|root| root.to_string_lossy().to_string())).map(|root| toml_string(&root)).collect();
+    let mut args = Vec::new();
+    if !roots.is_empty() {
+        args.extend(["-c".to_string(), format!("sandbox_workspace_write.writable_roots=[{}]", roots.join(","))]);
+    }
+    args.extend(["-c".to_string(), "sandbox_workspace_write.network_access=true".to_string()]);
+    args
+}
+
+// The domains hold only through Codex's experimental network proxy: without features.network_proxy every host is reachable.
+fn permission_profile(policy: &crate::sandbox::Policy, tmp: Option<&Path>, mac: bool) -> String {
+    let access = |path: String, mode: &str| format!("{}={}", toml_string(&path), toml_string(mode));
+    let mut entries = vec![access(":root".to_string(), "read"), access(":tmpdir".to_string(), "write"), access(":slash_tmp".to_string(), "write"), format!("{}={{\".\"=\"write\"}}", toml_string(":workspace_roots"))];
+    entries.extend(policy.writes().into_iter().filter(|path| path.starts_with('/') || path.starts_with("~/")).map(|path| access(path, "write")));
+    entries.extend(commit_roots(tmp).iter().map(|root| access(root.to_string_lossy().to_string(), "write")));
+    entries.extend(git_run_as_user(tmp).iter().map(|path| access(path.to_string_lossy().to_string(), "read")));
+    let domains: Vec<String> = policy.domains().iter().map(|domain| access(domain.clone(), "allow")).collect();
+    let network = if domains.is_empty() { "{enabled=false}".to_string() } else { format!("{{enabled=true,allow_local_binding={mac},domains={{{}}}}}", domains.join(",")) };
+    format!("permissions.{PERMISSIONS}={{filesystem={{{}}},network={network}}}", entries.join(","))
+}
+
+fn sandbox_args(mode: Option<&str>, profile: &Profile, sandboxed: bool, tmp: Option<&Path>, user_roots: &[String]) -> Vec<String> {
+    match (mode, sandboxed) {
+        (Some("plan"), _) | (Some("bypassPermissions"), false) => Vec::new(),
+        (_, false) => unsandboxed_args(tmp, user_roots),
+        (_, true) => ["-c".to_string(), format!("default_permissions={}", toml_string(PERMISSIONS)), "-c".to_string(), permission_profile(&profile.sandbox, tmp, cfg!(target_os = "macos")), "-c".to_string(), "features.network_proxy=true".to_string()].to_vec(),
+    }
+}
+
+pub fn writable_roots_in(config: &toml::Table) -> Vec<String> {
+    let roots = config.get("sandbox_workspace_write").and_then(|table| table.get("writable_roots")).and_then(toml::Value::as_array);
+    roots.into_iter().flatten().filter_map(toml::Value::as_str).map(str::to_string).collect()
 }
 
 // The commands Codex runs get the push block and the task's address, which also names the task to kebbie's caller check.
@@ -306,20 +365,21 @@ fn env_override(address: &str, tmp: Option<&Path>) -> String {
 }
 
 // Codex picks a new session's id itself, so a new start names none and the SessionStart hook records it; a resume is the resume subcommand with the id last.
-pub(crate) fn start_args(mode: Option<&str>, profile: &Profile, address: &str, sandboxed: bool, tmp: Option<&Path>, hidden: &[String], session: &Session) -> Vec<String> {
+pub(crate) fn start_args(mode: Option<&str>, profile: &Profile, files: &super::TaskFiles, session: &Session) -> Vec<String> {
     let mut args = Vec::new();
     if let Session::Resume(_) = session {
         args.push("resume".to_string());
     }
-    args.extend(access(mode, sandboxed));
+    args.extend(access(mode, files.sandboxed));
+    args.extend(sandbox_args(mode, profile, files.sandboxed, files.tmp, files.codex_roots));
     if let Some(model) = &profile.model {
         args.extend(["--model".to_string(), model.clone()]);
     }
     if let Some(effort) = &profile.effort {
         args.extend(["-c".to_string(), format!("model_reasoning_effort={}", toml_string(effort))]);
     }
-    args.extend(["-c".to_string(), env_override(address, tmp)]);
-    args.extend(hidden.iter().cloned());
+    args.extend(["-c".to_string(), env_override(files.address, files.tmp)]);
+    args.extend(files.hidden.iter().cloned());
     args.extend(plugin_args());
     if let Session::Resume(id) = session {
         args.push(id.clone());
@@ -878,10 +938,25 @@ mod tests {
         args.windows(2).filter(|pair| pair[0] == flag).map(|pair| pair[1].as_str()).collect()
     }
 
+    fn files<'a>(sandboxed: bool, tmp: Option<&'a Path>, codex_roots: &'a [String]) -> super::super::TaskFiles<'a> {
+        super::super::TaskFiles { address: "billing@app", settings: Path::new("/unused"), role: Path::new("/unused"), sandboxed, tmp, hidden: &[], codex_roots }
+    }
+
+    const TMP: &str = "/src/app/.git/worktrees/1/kebbie-tmp";
+
+    fn value_of<'a>(args: &'a [String], key: &str) -> Vec<&'a str> {
+        after(args, "-c").into_iter().filter_map(|value| value.strip_prefix(key).and_then(|rest| rest.strip_prefix('='))).collect()
+    }
+
+    fn toml_value(value: &str) -> toml::Value {
+        format!("v = {value}").parse::<toml::Table>().unwrap_or_else(|error| panic!("{value}: {error}")).remove("v").unwrap()
+    }
+
     #[test]
     fn a_sandboxed_codex_task_writes_only_its_workspace_and_asks_before_leaving_it() {
-        let args = start_args(None, &profile(Some("gpt-5.5"), Some("high")), "billing@app", true, Some(Path::new("/src/app/.git/worktrees/1/kebbie-tmp")), &[], &Session::New("ignored".to_string()));
-        assert_eq!(after(&args, "--sandbox"), ["workspace-write"]);
+        let args = start_args(None, &profile(Some("gpt-5.5"), Some("high")), &files(true, Some(Path::new(TMP)), &[]), &Session::New("ignored".to_string()));
+        assert!(after(&args, "--sandbox").is_empty() && !args.iter().any(|word| word == "--approve-for-me"), "--sandbox would bring back Codex's own workspace-write over kebbie's profile: {args:?}");
+        assert_eq!(value_of(&args, "default_permissions"), ["\"kebbie-task\""]);
         assert_eq!(after(&args, "--ask-for-approval"), ["on-request"]);
         assert_eq!(after(&args, "--model"), ["gpt-5.5"]);
         let config = after(&args, "-c");
@@ -889,28 +964,153 @@ mod tests {
         assert!(config.contains(&"shell_environment_policy.set={GIT_CONFIG_COUNT=\"6\",GIT_CONFIG_KEY_0=\"url.kebbie-blocks-push://.pushInsteadOf\",GIT_CONFIG_VALUE_0=\"\",GIT_CONFIG_KEY_1=\"protocol.kebbie-blocks-push.allow\",GIT_CONFIG_VALUE_1=\"never\",GIT_CONFIG_KEY_2=\"url./.pushInsteadOf\",GIT_CONFIG_VALUE_2=\"/\",GIT_CONFIG_KEY_3=\"url../.pushInsteadOf\",GIT_CONFIG_VALUE_3=\"./\",GIT_CONFIG_KEY_4=\"url.../.pushInsteadOf\",GIT_CONFIG_VALUE_4=\"../\",GIT_CONFIG_KEY_5=\"url.file://.pushInsteadOf\",GIT_CONFIG_VALUE_5=\"file://\",KEBBIE_ADDRESS=\"billing@app\",TMPDIR=\"/src/app/.git/worktrees/1/kebbie-tmp\"}"), "the push block reaches every command it runs, local paths let through: {config:?}");
         assert!(config.contains(&"plugins.kebbie@kebbie-tasks.enabled=true") && config.iter().any(|value| value.starts_with("hooks.state={\"kebbie@kebbie-tasks:hooks/hooks.json:session_start:0:0\"={trusted_hash=\"sha256:")), "{config:?}");
         assert!(!args.iter().any(|word| word.contains("ignored")), "Codex picks a new session's id itself");
-        assert!(!args.iter().any(|word| word.starts_with("--dangerously")), "{args:?}");
+        assert!(!args.iter().any(|word| word.starts_with("--dangerously") || word.contains("danger-full-access") || word.starts_with("sandbox_workspace_write")), "{args:?}");
+    }
+
+    #[test]
+    fn a_sandboxed_codex_tasks_profile_lets_a_commit_write_its_git_dirs_but_nothing_git_runs_as_the_user() {
+        let args = start_args(None, &profile(None, None), &files(true, Some(Path::new(TMP)), &["/elsewhere".to_string()]), &Session::New("x".to_string()));
+        let [permissions] = value_of(&args, "permissions.kebbie-task")[..] else { panic!("one profile: {args:?}") };
+        let written = toml_value(permissions);
+        let filesystem = written["filesystem"].as_table().unwrap();
+        let access = |path: &str| filesystem.get(path).and_then(toml::Value::as_str);
+        for root in ["/src/app/.git/objects", "/src/app/.git/refs", "/src/app/.git/logs", "/src/app/.git/worktrees/1"] {
+            assert_eq!(access(root), Some("write"), "{root}: a commit writes there: {filesystem:?}");
+        }
+        for kept in ["/src/app/.git/config", "/src/app/.git/hooks", "/src/app/.git/modules", "/src/app/.git/worktrees/1/config.worktree", "/src/app/.git/worktrees/1/kebbie-hooks", "/src/app/.git/worktrees/1/commondir", "/src/app/.git/worktrees/1/gitdir"] {
+            assert_eq!(access(kept), Some("read"), "{kept}: git runs or follows it as the user, the push block among it: {filesystem:?}");
+        }
+        assert_eq!(access(":root"), Some("read"));
+        assert_eq!(filesystem[":workspace_roots"]["."].as_str(), Some("write"));
+        assert_eq!(access("~/.npm"), Some("write"), "the sandbox's writes, as Claude's sandbox has them");
+        assert!(access("/src/app/.git").is_none() && access("/src/app/.git/worktrees").is_none() && access("/elsewhere").is_none(), "never the whole git dir, another slot's or the user's legacy roots: {filesystem:?}");
+        let domains: Vec<&str> = written["network"]["domains"].as_table().unwrap().iter().map(|(domain, rule)| { assert_eq!(rule.as_str(), Some("allow")); domain.as_str() }).collect();
+        let mut wanted = crate::sandbox::DOMAINS.to_vec();
+        wanted.sort();
+        assert_eq!(domains, wanted, "the network reaches the sandbox's hosts alone");
+        assert_eq!(written["network"]["enabled"].as_bool(), Some(true));
+        assert_eq!(value_of(&args, "features.network_proxy"), ["true"], "Codex keeps to the domains only through its proxy");
+        let mut closed = profile(None, None);
+        closed.sandbox.domains = Some(Vec::new());
+        let shut = start_args(None, &closed, &files(true, Some(Path::new(TMP)), &[]), &Session::New("x".to_string()));
+        assert_eq!(toml_value(value_of(&shut, "permissions.kebbie-task")[0])["network"].as_table().unwrap().get("enabled").and_then(toml::Value::as_bool), Some(false), "no hosts, no network");
+    }
+
+    #[test]
+    fn an_unsandboxed_codex_task_commits_and_reaches_the_network_under_the_users_own_sandbox_mode() {
+        let args = start_args(None, &profile(None, None), &files(false, Some(Path::new(TMP)), &["~/code".to_string()]), &Session::New("x".to_string()));
+        let [roots] = value_of(&args, "sandbox_workspace_write.writable_roots")[..] else { panic!("one list: {args:?}") };
+        let roots: Vec<String> = toml_value(roots).as_array().unwrap().iter().map(|root| root.as_str().unwrap().to_string()).collect();
+        assert_eq!(roots, ["~/code", "/src/app/.git/objects", "/src/app/.git/refs", "/src/app/.git/logs", "/src/app/.git/worktrees/1"], "the user's own roots stay, as a -c list replaces them");
+        assert_eq!(value_of(&args, "sandbox_workspace_write.network_access"), ["true"], "Claude runs unsandboxed here, network and all");
+        assert!(after(&args, "--sandbox").is_empty() && value_of(&args, "default_permissions").is_empty(), "the user's own sandbox mode decides: {args:?}");
+        let main = start_args(None, &profile(None, None), &files(false, Some(Path::new("/src/app/.git/kebbie-tmp")), &[]), &Session::New("x".to_string()));
+        assert_eq!(toml_value(value_of(&main, "sandbox_workspace_write.writable_roots")[0]).as_array().unwrap().len(), 3, "a main checkout's git dir is the common dir");
+        for mode in ["plan", "bypassPermissions"] {
+            let args = start_args(Some(mode), &profile(None, None), &files(false, Some(Path::new(TMP)), &[]), &Session::New("x".to_string()));
+            assert!(!args.iter().any(|word| word.starts_with("sandbox_workspace_write") || word.starts_with("default_permissions")), "{mode}: {args:?}");
+        }
+    }
+
+    #[test]
+    fn the_codex_sandboxs_keys_parse_as_codexs_own_config_types() {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct SandboxWorkspaceWrite { #[serde(default)] writable_roots: Vec<String>, #[serde(default)] network_access: bool, #[serde(default)] exclude_tmpdir_env_var: bool, #[serde(default)] exclude_slash_tmp: bool }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct Network { enabled: Option<bool>, allow_local_binding: Option<bool>, domains: Option<std::collections::BTreeMap<String, String>> }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct PermissionProfile { filesystem: Option<toml::Table>, network: Option<Network> }
+        let unsandboxed = start_args(None, &profile(None, None), &files(false, Some(Path::new(TMP)), &[]), &Session::New("x".to_string()));
+        let sandboxed = start_args(None, &profile(None, None), &files(true, Some(Path::new(TMP)), &[]), &Session::New("x".to_string()));
+        let table = |value: &str| format!("writable_roots = {}\nnetwork_access = true", value);
+        toml::from_str::<SandboxWorkspaceWrite>(&table(value_of(&unsandboxed, "sandbox_workspace_write.writable_roots")[0])).unwrap();
+        let profile: PermissionProfile = toml_value(value_of(&sandboxed, "permissions.kebbie-task")[0]).try_into().unwrap();
+        for (path, access) in profile.filesystem.unwrap() {
+            assert!(path.starts_with('/') || path.starts_with("~/") || path.starts_with(':'), "Codex refuses {path}: absolute, ~/ or :special only");
+            assert!(access.as_str().is_some_and(|access| ["read", "write"].contains(&access)) || access.is_table(), "{path}: {access:?}");
+        }
+    }
+
+    #[test]
+    fn a_codex_task_carries_its_sandbox_once_through_start_resume_and_role() {
+        for sandboxed in [true, false] {
+            let started = start_args(None, &profile(None, None), &files(sandboxed, Some(Path::new(TMP)), &[]), &Session::New("x".to_string()));
+            let argv: Vec<String> = std::iter::once("codex".to_string()).chain(started.iter().cloned()).collect();
+            let resumed = with_role(&resume_args(&argv, "019b3136").unwrap());
+            let restarted = start_args(None, &profile(None, None), &files(sandboxed, Some(Path::new(TMP)), &[]), &Session::Resume("019b3136".to_string()));
+            for args in [&started, &resumed, &restarted] {
+                let count = |key: &str| value_of(args, key).len();
+                let keys = if sandboxed { ["default_permissions", "permissions.kebbie-task"] } else { ["sandbox_workspace_write.writable_roots", "sandbox_workspace_write.network_access"] };
+                for key in keys {
+                    assert_eq!(count(key), 1, "{key} once: {args:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_codex_tasks_git_dirs_take_its_commit_while_the_push_block_stays_read_only_and_refuses_its_push() {
+        let base = crate::sh::test_dir("codex-git-dirs");
+        let (main, slot, origin, state) = (base.join("app"), base.join("wt1.app"), base.join("origin.git"), base.join("state"));
+        std::fs::create_dir_all(&main).unwrap();
+        let git = |dir: &Path, args: &[&str]| crate::repo::git(dir, args).unwrap();
+        git(&main, &["init", "--quiet", "--initial-branch=main"]);
+        git(&main, &["-c", "user.name=Ada", "-c", "user.email=ada@example.com", "commit", "--quiet", "--allow-empty", "-m", "a"]);
+        git(&base, &["init", "--quiet", "--bare", &origin.to_string_lossy()]);
+        git(&main, &["remote", "add", "origin", "https://example.invalid/app.git"]);
+        git(&main, &["worktree", "add", "--quiet", "-b", "billing", &slot.to_string_lossy()]);
+        assert_eq!(crate::push_block::install(&slot, &state).unwrap(), crate::push_block::Block::On);
+        let tmp = crate::tasks::task_tmp(&slot).unwrap();
+        let (writes, kept) = (commit_roots(Some(&tmp)), git_run_as_user(Some(&tmp)));
+        let read_only = |path: &Path| kept.iter().any(|entry| path.starts_with(entry));
+        let writable = |path: &Path| !read_only(path) && writes.iter().any(|root| path.starts_with(root));
+        for written in ["index", "HEAD", "logs/HEAD", "ORIG_HEAD"] {
+            assert!(writable(&PathBuf::from(git(&slot, &["rev-parse", "--absolute-git-dir"])).join(written)), "{written}");
+        }
+        for written in ["refs/heads/billing", "logs/refs/heads/billing", "objects/ab", "refs/stash"] {
+            let path = PathBuf::from(git(&slot, &["rev-parse", "--path-format=absolute", "--git-path", written]));
+            assert!(writable(&path), "a commit writes {}", path.display());
+        }
+        let hooks = PathBuf::from(git(&slot, &["config", "--worktree", "core.hooksPath"]));
+        let worktree_config = PathBuf::from(git(&slot, &["rev-parse", "--path-format=absolute", "--git-path", "config.worktree"]));
+        let common_config = PathBuf::from(git(&slot, &["rev-parse", "--path-format=absolute", "--git-common-dir"])).join("config");
+        for block in [&hooks.join("pre-push"), &worktree_config, &common_config] {
+            assert!(read_only(block) && !writable(block), "the push block's {} stays read-only to the task", block.display());
+        }
+        let env = crate::push_block::env_vars();
+        let output = std::process::Command::new("git").args(["push", "--no-verify", "origin", "HEAD:main"]).current_dir(&slot).env_remove(crate::push_block::TOKEN_VAR).envs(env.iter().map(|(name, value)| (name, value))).output().unwrap();
+        assert!(!output.status.success() && String::from_utf8_lossy(&output.stderr).contains("kebbie-blocks-push"), "{}", String::from_utf8_lossy(&output.stderr));
+        let hooked = std::process::Command::new("git").args(["push", &origin.to_string_lossy(), "HEAD:main"]).current_dir(&slot).env_remove(crate::push_block::TOKEN_VAR).envs(env.iter().map(|(name, value)| (name, value))).output().unwrap();
+        assert!(!hooked.status.success(), "the pre-push hook still refuses a local push");
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
     fn the_permission_mode_maps_to_codexs_approvals_inside_and_outside_its_sandbox() {
         let run = |mode: Option<&str>, sandboxed: bool| access(mode, sandboxed).join(" ");
-        assert_eq!(run(Some("bypassPermissions"), true), "--sandbox workspace-write --ask-for-approval never", "nothing leaves the sandbox, as Claude's allowUnsandboxedCommands = false");
-        assert_eq!(run(Some("dontAsk"), true), "--sandbox workspace-write --ask-for-approval never");
-        assert_eq!(run(Some("auto"), true), "--approve-for-me", "only auto lets Codex's own reviewer approve a step out of the sandbox");
-        assert_eq!(run(None, true), "--sandbox workspace-write --ask-for-approval on-request");
+        assert_eq!(run(Some("bypassPermissions"), true), "--ask-for-approval never", "nothing leaves the sandbox, as Claude's allowUnsandboxedCommands = false");
+        assert_eq!(run(Some("dontAsk"), true), "--ask-for-approval never");
+        assert_eq!(run(Some("auto"), true), "--ask-for-approval on-request -c approvals_reviewer=\"auto_review\"", "only auto lets Codex's own reviewer approve a step out of the sandbox");
+        assert_eq!(run(None, true), "--ask-for-approval on-request");
         assert_eq!(run(Some("default"), true), run(None, true));
-        assert_eq!(run(Some("acceptEdits"), true), "--sandbox workspace-write --ask-for-approval on-request");
+        assert_eq!(run(Some("acceptEdits"), true), "--ask-for-approval on-request");
         assert_eq!(run(Some("plan"), true), "--sandbox read-only --ask-for-approval on-request");
         assert_eq!(run(Some("plan"), false), "--sandbox read-only --ask-for-approval on-request");
         assert_eq!(run(Some("bypassPermissions"), false), "--dangerously-bypass-approvals-and-sandbox", "only with the sandbox turned off");
         assert_eq!(run(Some("dontAsk"), false), "--ask-for-approval never");
+        assert_eq!(run(Some("auto"), false), run(Some("auto"), true));
         assert_eq!(run(None, false), "", "the user's own Codex config decides");
     }
 
     #[test]
     fn a_resumed_codex_task_names_its_session_last_after_the_resume_subcommand() {
-        let args = start_args(Some("default"), &profile(None, None), "billing@app", true, None, &[], &Session::Resume("019b3136-fdf0-7d50-8762-84076af7f203".to_string()));
+        let args = start_args(Some("default"), &profile(None, None), &files(true, None, &[]), &Session::Resume("019b3136-fdf0-7d50-8762-84076af7f203".to_string()));
         assert_eq!(args.first().map(String::as_str), Some("resume"));
         assert_eq!(args.last().map(String::as_str), Some("019b3136-fdf0-7d50-8762-84076af7f203"));
         assert!(!args.iter().any(|word| word.starts_with("model_reasoning_effort") || word == "--model"), "no model or effort the profile did not name");
@@ -1145,7 +1345,7 @@ mod tests {
     #[test]
     fn a_codex_kebbie_starts_skips_its_update_check_and_its_update_screen_holds_the_start() {
         for session in [Session::New("x".to_string()), Session::Resume("id".to_string())] {
-            let args = start_args(None, &profile(None, None), "billing@app", true, None, &[], &session);
+            let args = start_args(None, &profile(None, None), &files(true, None, &[]), &session);
             assert!(after(&args, "-c").contains(&"check_for_update_on_startup=false"), "codex-rs/tui/src/updates.rs reads config.check_for_update_on_startup before it shows tui/src/update_prompt.rs: {args:?}");
         }
         let resumed = with_role(&resume_args(&["codex".to_string(), "-c".to_string(), NO_UPDATE_CHECK.to_string()], "id").unwrap());
@@ -1194,7 +1394,7 @@ mod tests {
     #[test]
     fn a_codex_task_that_reads_the_vault_keys_from_its_environment_names_them_only_to_keep_them_from_its_commands() {
         let hidden = crate::agent::codex_setup::hide_args(&toml::Table::new(), &["S3_ACCESS_KEY".to_string(), "S3_SECRET_KEY".to_string()]);
-        let args = start_args(None, &profile(None, None), "billing@app", true, None, &hidden, &Session::Resume("019b".to_string()));
+        let args = start_args(None, &profile(None, None), &super::super::TaskFiles { hidden: &hidden, ..files(true, None, &[]) }, &Session::Resume("019b".to_string()));
         assert!(after(&args, "-c").contains(&"shell_environment_policy.filters.S3_SECRET_KEY=\"exclude\""), "{args:?}");
         assert_eq!(args.last().map(String::as_str), Some("019b"), "the session id stays last");
         assert!(!lacks_role(&args) && resume_args(&std::iter::once("codex".to_string()).chain(args.iter().skip(1).cloned()).collect::<Vec<_>>(), "019b").unwrap().iter().any(|arg| arg.contains("S3_SECRET_KEY")), "a restart keeps the exclude with the rest of its flags");
@@ -1202,7 +1402,7 @@ mod tests {
 
     #[test]
     fn the_codex_sessions_kebbie_starts_title_their_terminal_with_codexs_default_items() {
-        let args = start_args(None, &profile(None, None), "billing@app", true, None, &[], &Session::New("x".to_string()));
+        let args = start_args(None, &profile(None, None), &files(true, None, &[]), &Session::New("x".to_string()));
         assert!(after(&args, "-c").contains(&"tui.terminal_title=[\"activity\",\"thread-name\",\"project-name\"]"), "config/src/types.rs: when unset the TUI shows activity, thread-name and project-name; a user's own list would hide Action Required or the thread title: {args:?}");
         let parsed: toml::Table = TITLE_ITEMS.replacen("tui.terminal_title=", "items = ", 1).parse().unwrap();
         assert_eq!(parsed["items"].as_array().map(Vec::len), Some(3), "the value parses as a TOML list");
