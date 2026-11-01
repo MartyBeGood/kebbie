@@ -6,6 +6,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 
 ### What's new
 - The board reads the vault from a snapshot the vault server sends where the server has one, so the Areas page, the backlog and the ongoing notes work with a vault hosted on a server and no local index; the keeper fetches it every 20 seconds, or the board while the keeper is off
+- A plan kept in a vault note shows on the board without a local vault index too, read through the vault server when the plan is opened
 
 ### Fixed
 - The Areas page shows its areas in about 0.2 s, where it took close to a second, and in 40 s or more on a machine whose vault had not named its repos' log notes yet

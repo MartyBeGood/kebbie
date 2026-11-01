@@ -204,6 +204,11 @@ impl Cli {
         Ok(Some(map.iter().filter_map(|(repo, path)| Some((repo.clone(), path.as_str()?.to_string()))).filter(|(_, path)| !path.is_empty()).collect()))
     }
 
+    // A note's text after its frontmatter, from the local vault or through the vault server.
+    pub fn read_body(&self, key: &str) -> Result<String> {
+        self.output(&["read", key, "--body"])?.map_err(|error| format!("vault read: {error}"))
+    }
+
     // `snapshot --json [--since ETAG]`; the inner error is the server's refusal, an unknown command on a server without snapshots.
     pub fn snapshot(&self, since: Option<&str>) -> Result<std::result::Result<String, String>> {
         let mut args = vec!["snapshot", "--json"];

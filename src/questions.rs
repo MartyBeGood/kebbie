@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -121,13 +122,30 @@ fn plan_changed_in(question: &Question, changed_at: impl Fn(&str) -> Option<f64>
     matches!((question.plan_at, changed_at(key).map(millis)), (Some(asked), Some(now)) if now != asked)
 }
 
-// The plan's markdown: a vault note's body from the local vault index, or the copy of the file it was asked with; a vault read only as a snapshot has no bodies.
+// The plan's markdown: a vault note's body from the local vault index, else read through the vault command, or the copy of the file it was asked with.
 pub fn plan_text(question: &Question) -> Option<String> {
     let plan = question.plan.as_deref()?;
     match plan.strip_prefix(VAULT_PLAN) {
-        Some(key) => crate::vault::Index::open().ok()?.body(key),
+        Some(key) => crate::vault::Index::open().ok().and_then(|index| index.body(key)).or_else(|| read_plan(crate::vault_cli::cli().as_ref(), key, Instant::now())),
         None => fs::read_to_string(plan).ok(),
     }
+}
+
+const READ_RETRY: Duration = Duration::from_secs(60);
+
+// The board asks for the plan on every draw until it has it, so a refused read waits READ_RETRY before the vault command runs again.
+fn read_plan(cli: Option<&crate::vault_cli::Cli>, key: &str, now: Instant) -> Option<String> {
+    static REFUSED: std::sync::Mutex<Vec<(String, Instant)>> = std::sync::Mutex::new(Vec::new());
+    let mut refused = REFUSED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    refused.retain(|(_, at)| now.saturating_duration_since(*at) < READ_RETRY);
+    if refused.iter().any(|(held, _)| held == key) {
+        return None;
+    }
+    let body = cli?.read_body(key).ok();
+    if body.is_none() {
+        refused.push((key.to_string(), now));
+    }
+    body
 }
 
 // Questions waiting on the user, oldest first: a task's later question, its end, its answer, or a new turn of it settles one.
@@ -609,6 +627,23 @@ mod tests {
         assert_eq!(question_hold(Some("q0"), Some("q1")), Some("waits for the user's answer to its question"));
         assert_eq!(question_hold(Some("q1"), Some("q1")), None, "the user's answer or the lead's decide");
         assert_eq!(question_hold(None, None), None);
+    }
+
+    #[test]
+    fn a_vault_plan_without_a_local_index_is_read_through_the_vault_command_and_a_refusal_waits() {
+        let fake = crate::vault_cli::fake::Fake::new("plan-read");
+        let now = Instant::now();
+        fake.answer("read", "## Plan\n1. rename\n");
+        assert_eq!(read_plan(Some(&fake.cli), "Projects/plan-read-a.md", now).as_deref(), Some("## Plan\n1. rename\n"));
+        assert_eq!(fake.calls(), ["read Projects/plan-read-a.md --body"]);
+        std::fs::create_dir_all(fake.dir.join("answers/read-Projects")).unwrap();
+        fake.fail("read-Projects/plan-read-b.md", "notes-vault-mcp: no such note: Projects/plan-read-b.md");
+        assert_eq!(read_plan(Some(&fake.cli), "Projects/plan-read-b.md", now), None);
+        assert_eq!(read_plan(Some(&fake.cli), "Projects/plan-read-b.md", now + READ_RETRY / 2), None);
+        assert_eq!(fake.calls().len(), 2, "a refused read is not asked again on the next draw");
+        assert_eq!(read_plan(Some(&fake.cli), "Projects/plan-read-b.md", now + READ_RETRY), None);
+        assert_eq!(fake.calls().len(), 3, "and is asked again after a minute");
+        assert_eq!(read_plan(None, "Projects/plan-read-c.md", now), None, "without a vault command there is nothing to read");
     }
 
     #[test]
