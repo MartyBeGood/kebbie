@@ -5,6 +5,12 @@ What each kebbie release brings, one line per change, as you would tell someone 
 ## Unreleased
 
 ### What's new
+
+### Fixed
+
+## 0.31.0
+
+### What's new
 - kebbie start --no-note starts a task without a vault note, for a throwaway task
 - task.require_accept = true holds every push until each commit it takes is accepted: kebbie push, the board's push and push in order refuse with the first step to accept and how, and a ready task with one waits under Needs you as accept step N; off by default, and no effect with task.steps off
 - v on a task opens a review menu, review · <task>, with its commits since main and the assessor's word: v sends it to the reviewer, and on a task in review v withdraws it; with review.second set, s reviews with a second opinion beside the reviewer and o runs the second opinion alone
