@@ -1063,6 +1063,9 @@ pub fn run(overlay: bool) -> Result<String> {
     app.recheck = Some(recheck);
     let restarter = spawn_restarter(overlay);
     spawn_routine_runner(overlay);
+    if !overlay {
+        crate::vault_snapshot::spawn_board_refresher();
+    }
     let (requests, results) = spawn_detailer();
     app.detail_requests = Some(requests);
     app.detail_results = Some(results);

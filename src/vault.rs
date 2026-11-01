@@ -1,13 +1,17 @@
 use std::path::{Path, PathBuf};
 
+use std::sync::Arc;
+
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
 use crate::sh::Result;
+use crate::vault_snapshot::Snapshot;
 
-// The vault as notes-vault-mcp sees it: kebbie reads the server's local SQLite index, read-only, so a vault on S3 needs no credentials here.
+// The vault as notes-vault-mcp sees it: the snapshot its server answers where it has one, else its local SQLite index, read-only; the index alone knows the checkouts its hooks saw.
 pub struct Index {
-    db: Connection,
+    db: Option<Connection>,
+    snapshot: Option<Arc<Snapshot>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -131,97 +135,194 @@ fn note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
     })
 }
 
+fn connect(path: &Path) -> Result<Connection> {
+    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+        .map_err(|error| format!("Opening the vault index {}: {error}", path.display()))?;
+    let _ = db.busy_timeout(std::time::Duration::from_secs(2));
+    Ok(db)
+}
+
+fn rows<T>(db: &Connection, sql: &str, value: Option<&str>, read: impl FnMut(&rusqlite::Row) -> rusqlite::Result<T>) -> Result<Vec<T>> {
+    let mut statement = db.prepare(sql).map_err(|error| error.to_string())?;
+    let rows = match value {
+        Some(value) => statement.query_map([value], read),
+        None => statement.query_map([], read),
+    }.map_err(|error| error.to_string())?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())
+}
+
 impl Index {
     pub fn open() -> Result<Self> {
-        Self::at(&index_path()?)
+        let snapshot = crate::lead::state_location().ok().and_then(|state| crate::vault_snapshot::current(&state));
+        match snapshot {
+            Some(snapshot) => Ok(Self::of_snapshot(snapshot, index_path().and_then(|path| connect(&path)).ok())),
+            None => Self::at(&index_path()?),
+        }
     }
 
     pub fn at(path: &Path) -> Result<Self> {
-        let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
-            .map_err(|error| format!("Opening the vault index {}: {error}", path.display()))?;
-        let _ = db.busy_timeout(std::time::Duration::from_secs(2));
-        Ok(Self { db })
+        Ok(Self { db: Some(connect(path)?), snapshot: None })
+    }
+
+    pub fn of_snapshot(snapshot: Arc<Snapshot>, local: Option<Connection>) -> Self {
+        Self { db: local, snapshot: Some(snapshot) }
+    }
+
+    fn db(&self) -> Result<&Connection> {
+        self.db.as_ref().ok_or_else(|| "no local vault index".to_string())
+    }
+
+    fn row<T: rusqlite::types::FromSql>(&self, sql: &str, key: &str) -> Option<T> {
+        self.db.as_ref()?.query_row(sql, [key], |row| row.get::<_, T>(0)).ok()
     }
 
     fn notes(&self, filter: &str, value: &str) -> Result<Vec<Note>> {
-        let sql = format!("SELECT {NOTE_COLUMNS} FROM notes WHERE {filter} ORDER BY key");
-        let mut statement = self.db.prepare(&sql).map_err(|error| error.to_string())?;
-        let rows = statement.query_map([value], note).map_err(|error| error.to_string())?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())
+        rows(self.db()?, &format!("SELECT {NOTE_COLUMNS} FROM notes WHERE {filter} ORDER BY key"), Some(value), note)
+    }
+
+    fn snapshot_notes(snapshot: &Snapshot, keep: impl Fn(&crate::vault_snapshot::Entry) -> bool) -> Vec<Note> {
+        let mut notes: Vec<Note> = snapshot.notes.iter().filter(|entry| keep(entry)).map(|entry| entry.note.clone()).collect();
+        notes.sort_by(|one, other| one.key.cmp(&other.key));
+        notes
     }
 
     // Every live backlog note: key, title, summary, priority, area link and date.
     pub fn backlog(&self) -> Result<Vec<[String; 6]>> {
-        let sql = "SELECT key, title, summary, priority, area, date FROM notes WHERE status = 'backlog' AND valid = 1 AND folder NOT IN ('Archive', 'Log')";
-        let mut statement = self.db.prepare(sql).map_err(|error| error.to_string())?;
-        let rows = statement.query_map([], |row| Ok([0, 1, 2, 3, 4, 5].map(|column| text(row, column)))).map_err(|error| error.to_string())?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())
+        if let Some(snapshot) = &self.snapshot {
+            return Ok(snapshot.notes.iter().filter(|entry| entry.note.status == "backlog").map(|entry| {
+                let note = &entry.note;
+                [note.key.clone(), note.title.clone(), note.summary.clone(), note.priority.clone(), note.area.clone(), entry.date.clone()]
+            }).collect());
+        }
+        rows(self.db()?, "SELECT key, title, summary, priority, area, date FROM notes WHERE status = 'backlog' AND valid = 1 AND folder NOT IN ('Archive', 'Log')", None, |row| Ok([0, 1, 2, 3, 4, 5].map(|column| text(row, column))))
     }
 
     pub fn ongoing(&self) -> Result<Vec<Note>> {
-        let sql = format!("SELECT {NOTE_COLUMNS} FROM notes WHERE folder = 'Projects' AND status IN ('active', 'draft') AND valid = 1 ORDER BY mtime DESC, key");
-        let mut statement = self.db.prepare(&sql).map_err(|error| error.to_string())?;
-        let rows = statement.query_map([], note).map_err(|error| error.to_string())?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())
+        if let Some(snapshot) = &self.snapshot {
+            let mut entries: Vec<&crate::vault_snapshot::Entry> = snapshot.notes.iter().filter(|entry| entry.role == "task" && ["active", "draft"].contains(&entry.note.status.as_str())).collect();
+            entries.sort_by(|one, other| other.mtime.total_cmp(&one.mtime).then_with(|| one.note.key.cmp(&other.note.key)));
+            return Ok(entries.into_iter().map(|entry| entry.note.clone()).collect());
+        }
+        rows(self.db()?, &format!("SELECT {NOTE_COLUMNS} FROM notes WHERE folder = 'Projects' AND status IN ('active', 'draft') AND valid = 1 ORDER BY mtime DESC, key"), None, note)
     }
 
     // Every note's claim, by key; an index from a server without claims has no claim column and reads as none.
     pub fn claims(&self) -> std::collections::HashMap<String, Claim> {
-        let Ok(mut statement) = self.db.prepare("SELECT key, claim, updated FROM notes WHERE claim IS NOT NULL AND claim != ''") else { return Default::default() };
-        let rows = statement.query_map([], |row| Ok((text(row, 0), text(row, 1), text(row, 2))));
-        rows.into_iter().flatten().flatten()
+        if let Some(snapshot) = &self.snapshot {
+            return snapshot.notes.iter().filter_map(|entry| Some((entry.note.key.clone(), entry.claim.clone()?))).collect();
+        }
+        let Ok(db) = self.db() else { return Default::default() };
+        rows(db, "SELECT key, claim, updated FROM notes WHERE claim IS NOT NULL AND claim != ''", None, |row| Ok((text(row, 0), text(row, 1), text(row, 2)))).unwrap_or_default().into_iter()
             .filter_map(|(key, claim, updated)| Some((key, Claim::from_json(&serde_json::from_str(&claim).ok()?, &updated)?)))
             .collect()
     }
 
+    // A note's whole markdown, which only the local index holds.
     pub fn body(&self, key: &str) -> Option<String> {
-        self.db.query_row("SELECT body FROM notes_fts WHERE key = ?1", [key], |row| row.get::<_, Option<String>>(0)).ok().flatten()
+        self.row::<Option<String>>("SELECT body FROM notes_fts WHERE key = ?1", key).flatten()
+    }
+
+    // The opening the snapshot carries for an open task; the index has none and its readers cut one from the body.
+    pub fn opening(&self, key: &str) -> Option<String> {
+        self.snapshot.as_ref()?.openings.get(key).cloned()
+    }
+
+    fn entry(&self, key: &str) -> Option<&crate::vault_snapshot::Entry> {
+        self.snapshot.as_ref()?.notes.iter().find(|entry| entry.note.key == key)
     }
 
     pub fn changed_at(&self, key: &str) -> Option<f64> {
-        self.db.query_row("SELECT mtime FROM notes WHERE key = ?1", [key], |row| row.get::<_, f64>(0)).ok()
+        if self.snapshot.is_some() {
+            return self.entry(key).map(|entry| entry.mtime);
+        }
+        self.row("SELECT mtime FROM notes WHERE key = ?1", key)
     }
 
     pub fn title_of(&self, key: &str) -> Option<String> {
-        self.db.query_row("SELECT title FROM notes WHERE key = ?1", [key], |row| row.get::<_, String>(0)).ok().filter(|title| !title.trim().is_empty())
+        let title = if self.snapshot.is_some() { self.entry(key).map(|entry| entry.note.title.clone()) } else { self.row::<String>("SELECT title FROM notes WHERE key = ?1", key) };
+        title.filter(|title| !title.trim().is_empty())
     }
 
     pub fn status_of(&self, key: &str) -> Option<String> {
-        self.db.query_row("SELECT status FROM notes WHERE key = ?1", [key], |row| row.get::<_, String>(0)).ok()
+        if self.snapshot.is_some() {
+            return self.entry(key).map(|entry| entry.note.status.clone());
+        }
+        self.row("SELECT status FROM notes WHERE key = ?1", key)
     }
 
     // The system notes, one per app or subsystem.
     pub fn areas(&self) -> Result<Vec<Note>> {
+        if let Some(snapshot) = &self.snapshot {
+            return Ok(Self::snapshot_notes(snapshot, |entry| entry.role == "system"));
+        }
         self.notes("folder = ?1 AND kind = 'system' AND valid = 1", "Areas")
     }
 
     // Live notes that name the area, outside the archive and the log.
     pub fn notes_of(&self, stem: &str) -> Result<Vec<Note>> {
+        if let Some(snapshot) = &self.snapshot {
+            return Ok(Self::snapshot_notes(snapshot, |entry| entry.note.area == stem));
+        }
         self.notes("area = ?1 AND folder NOT IN ('Archive', 'Log')", &format!("[[{stem}]]"))
     }
 
-    // Every log note's body, by key.
-    pub fn logs(&self) -> Result<Vec<(String, String)>> {
-        let mut statement = self.db.prepare("SELECT key, body FROM notes_fts WHERE key LIKE 'Log/%'").map_err(|error| error.to_string())?;
-        let rows = statement.query_map([], |row| Ok((text(row, 0), text(row, 1)))).map_err(|error| error.to_string())?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())
+    // Every log note's lines, by key.
+    pub fn logs(&self) -> Result<Vec<(String, Vec<LogEntry>)>> {
+        if let Some(snapshot) = &self.snapshot {
+            return Ok(snapshot.logs.clone());
+        }
+        let bodies = rows(self.db()?, "SELECT key, body FROM notes_fts WHERE key LIKE 'Log/%'", None, |row| Ok((text(row, 0), text(row, 1))))?;
+        Ok(bodies.into_iter().map(|(key, body)| (key, log_entries(&body))).collect())
+    }
+
+    // A repo's own log note as the snapshot's template names it; the index has no template.
+    pub fn log_key(&self, repo: &str) -> Option<String> {
+        let template = &self.snapshot.as_ref()?.log_key_template;
+        template.contains("{repo}").then(|| template.replace("{repo}", repo))
     }
 
     // Checkouts the server's hooks have seen, by repo name.
     pub fn known_root(&self, repo: &str) -> Option<PathBuf> {
-        self.db.query_row("SELECT root FROM repos WHERE repo = ?1", [repo], |row| row.get::<_, String>(0)).ok().map(PathBuf::from)
+        self.row::<String>("SELECT root FROM repos WHERE repo = ?1", repo).map(PathBuf::from)
     }
 
     pub fn last_sync(&self) -> Option<u64> {
-        self.db.query_row("SELECT v FROM meta WHERE k = 'last_sync'", [], |row| row.get::<_, String>(0)).ok()?
+        if let Some(snapshot) = &self.snapshot {
+            return snapshot.fetched;
+        }
+        self.db.as_ref()?.query_row("SELECT v FROM meta WHERE k = 'last_sync'", [], |row| row.get::<_, String>(0)).ok()?
             .parse::<f64>().ok().map(|seconds| seconds as u64)
     }
+}
+
+// Where the board reads the vault from, for kebbie doctor.
+pub fn source() -> Result<String> {
+    if let Some(snapshot) = crate::lead::state_location().ok().and_then(|state| crate::vault_snapshot::current(&state)) {
+        return Ok(format!("vault snapshot from the vault server, {} notes, fetched {}", snapshot.notes.len(), crate::backlog::age(snapshot.fetched)));
+    }
+    index_path().map(|path| format!("vault index {}", path.display()))
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LogLine {
     pub date: String,
     pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LogEntry {
+    pub date: String,
+    pub text: String,
+    pub links: Vec<String>,
+}
+
+// A log note's lines with the stems each links, "[[stem]]" anywhere on the line.
+pub fn log_entries(body: &str) -> Vec<LogEntry> {
+    body.lines().filter_map(|line| {
+        let LogLine { date, text } = log_line(line)?;
+        let links = line.split("[[").skip(1).filter_map(|rest| rest.split_once("]]").map(|(link, _)| link.to_string())).collect();
+        Some(LogEntry { date, text, links })
+    }).collect()
 }
 
 // "- [2026-10-16] what happened | commits: abc | branch: x | [[area]]" -> the date and what happened.
@@ -235,7 +336,7 @@ pub fn log_line(line: &str) -> Option<LogLine> {
     Some(LogLine { date: date.to_string(), text: text.to_string() })
 }
 
-fn is_date(text: &str) -> bool {
+pub(crate) fn is_date(text: &str) -> bool {
     let bytes = text.as_bytes();
     let digits = |range: std::ops::Range<usize>| bytes[range].iter().all(u8::is_ascii_digit);
     let number = |range: std::ops::Range<usize>| text[range].parse::<u32>().unwrap_or(0);
@@ -243,22 +344,20 @@ fn is_date(text: &str) -> bool {
 }
 
 // A name's own log note when the vault command cannot say: Log/<name>-<word>.md, a word and not a month, so the compiled month pages stay out.
-pub fn own_log_guess(logs: &[(String, String)], name: &str) -> Option<String> {
+pub fn own_log_guess<T>(logs: &[(String, T)], name: &str) -> Option<String> {
     let word_of = |key: &str| key.strip_prefix(&format!("Log/{name}-")).and_then(|rest| rest.strip_suffix(".md")).filter(|word| !word.is_empty() && word.chars().all(|character| character.is_ascii_alphabetic())).map(str::to_string);
     let words: Vec<(String, String)> = logs.iter().filter_map(|(key, _)| Some((word_of(key)?, key.clone()))).collect();
     words.iter().find(|(word, _)| word == "log").or_else(|| words.first()).map(|(_, key)| key.clone())
 }
 
 // An area's log: lines that link it, and every line of its repo's own log notes, newest first.
-pub fn log_for(logs: &[(String, String)], stem: &str, own: &[String]) -> Vec<LogLine> {
-    let link = format!("[[{stem}]]");
+pub fn log_for(logs: &[(String, Vec<LogEntry>)], stem: &str, own: &[String]) -> Vec<LogLine> {
     let mut lines: Vec<LogLine> = Vec::new();
-    for (key, body) in logs {
+    for (key, entries) in logs {
         let whole = own.contains(key);
-        for line in body.lines().filter(|line| whole || line.contains(&link)) {
-            if let Some(parsed) = log_line(line)
-                && !lines.contains(&parsed)
-            {
+        for entry in entries.iter().filter(|entry| whole || entry.links.iter().any(|link| link == stem)) {
+            let parsed = LogLine { date: entry.date.clone(), text: entry.text.clone() };
+            if !lines.contains(&parsed) {
                 lines.push(parsed);
             }
         }
@@ -290,8 +389,8 @@ mod tests {
     #[test]
     fn an_areas_log_is_its_own_note_and_lines_that_link_it_newest_first() {
         let logs = vec![
-            ("Log/kebbie-log.md".to_string(), "- [2026-10-15] first | [[kebbie]]\n- [2026-10-16] second\n".to_string()),
-            ("Log/api-log.md".to_string(), "- [2026-10-14] api only | [[api]]\n- [2026-10-16] for kebbie too | [[kebbie]]\n".to_string()),
+            ("Log/kebbie-log.md".to_string(), log_entries("- [2026-10-15] first | [[kebbie]]\n- [2026-10-16] second\n")),
+            ("Log/api-log.md".to_string(), log_entries("- [2026-10-14] api only | [[api]]\n- [2026-10-16] for kebbie too | [[kebbie]]\n")),
         ];
         let texts: Vec<String> = log_for(&logs, "kebbie", &["Log/kebbie-log.md".to_string()]).into_iter().map(|line| line.text).collect();
         assert_eq!(texts, ["for kebbie too", "second", "first"]);
@@ -347,7 +446,7 @@ The payload says amount.');
         assert_eq!(notes[0].priority, "high");
         assert_eq!(index.known_root("kebbie"), Some(PathBuf::from("/src/kebbie")));
         assert_eq!(index.last_sync(), Some(1792172065));
-        assert_eq!(index.logs().unwrap(), [("Log/kebbie-log.md".to_string(), "- [2026-10-16] done".to_string())]);
+        assert_eq!(index.logs().unwrap(), [("Log/kebbie-log.md".to_string(), vec![LogEntry { date: "2026-10-16".to_string(), text: "done".to_string(), links: Vec::new() }])]);
         let ongoing: Vec<String> = index.ongoing().unwrap().into_iter().map(|note| note.key).collect();
         assert_eq!(ongoing, ["Projects/kebbie-new.md", "Projects/kebbie-draft.md", "Projects/kebbie-old.md"], "active and draft projects, as the vault's Open tasks base shows them, newest first");
         assert_eq!(index.ongoing().unwrap()[0].area, "other-area");
@@ -408,8 +507,8 @@ The payload says amount.');
     #[test]
     fn an_areas_log_lines_are_unique_and_sorted_by_date_whatever_note_they_come_from() {
         let logs = vec![
-            ("Log/a-log.md".to_string(), "- [2026-10-01] same | [[x]]\n- [2026-10-03] late\nnot a line\n".to_string()),
-            ("Log/b-log.md".to_string(), "- [2026-10-01] same | commits: abc | [[x]]\n- [2026-10-02] linked | [[x]]\n- [2026-10-09] other area | [[y]]\n".to_string()),
+            ("Log/a-log.md".to_string(), log_entries("- [2026-10-01] same | [[x]]\n- [2026-10-03] late\nnot a line\n")),
+            ("Log/b-log.md".to_string(), log_entries("- [2026-10-01] same | commits: abc | [[x]]\n- [2026-10-02] linked | [[x]]\n- [2026-10-09] other area | [[y]]\n")),
         ];
         let lines = log_for(&logs, "x", &["Log/a-log.md".to_string()]);
         let shown: Vec<(&str, &str)> = lines.iter().map(|line| (line.date.as_str(), line.text.as_str())).collect();
@@ -434,7 +533,7 @@ The payload says amount.');
         assert_eq!(index.changed_at("Projects/x.md"), Some(5.5));
         assert_eq!(index.status_of("Projects/x.md").as_deref(), Some("active"));
         assert_eq!(index.status_of("Projects/x.md'; DROP TABLE notes; --"), None, "keys are bound, never spliced");
-        assert!(index.db.execute("INSERT INTO notes VALUES ('y', 1, 'x')", []).is_err(), "read-only");
+        assert!(index.db().unwrap().execute("INSERT INTO notes VALUES ('y', 1, 'x')", []).is_err(), "read-only");
         assert!(index.areas().is_err(), "a schema without the columns is an error, not a panic");
         let _ = std::fs::remove_dir_all(&dir);
     }

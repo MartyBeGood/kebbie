@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::actions::{self, Action, Work};
 use crate::repo::{self, default_branch, git, main_checkout_of, name_of};
 use crate::sh::Result;
-use crate::vault::{self, Index, LogLine, Note};
+use crate::vault::{self, Index, LogEntry, LogLine, Note};
 use crate::vault_cli::KeptLog;
 
 #[derive(Clone)]
@@ -128,12 +128,12 @@ fn kept_log(state: Option<&Path>, name: &str, now: std::time::SystemTime, unaske
     }
 }
 
-// What the vault said before names a repo's own log note; until it has said, a guess stands in and the name goes to `unasked`.
-fn own_logs(state: Option<&Path>, logs: &[(String, String)], names: [Option<&str>; 2], unasked: &mut Vec<String>) -> Vec<String> {
+// The snapshot's template names a repo's own log note, else what the vault said before; until it has said, a guess stands in and the name goes to `unasked`.
+fn own_logs(index: &Index, state: Option<&Path>, logs: &[(String, Vec<LogEntry>)], names: [Option<&str>; 2], unasked: &mut Vec<String>) -> Vec<String> {
     let now = std::time::SystemTime::now();
     let mut own: Vec<String> = Vec::new();
     for name in names.into_iter().flatten() {
-        let named = kept_log(state, name, now, unasked).or_else(|| vault::own_log_guess(logs, name));
+        let named = index.log_key(name).or_else(|| kept_log(state, name, now, unasked)).or_else(|| vault::own_log_guess(logs, name));
         own.extend(named.filter(|key| !own.contains(key)));
     }
     own
@@ -166,7 +166,7 @@ fn gather_from(index: &Index, state: Option<&Path>, facts_of: impl Fn(Option<&Pa
         let RepoFacts { git, actions, errors, sandbox } = facts[&repo].clone();
         list.push(Area {
             sandbox,
-            log: vault::log_for(&logs, &note.stem, &own_logs(state, &logs, [Some(note.stem.as_str()), repo.as_deref().map(name_of).as_deref()], &mut unasked)),
+            log: vault::log_for(&logs, &note.stem, &own_logs(index, state, &logs, [Some(note.stem.as_str()), repo.as_deref().map(name_of).as_deref()], &mut unasked)),
             git,
             key: note.key,
             stem: note.stem,
@@ -188,6 +188,9 @@ fn gather_from(index: &Index, state: Option<&Path>, facts_of: impl Fn(Option<&Pa
 
 // The Areas page as text, for the lead and the command line.
 pub fn print() -> Result<String> {
+    if let Ok(state) = crate::lead::state_dir() {
+        crate::vault_snapshot::refresh_if_older(&state, 60);
+    }
     let mut lines = Vec::new();
     for area in gather()?.list {
         let mut facts = Vec::new();
@@ -296,18 +299,24 @@ mod tests {
     }
 
     #[test]
-    fn a_repos_own_log_is_the_kept_answer_else_a_guess_while_it_is_asked() {
+    fn a_repos_own_log_is_the_snapshots_template_else_the_kept_answer_else_a_guess_while_it_is_asked() {
         let dir = crate::sh::test_dir("areas-own-logs");
         let state = dir.join("state");
         std::fs::create_dir_all(state.join("vault-logs")).unwrap();
         std::fs::write(state.join("vault-logs/api"), "Log/api-changes.md").unwrap();
         std::fs::write(state.join("vault-logs/web"), "").unwrap();
-        let logs: Vec<(String, String)> = ["Log/web-logg.md", "Log/app-logg.md"].iter().map(|key| (key.to_string(), String::new())).collect();
+        rusqlite::Connection::open(dir.join("index.sqlite")).unwrap().execute_batch("CREATE TABLE notes (key TEXT);").unwrap();
+        let index = Index::at(&dir.join("index.sqlite")).unwrap();
+        let logs: Vec<(String, Vec<LogEntry>)> = ["Log/web-logg.md", "Log/app-logg.md"].iter().map(|key| (key.to_string(), Vec::new())).collect();
         let mut unasked = Vec::new();
-        assert_eq!(own_logs(Some(&state), &logs, [Some("api"), Some("web")], &mut unasked), ["Log/api-changes.md", "Log/web-logg.md"], "kept, then a refusal guessed");
+        assert_eq!(own_logs(&index, Some(&state), &logs, [Some("api"), Some("web")], &mut unasked), ["Log/api-changes.md", "Log/web-logg.md"], "kept, then a refusal guessed");
         assert!(unasked.is_empty(), "a kept refusal is not asked again on every gather");
-        assert_eq!(own_logs(Some(&state), &logs, [Some("app"), None], &mut unasked), ["Log/app-logg.md"]);
+        assert_eq!(own_logs(&index, Some(&state), &logs, [Some("app"), None], &mut unasked), ["Log/app-logg.md"]);
         assert_eq!(unasked, ["app"]);
+        let snapshot = crate::vault_snapshot::parse(r#"{"log_key_template":"Log/{repo}-log.md","notes":[]}"#, None).unwrap();
+        let mut none = Vec::new();
+        assert_eq!(own_logs(&Index::of_snapshot(std::sync::Arc::new(snapshot), None), Some(&state), &logs, [Some("api"), None], &mut none), ["Log/api-log.md"]);
+        assert!(none.is_empty(), "with the snapshot's template nothing is asked");
         let _ = std::fs::remove_dir_all(dir);
     }
 

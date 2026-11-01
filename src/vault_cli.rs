@@ -70,7 +70,7 @@ impl Cli {
     }
 
     // A probe verdict holds for this command at this plugin version, so an update is probed afresh.
-    fn cache_key(&self) -> String {
+    pub(crate) fn cache_key(&self) -> String {
         if self.plugin.is_empty() { self.shown() } else { format!("{} @{}", self.shown(), self.plugin) }
     }
 
@@ -202,6 +202,13 @@ impl Cli {
             return Ok(None);
         }
         Ok(Some(map.iter().filter_map(|(repo, path)| Some((repo.clone(), path.as_str()?.to_string()))).filter(|(_, path)| !path.is_empty()).collect()))
+    }
+
+    // `snapshot --json [--since ETAG]`; the inner error is the server's refusal, an unknown command on a server without snapshots.
+    pub fn snapshot(&self, since: Option<&str>) -> Result<std::result::Result<String, String>> {
+        let mut args = vec!["snapshot", "--json"];
+        args.extend(since.map(|etag| ["--since", etag]).into_iter().flatten());
+        self.output(&args)
     }
 
     // A vault server older than the task commands answers status but refuses `task --help`, and one older than claims lists no `claim` there; writes are tried only with try_write, which doctor alone asks for.

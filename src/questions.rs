@@ -121,7 +121,7 @@ fn plan_changed_in(question: &Question, changed_at: impl Fn(&str) -> Option<f64>
     matches!((question.plan_at, changed_at(key).map(millis)), (Some(asked), Some(now)) if now != asked)
 }
 
-// The plan's markdown: a vault note's body from the vault index, or the copy of the file it was asked with.
+// The plan's markdown: a vault note's body from the local vault index, or the copy of the file it was asked with; a vault read only as a snapshot has no bodies.
 pub fn plan_text(question: &Question) -> Option<String> {
     let plan = question.plan.as_deref()?;
     match plan.strip_prefix(VAULT_PLAN) {

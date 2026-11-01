@@ -79,6 +79,7 @@ mod update_progress;
 mod usage;
 mod vault;
 mod vault_cli;
+mod vault_snapshot;
 mod when;
 
 use std::path::Path;

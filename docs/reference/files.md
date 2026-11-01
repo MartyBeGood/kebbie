@@ -136,7 +136,9 @@ A `comments/` file holds the comment as GitHub gave it (author, text, file and l
 | `notify.log` | Notify command failures. |
 | `notify-sent.json` | When each kind of notification last went out, for the limit of one per event a minute. |
 | `vault-status.json` | Whether the vault plugin is on and writes claims, kept a while so a start or a push does not ask the vault each time. |
-| `vault-logs/` | Each repo's vault log note. |
+| `vault-logs/` | Each repo's vault log note, or an empty file where the vault named none, asked again after an hour. |
+| `vault-snapshot.json` | The last vault snapshot, which the Areas page, the backlog and the ongoing notes read. |
+| `vault-snapshot-verdict.json` | Whether the vault server answers snapshots, so a server without them is asked again only after ten minutes or a plugin update. |
 | `vault.log` | The vault calls that failed, one line each. |
 
 A `routines/` file holds when the scheduler first saw the routine, when its last run started, that run's task, its outcome (`running`, `ok`, `findings` or `failed`) and summary, and the four runs before it, which the board's Routines page lists.

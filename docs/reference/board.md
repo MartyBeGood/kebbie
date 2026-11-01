@@ -394,7 +394,7 @@ For an older Claude Code, or when the inbox refuses a message, kebbie types it i
 | `R` | Ask the lead to refresh the backlog. | On an item. |
 | `n` | Add an item to the local backlog: a title, then a priority. | `"local"` is a source. |
 
-The note's card shows its whole title, area, status and summary, and who works on it (machine, task and since when). It shows its task and whether it runs here, and its opening: the text before its first heading and its first two sections, from the local vault index.
+The note's card shows its whole title, area, status and summary, and who works on it (machine, task and since when). It shows its task and whether it runs here, and its opening: the text before its first heading and its first two sections from the local vault index, or the first paragraph the vault snapshot carries.
 
 - `↓` `↑` `pgdn` `pgup` scroll it.
 - `g` or `⏎` does what `g` does on the row.
@@ -678,7 +678,9 @@ A new name is checked as [`machine.name`](configuration.md#keys) is. A `config.t
 
 ![The Areas page: areas with their repos, actions and vault log](../assets/clips/areas-page.gif)
 
-Press `2` to open it and `1` to go back. It needs the vault: it lists the vault's system notes (`Areas/*.md`) with their repos. `kebbie areas` prints the same.
+Press `2` to open it and `1` to go back. It needs the vault: it lists the vault's system notes with their repos. `kebbie areas` prints the same.
+
+It reads a snapshot of the vault where the vault server answers one, which works with a vault hosted on a server, and the local vault index where it does not. The keeper fetches the snapshot every 20 seconds, or the full board does while the keeper is off; the status line's `vault index:` says how long ago it was fetched. A snapshot holds the last 50 lines of each log note.
 
 - Areas group into **needs you** (main ahead of origin, commits since the last release, or a task waiting on you), **active** and **quiet**.
 - Each shows its running tasks, open notes and backlog, main against origin, the last tag and commits since, and the last vault log line.

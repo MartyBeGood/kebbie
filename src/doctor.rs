@@ -525,15 +525,15 @@ pub fn comments(watch: &Setting<bool>, days: u64, target: impl FnOnce() -> std::
     }
 }
 
-pub fn backlog(sources: &[Source], vault_index: impl Fn() -> Result<PathBuf, String>, local_file: &Path) -> Vec<Check> {
+pub fn backlog(sources: &[Source], vault_source: impl Fn() -> Result<String, String>, local_file: &Path) -> Vec<Check> {
     if sources.is_empty() {
         return vec![ok("backlog", "no source configured; set [board.backlog] sources to fill the board's Backlog tab")];
     }
     sources.iter().map(|source| match source {
         Source::Local if local_file.exists() => ok("backlog local", format!("{}: {} items", local_file.display(), crate::backlog_file::read(local_file).len())),
         Source::Local => ok("backlog local", format!("{} is created by the first item (the board's a, or kebbie backlog add)", local_file.display())),
-        Source::Vault => match vault_index() {
-            Ok(index) => ok("backlog vault", format!("vault index {}", index.display())),
+        Source::Vault => match vault_source() {
+            Ok(source) => ok("backlog vault", source),
             Err(error) => warn("backlog vault", error, one("open a Claude session with the vault plugin once; the Areas page reads its index")),
         },
         Source::Linear => ok("backlog linear", "the lead reads Linear through a Linear MCP server in Claude (not checked here)"),
@@ -839,7 +839,7 @@ pub fn checks(env: &Env) -> Vec<Check> {
     if reached || crate::hub::identity::load(&env.kebbie_state).ok().flatten().is_some() {
         checks.push(machine_name(&settings.machine_name, &env.config));
     }
-    checks.extend(backlog(&settings.sources.value, crate::vault::index_path, &env.config.with_file_name("backlog.md")));
+    checks.extend(backlog(&settings.sources.value, crate::vault::source, &env.config.with_file_name("backlog.md")));
     let claude = read_json(&env.claude_dir.join(".claude.json")).or_else(|| read_json(&env.home.join(".claude.json")));
     let vault = vault_plugin(installed.as_ref(), |file| std::fs::read_to_string(file).ok());
     checks.extend(unused_sources(&settings.sources.value, vault, linear_mcp(installed.as_ref(), claude.as_ref()), &env.config));
@@ -1245,7 +1245,7 @@ mod tests {
         let missing = backlog(&[Source::Vault, Source::Linear], || Err("No vault index at /x".to_string()), nowhere);
         assert_eq!((missing[0].level, missing[0].fact.as_str()), (Level::Warn, "No vault index at /x"));
         assert!(missing[1].level == Level::Ok && missing[1].fact.contains("Linear MCP"));
-        assert_eq!(backlog(&[Source::Vault], || Ok(PathBuf::from("/i.sqlite")), nowhere)[0].level, Level::Ok);
+        assert_eq!(backlog(&[Source::Vault], || Ok("vault index /i.sqlite".to_string()), nowhere)[0].level, Level::Ok);
         let local = backlog(&[Source::Local], || unreachable!(), nowhere);
         assert!(local[0].level == Level::Ok && local[0].fact.contains("is created by the first item"), "{:?}", local[0]);
         let dir = std::env::temp_dir().join(format!("kebbie-doctor-local-{}", std::process::id()));
