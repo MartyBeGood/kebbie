@@ -82,6 +82,18 @@ fn a_codex_approval_mid_session_waits_under_needs_you_and_the_lead_answers_it_by
     assert_eq!(keys, ["1", "2"], "a number and a key each press the option's digit");
 }
 
+fn iso(seconds: u64) -> String {
+    let days = (seconds / 86_400) as i64 + 719_468;
+    let (era, day_of_era) = (days.div_euclid(146_097), days.rem_euclid(146_097));
+    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted = (5 * day_of_year + 2) / 153;
+    let (day, month) = (day_of_year - (153 * shifted + 2) / 5 + 1, if shifted < 10 { shifted + 3 } else { shifted - 9 });
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    let clock = seconds % 86_400;
+    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.000Z", clock / 3600, clock / 60 % 60, clock % 60)
+}
+
 #[test]
 fn an_api_error_that_stops_a_claude_task_puts_it_under_needs_you_and_tells_the_lead_once() {
     let lab = Lab::new("api-error");
@@ -94,9 +106,8 @@ fn an_api_error_that_stops_a_claude_task_puts_it_under_needs_you_and_tells_the_l
     let transcripts = lab.home.join(".claude/projects").join(folder);
     fs::create_dir_all(&transcripts).unwrap();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    let at = |seconds: u64| { let output = std::process::Command::new("date").args(["-u", "-r", &seconds.to_string(), "+%Y-%m-%dT%H:%M:%S.000Z"]).output().unwrap(); String::from_utf8_lossy(&output.stdout).trim().to_string() };
-    let prompt = json!({ "type": "user", "uuid": "u1", "timestamp": at(now - 60), "isSidechain": false, "message": { "role": "user", "content": "Add the search page" } });
-    let error = json!({ "type": "assistant", "uuid": "e1", "timestamp": at(now - 30), "isSidechain": false, "isApiErrorMessage": true, "error": "billing_error", "apiErrorStatus": 400,
+    let prompt = json!({ "type": "user", "uuid": "u1", "timestamp": iso(now - 60), "isSidechain": false, "message": { "role": "user", "content": "Add the search page" } });
+    let error = json!({ "type": "assistant", "uuid": "e1", "timestamp": iso(now - 30), "isSidechain": false, "isApiErrorMessage": true, "error": "billing_error", "apiErrorStatus": 400,
         "message": { "model": "<synthetic>", "role": "assistant", "type": "message", "stop_reason": "stop_sequence", "content": [{ "type": "text", "text": "API Error: Your credit balance is too low" }] } });
     fs::write(transcripts.join("s-search.jsonl"), format!("{prompt}\n{error}\n")).unwrap();
     lab.keeper_round();
