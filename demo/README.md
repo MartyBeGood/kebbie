@@ -19,6 +19,7 @@ Recorded with [vhs](https://github.com/charmbracelet/vhs) (`brew install vhs`); 
 | `clips/push-and-card.tape` | `docs/assets/clips/push-and-card.gif` | The card, the push window with both commits accepted, CI watched until green, and the task queued after it starting |
 | `clips/away-mode.tape` | `docs/assets/clips/away-mode.gif` | `A`: the lead settles a how-question, and sums up when you are back |
 | `clips/areas-page.tape` | `docs/assets/clips/areas-page.gif` | The Areas page, an area's actions and its vault log |
+| `clips/vault.tape` | `docs/assets/clips/vault.gif` | notes-vault-mcp in a terminal: `context` for api with the three commits newer than its system note, a search that finds the rounding trap by meaning, `read` of that trap, and the backlog by priority |
 | `clips/routines.tape` | `docs/assets/clips/routines.gif` | A health check added from the Routines page |
 | `clips/hub-connect.tape` | `docs/assets/clips/hub-connect.gif` | `H` connects the machine to a hub: the card with the code to check and the link |
 | `clips/update-and-restarts.tape` | `docs/assets/clips/update-and-restarts.gif` | `U` downloads the newer release, shows what's new (the newest release's notes when Unreleased is empty) and restarts the idle sessions |
@@ -28,6 +29,7 @@ Each clip is shown at the top of its docs page.
 Each tape gets a fresh world from `setup.sh <name>` under `/tmp/kebbie-demo`: its own `HOME` and XDG dirs, its own herdr server on a socket there, two small repos with tasks seeded through `kebbie start`, `steps`, `accept`, `report`, `ask`, `tell` and `backlog add`, with `task.steps` on and the board's message log folded to one line. The repos' origins read as `https://github.com/robin-demo/<repo>`, and git sends their pushes to bare repos under `/tmp/kebbie-demo/remotes`, so kebbie watches CI after a push; `bin/gh` stands in for the GitHub CLI and reports one CI run per pushed commit, green 20 seconds after kebbie first asks.
 
 - The `demo` scene and the `areas-page` clip add a vault index as notes-vault-mcp writes it (`vault-index.py`).
+- The `vault` clip installs notes-vault-mcp with its `semantic` extra from the committed HEAD of a checkout beside kebbie (or `KDEMO_VAULT_SRC`) into a venv at `/tmp/kebbie-demo-vault`, with the embedding model cached in `/tmp/kebbie-demo-models`, and writes a real vault of Markdown notes; its world stops before herdr and the tasks, as the clip runs in a plain shell.
 - The `push-and-card` clip queues free-shipping after checkout-copy, so it starts by itself once checkout-copy's CI is green.
 - The `update-and-restarts` clip installs kebbie as a checkout at its release tag, linked into herdr, with a newer tag on a local origin whose release notes `release-notes.py` cuts and whose binary a local server publishes, so `U` really downloads the release and restarts the sessions; that clip's world builds with your own cargo and rustup toolchain.
 - The `hub-connect` clip runs a kebbie hub of its own on `localhost:18471`: put `kebbie-hub` on `PATH` or set `KDEMO_HUB_BIN`.

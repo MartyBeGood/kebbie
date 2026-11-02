@@ -22,6 +22,7 @@ stop_demo() {
   pkill -f "$D/bin/kebbie -C .* review --run" 2>/dev/null && sleep 0.5
   pkill -f "$D/bin/claude.py" 2>/dev/null || true
   pkill -f "$D/home/.local/share/.* keeper" 2>/dev/null && sleep 0.5
+  pkill -f "notes_vault_mcp.embed_worker $D/" 2>/dev/null || true
   return 0
 }
 
@@ -93,7 +94,7 @@ printf '#!/bin/bash\nexec -a claude %q %q "$@"\n' "$python" "$D/bin/claude.py" >
 chmod +x "$D/bin/claude"
 
 vault_env=
-case "$scene" in demo|areas-page) vault_env="VAULT_PATH=$H/vault" ;; esac
+case "$scene" in demo|areas-page) vault_env="VAULT_PATH=$H/vault" ;; vault) vault_env="VAULT_PATH=$H/vault VAULT_SEMANTIC=on" ;; esac
 cat > "$D/env.sh" <<EOF
 #!/bin/sh
 exec env -i HOME=$H PATH=$demo_path \\
@@ -112,7 +113,18 @@ if [ -n "$vault_env" ]; then
   index=$(python3 -c 'import hashlib, sys; print(hashlib.sha1(sys.argv[1].encode()).hexdigest()[:12])' "$H/vault")
   claimed_by=
   [ "$scene" = demo ] && claimed_by=devbox
-  python3 "$repo_root/demo/vault-index.py" "$H/.cache/notes-vault-mcp/$index.sqlite" "$H" $claimed_by
+  [ "$scene" = vault ] || python3 "$repo_root/demo/vault-index.py" "$H/.cache/notes-vault-mcp/$index.sqlite" "$H" $claimed_by
+fi
+if [ "$scene" = vault ]; then
+  # notes-vault-mcp from its committed HEAD, in a venv and a model cache beside the world so a recording neither reinstalls nor downloads again.
+  vault_src=${KDEMO_VAULT_SRC:-$(dirname "$repo_root")/notes-vault-mcp}
+  [ -d "$vault_src/.git" ] || { echo "the vault clip installs notes-vault-mcp from a checkout: set KDEMO_VAULT_SRC" >&2; exit 1; }
+  vault_venv=$(dirname "$D")/kebbie-demo-vault
+  [ -x "$vault_venv/bin/python" ] || uv venv --no-config -q "$vault_venv"
+  uv pip install --no-config -q --python "$vault_venv/bin/python" "notes-vault-mcp[semantic] @ git+file://$vault_src"
+  ln -s "$vault_venv/bin/notes-vault-mcp" "$D/bin/notes-vault-mcp"
+  mkdir -p "$(dirname "$D")/kebbie-demo-models"
+  ln -s "$(dirname "$D")/kebbie-demo-models" "$H/.cache/notes-vault-mcp/models"
 fi
 
 chrome="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -201,7 +213,10 @@ fi
 
 put() { mkdir -p "$(dirname "$1/$2")"; cat > "$1/$2"; }
 # The board reads the worktrees while they are seeded, so a commit retries past its index lock.
-save() { local message=(-m "$2"); [ -z "${3:-}" ] || message+=(-m "$3"); for _ in 1 2 3 4 5; do run git -C "$1" add -A 2>/dev/null && run git -C "$1" commit -q "${message[@]}" 2>/dev/null && return 0; sleep 0.5; done; run git -C "$1" commit -q "${message[@]}"; }
+save() { local message=(-m "$2"); [ -z "${3:-}" ] || message+=(-m "$3"); for _ in 1 2 3 4 5; do run git -C "$1" add -A 2>/dev/null && run env ${when:+GIT_AUTHOR_DATE=$when GIT_COMMITTER_DATE=$when} git -C "$1" commit -q "${message[@]}" 2>/dev/null && return 0; sleep 0.5; done; run git -C "$1" commit -q "${message[@]}"; }
+ago() { python3 -c 'import datetime, sys; print(datetime.date.today() - datetime.timedelta(days=int(sys.argv[1])))' "$1"; }
+# The vault clip's api history spans weeks, so its system note has commits older and newer than itself; elsewhere a commit is dated now.
+dated() { when=; [ "$scene" != vault ] || when=$(ago "$1")T10:00:00; }
 
 new_repo() {
   run git init -q --bare "$D/remotes/$1.git"
@@ -266,6 +281,7 @@ put "$H/code/api" README.md <<'EOF'
 
 Orders, invoices and API keys for the shop.
 EOF
+dated 40
 save "$H/code/api" "Start the API"
 put "$H/code/api" app/invoices/vat.py <<'EOF'
 from decimal import Decimal, ROUND_HALF_UP
@@ -280,6 +296,7 @@ def line_vat(line):
 def invoice_vat(invoice):
     return sum(line_vat(line) for line in invoice.lines)
 EOF
+dated 20
 save "$H/code/api" "Add VAT to invoices"
 put "$H/code/api" app/middleware/log.py <<'EOF'
 import logging
@@ -290,8 +307,126 @@ log = logging.getLogger("requests")
 def log_request(request, response):
     log.info("%s %s %s key=%s", request.method, request.path, response.status, request.api_key.id)
 EOF
+dated 9
 save "$H/code/api" "Log every request"
+if [ "$scene" = vault ]; then
+  put "$H/code/api" app/invoices/credit.py <<'EOF'
+def credit_note(invoice):
+    return invoice.copy(lines=[line.negated() for line in invoice.lines], credits=invoice.number)
+EOF
+  dated 4
+  save "$H/code/api" "Credit an invoice by reversing its lines"
+  put "$H/code/api" app/invoices/reminders.py <<'EOF'
+from datetime import timedelta
+
+REMIND_AFTER = timedelta(days=14)
+
+
+def due_for_reminder(invoice, today):
+    return not invoice.paid and today >= invoice.due + REMIND_AFTER
+EOF
+  dated 3
+  save "$H/code/api" "Remind 14 days after an invoice's due date"
+  put "$H/code/api" app/invoices/mail.py <<'EOF'
+def receipt(invoice, mailer):
+    mailer.send(invoice.customer.email, "Your receipt", attachments=[invoice.pdf()])
+EOF
+  dated 1
+  save "$H/code/api" "Attach the invoice PDF to the receipt"
+fi
+when=
 run git -C "$H/code/api" push -qu origin main
+
+if [ "$scene" = vault ]; then
+  vault=$H/vault
+  put "$vault" Areas/api.md <<EOF
+---
+title: api
+date: $(ago 40)
+updated: $(ago 6)
+tags: [api, invoices]
+status: active
+kind: system
+path: ~/code/api
+summary: Orders, invoices and API keys for the shop.
+---
+# api
+
+Orders, invoices and API keys for the shop.
+
+- VAT: rounded per line. Why totals drift by a cent if you do: [[line-rounding-trap]].
+- Requests: logged with the caller's API key.
+EOF
+  put "$vault" Areas/shop.md <<EOF
+---
+title: shop
+date: $(ago 40)
+updated: $(ago 12)
+tags: [shop]
+status: active
+kind: system
+path: ~/code/shop
+summary: The storefront, product pages, search, cart and checkout.
+---
+# shop
+
+The storefront: product pages, search, cart and checkout.
+EOF
+  put "$vault" Resources/line-rounding-trap.md <<EOF
+---
+title: Rounding each invoice line loses one penny
+date: $(ago 18)
+updated: $(ago 18)
+tags: [api, invoices]
+status: active
+kind: trap
+area: "[[api]]"
+summary: Round the sum of an invoice once; rounding every line is one penny off on three lines or more.
+---
+# Rounding each invoice line loses one penny
+
+Rounding every line of an invoice to the penny and adding the lines up leaves the sum one penny off once the invoice has three lines or more. Add the exact amounts and round the sum once.
+EOF
+  idea() {
+    put "$vault" "Projects/$1.md" <<EOF
+---
+title: $2
+date: $(ago "$4")
+updated: $(ago "$4")
+tags: [$3]
+status: backlog
+kind: task
+area: "[[$3]]"
+priority: $5
+summary: $6
+---
+# $2
+
+$6
+EOF
+  }
+  idea api-refund-webhook "Refund webhook" api 2 urgent "Tell the payment provider when an invoice is credited."
+  idea shop-wishlist "Wishlist" shop 8 high "Save products for later from the product page."
+  idea api-order-export "Order export" api 5 medium "One CSV of orders per month for the accountant."
+  idea api-slow-query-log "Slow query log" api 15 low "Flag queries over 200 ms."
+  put "$vault" Log/api-log.md <<EOF
+---
+title: api log
+date: $(ago 20)
+updated: $(ago 9)
+tags: [api, log]
+status: active
+kind: log
+area: "[[api]]"
+---
+- [$(ago 20)] VAT on invoices | commits: $(git -C "$H/code/api" rev-parse --short HEAD~4) | [[api]]
+- [$(ago 9)] Every request logged with its key | commits: $(git -C "$H/code/api" rev-parse --short HEAD~3) | [[api]]
+EOF
+  run notes-vault-mcp sync >/dev/null
+  # The vault clip runs in a plain shell, so its world needs no herdr and no tasks.
+  echo "demo world ready in $D"
+  exit 0
+fi
 
 ( "$D/env.sh" herdr server > "$D/server.log" 2>&1 & echo $! > "$D/server.pid" )
 for _ in $(seq 1 50); do [ -S "$H/.config/herdr/herdr.sock" ] && break; sleep 0.2; done
