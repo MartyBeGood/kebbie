@@ -266,8 +266,8 @@ pub(crate) fn settings(kebbie: &str, address: &str, gate: Option<&str>, dirs: Op
             None => hooks["PreToolUse"] = json!([files]),
         }
     }
-    // VAULT_STOP_HOOK=off silences the vault plugin's Stop hook: kebbie writes a task's log lines, and hooks inherit the session's env.
-    let mut env = json!({ "VAULT_STOP_HOOK": "off" });
+    // The vault plugin's Stop hook skips its commit check because kebbie writes a task's log lines; hooks inherit the session's env.
+    let mut env = json!({ "VAULT_STOP_HOOK_COMMITS": "off" });
     for (name, value) in crate::push_block::env_vars() {
         env[name] = json!(value);
     }

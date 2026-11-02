@@ -5,6 +5,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 ## Unreleased
 
 ### What's new
+- A Claude task is asked by the vault plugin to save what you or the lead told it once a few messages have gone without a vault write; it still skips the log check, since kebbie writes a task's log lines (needs the vault plugin release that brings this)
 
 ### Fixed
 - A restarted Codex task runs with its task's profile, sandbox and permissions as kebbie starts it today, so a task an older kebbie started can write its worktree's git folder again without asking for every commit

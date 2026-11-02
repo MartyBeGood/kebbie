@@ -60,7 +60,7 @@ Each machine carries one name, [`machine.name`](../reference/configuration.md#ke
 
 ## kebbie writes the log, not the Stop hook
 
-The vault plugin's Stop hook asks a session to write the repo log before it ends. kebbie writes each task's log lines itself, so it turns that hook off in the settings it writes for a task: `VAULT_STOP_HOOK=off` in their `env`, which Claude Code passes to the hooks it runs. The lead and your own sessions keep it.
+The vault plugin's Stop hook asks a session to write the repo log before it ends, and to save what you told it once you have written a few messages without anything going to the vault. kebbie writes each task's log lines itself, so it turns off only the log check in the settings it writes for a task: `VAULT_STOP_HOOK_COMMITS=off` in their `env`, which Claude Code passes to the hooks it runs. A task is still asked to save what you or the lead told it. The lead and your own sessions keep the whole hook.
 
 ## A vault outage never blocks work
 
