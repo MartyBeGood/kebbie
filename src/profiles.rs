@@ -841,9 +841,9 @@ mod tests {
         assert_eq!(load_in(&dir, TASK).unwrap(), Profile { model: Some("sonnet".to_string()), file: Some(dir.join("task.toml")), ..built_in(TASK).unwrap() }, "the file adds to the built-in, its role and rules as they ship");
         assert_eq!(edit_in(&dir, TASK, &[("model", None), ("effort", None)]).unwrap(), Edited::Removed(dir.join("task.toml")));
         assert!(!dir.join("task.toml").exists());
-        std::fs::write(dir.join("ops.toml"), "# mine\nfor = \"the homelab\"\nmodel = \"opus\"\n").unwrap();
+        std::fs::write(dir.join("ops.toml"), "# mine\nfor = \"the cluster\"\nmodel = \"opus\"\n").unwrap();
         edit_in(&dir, OPS, &[("model", None), ("effort", None)]).unwrap();
-        assert_eq!(read("ops.toml"), "# mine\nfor = \"the homelab\"\n", "a file that holds something else stays");
+        assert_eq!(read("ops.toml"), "# mine\nfor = \"the cluster\"\n", "a file that holds something else stays");
         assert!(edit_in(&dir, "missing", &[("model", Some("opus"))]).unwrap_err().contains("No profile \"missing\""));
         assert!(!dir.join("missing.toml").exists());
         std::fs::remove_dir_all(dir).unwrap();

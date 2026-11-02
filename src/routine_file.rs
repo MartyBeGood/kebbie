@@ -467,8 +467,8 @@ mod tests {
 
     fn draft() -> Draft {
         Draft {
-            id: "cluster-health".to_string(), title: "Cluster health".to_string(), repo: "~/homelab-gitops".to_string(), schedule: Schedule::Daily(7 * 60),
-            prompt: "Check every node, Longhorn volume and certificate.".to_string(), mode: Mode::Report, push: false, enabled: true, profile: None,
+            id: "cluster-health".to_string(), title: "Cluster health".to_string(), repo: "~/infra".to_string(), schedule: Schedule::Daily(7 * 60),
+            prompt: "Check every node, storage volume and certificate.".to_string(), mode: Mode::Report, push: false, enabled: true, profile: None,
         }
     }
 
@@ -522,13 +522,13 @@ mod tests {
     #[test]
     fn the_popups_answers_become_the_table_it_shows_and_writes() {
         assert_eq!(block(&draft(), None), [
-            "[[routines]]", "id = \"cluster-health\"", "title = \"Cluster health\"", "repo = \"~/homelab-gitops\"", "at = \"07:00\"", "mode = \"report\"",
-            "prompt = \"\"\"Check every node, Longhorn volume and certificate.\"\"\"", "",
+            "[[routines]]", "id = \"cluster-health\"", "title = \"Cluster health\"", "repo = \"~/infra\"", "at = \"07:00\"", "mode = \"report\"",
+            "prompt = \"\"\"Check every node, storage volume and certificate.\"\"\"", "",
         ].join("\n"));
         let fix = Draft { schedule: Schedule::Every(6 * 3600), mode: Mode::Fix, push: true, enabled: false, prompt: "Say \"hi\" \\ then\nstop".to_string(), ..draft() };
-        let text = block(&fix, Some("~/homelab-gitops"));
+        let text = block(&fix, Some("~/infra"));
         assert!(text.contains("every = \"6h\"\nmode = \"fix\"\npush = true\nenabled = false\n") && !text.contains("repo ="), "{text}");
-        let parsed = routines::parse_list(&text.parse::<Table>().unwrap(), Some("~/homelab-gitops"), "x").unwrap().remove(0);
+        let parsed = routines::parse_list(&text.parse::<Table>().unwrap(), Some("~/infra"), "x").unwrap().remove(0);
         assert_eq!(Draft::of(&parsed), fix, "what is written reads back as the same routine, quotes and all");
     }
 
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn the_command_lines_flags_make_the_same_draft_as_the_popup() {
-        let asked = Asked { title: Some("Cluster health"), id: None, repo: Some("~/homelab-gitops"), at: Some("07:00"), every: None, mode: None, push: false, paused: false, prompt: " Check every node, Longhorn volume and certificate. " };
+        let asked = Asked { title: Some("Cluster health"), id: None, repo: Some("~/infra"), at: Some("07:00"), every: None, mode: None, push: false, paused: false, prompt: " Check every node, storage volume and certificate. " };
         assert_eq!(draft_from(&asked, &[]), Ok(draft()));
         assert_eq!(draft_from(&asked, &["cluster-health".to_string()]).unwrap().id, "cluster-health-2");
         let fix = draft_from(&Asked { every: Some("6h"), at: None, mode: Some("fix"), push: true, paused: true, id: Some("ci"), ..asked }, &[]).unwrap();

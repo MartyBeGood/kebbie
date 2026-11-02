@@ -898,7 +898,7 @@ mod tests {
 
     fn routine(id: &str, title: &str, schedule: Schedule, mode: routines::Mode) -> Routine {
         Routine {
-            id: id.to_string(), title: title.to_string(), repo: "~/homelab-gitops".to_string(), schedule, prompt: format!("Check {title}."), mode, push: false, enabled: true, profile: None,
+            id: id.to_string(), title: title.to_string(), repo: "~/infra".to_string(), schedule, prompt: format!("Check {title}."), mode, push: false, enabled: true, profile: None,
             source: "/c/config.toml".to_string(),
         }
     }
@@ -910,14 +910,14 @@ mod tests {
     fn open_task(name: &str) -> Item {
         let mut item = crate::status::tests::task(Some("idle"), Some("needs-you"), 0);
         item.name = name.to_string();
-        item.place = "homelab-gitops".to_string();
+        item.place = "infra".to_string();
         item
     }
 
     fn page_with_rows() -> Page {
         let mut page = Page::new(PathBuf::from("/c/config.toml"), PathBuf::from("/c/repos"));
         page.clock = Some((MONDAY_0630_UTC, 0));
-        let mut health = ran(Outcome::Findings, MONDAY_0630_UTC - 1800, "cluster-health-20261019-0600@homelab-gitops", "Longhorn volume degraded, cert in 5 d");
+        let mut health = ran(Outcome::Findings, MONDAY_0630_UTC - 1800, "cluster-health-20261019-0600@infra", "storage volume degraded, cert in 5 d");
         health.earlier = vec![
             Past { start: MONDAY_0630_UTC - 86_400 - 1800, outcome: Outcome::Ok, summary: Some("all well".to_string()) },
             Past { start: MONDAY_0630_UTC - 2 * 86_400 - 1800, outcome: Outcome::Failed, summary: Some("kubectl: connection refused".to_string()) },
@@ -925,9 +925,9 @@ mod tests {
         let mut disk = routine("disk", "Disk on the devbox", Schedule::Daily(480), routines::Mode::Report);
         disk.enabled = false;
         page.rows = vec![
-            (routine("backups", "Backups", Schedule::Every(6 * 3600), routines::Mode::Report), ran(Outcome::Ok, MONDAY_0630_UTC - 3600, "backups-x@homelab-gitops", "all copied")),
+            (routine("backups", "Backups", Schedule::Every(6 * 3600), routines::Mode::Report), ran(Outcome::Ok, MONDAY_0630_UTC - 3600, "backups-x@infra", "all copied")),
             (disk, State::default()),
-            (routine("app-updates", "App updates", Schedule::Daily(425), routines::Mode::Fix), ran(Outcome::Running, MONDAY_0630_UTC - 180, "app-updates-20261019-0627@homelab-gitops", "")),
+            (routine("app-updates", "App updates", Schedule::Daily(425), routines::Mode::Fix), ran(Outcome::Running, MONDAY_0630_UTC - 180, "app-updates-20261019-0627@infra", "")),
             (routine("cluster-health", "Cluster health", Schedule::Daily(420), routines::Mode::Report), health),
             (routine("certificates", "Certificates", Schedule::Weekly(0, 480), routines::Mode::Plan), State { seen: Some(MONDAY_0630_UTC - 60), ..State::default() }),
         ];
@@ -965,13 +965,13 @@ mod tests {
             assert!(row.starts_with(want), "{want:?} is not the row {row:?}:\n{screen}");
         }
         assert!(screen.contains("n new routine"));
-        for line in ["Cluster health  · report · homelab-gitops", "WHAT IT DOES", "  Check Cluster health.", "MAY", "  report  reads and reports, changes nothing", "RUNS",
-            "  ⚠ today 06:00   findings    Longhorn volume degraded, cert in 5 d", "  ✓ yesterday     ok          all well", "  ✗ sat 06:00     failed      kubectl: connection refused"] {
+        for line in ["Cluster health  · report · infra", "WHAT IT DOES", "  Check Cluster health.", "MAY", "  report  reads and reports, changes nothing", "RUNS",
+            "  ⚠ today 06:00   findings    storage volume degraded, cert in 5 d", "  ✓ yesterday     ok          all well", "  ✗ sat 06:00     failed      kubectl: connection refused"] {
             assert!(screen.contains(line), "{line:?} is not on the page:\n{screen}");
         }
         press(&mut page, KeyCode::Down);
         let screen = render(&mut page, 130, 24).join("\n");
-        assert!(screen.contains("▌◐ App updates") && screen.contains("App updates  · fix · homelab-gitops") && screen.contains("◐ today 06:27   running 3m"), "{screen}");
+        assert!(screen.contains("▌◐ App updates") && screen.contains("App updates  · fix · infra") && screen.contains("◐ today 06:27   running 3m"), "{screen}");
         page.tasks.clear();
         assert_eq!(page.waiting(), 0, "once its task is closed the findings no longer wait");
     }
@@ -1002,12 +1002,12 @@ mod tests {
         press(&mut page, KeyCode::Enter);
         let screen = render(&mut page, 130, 30).join("\n");
         let at = |text: &str| screen.find(text).unwrap_or_else(|| panic!("{text:?} is not in the menu:\n{screen}"));
-        assert!(at("report · daily 07:00 · homelab-gitops") < at("LAST RUN") && at("LAST RUN") < at("Go to its task") && at("Go to its task") < at("Show the report") && at("Show the report") < at("│ ROUTINE ")
+        assert!(at("report · daily 07:00 · infra") < at("LAST RUN") && at("LAST RUN") < at("Go to its task") && at("Go to its task") < at("Show the report") && at("Show the report") < at("│ ROUTINE ")
             && at("│ ROUTINE ") < at("Run now") && at("Run now") < at("Edit") && at("Edit") < at("Pause") && at("Pause") < at("Delete"), "{screen}");
         assert!(screen.contains("↑ ↓ choose · ⏎ run · a letter runs it directly · esc close"));
         let keys: String = page.choices(&page.rows[3].0, &page.rows[3].1).iter().map(|choice| choice.key).collect();
         assert_eq!(keys, "⏎sgepD");
-        assert!(matches!(press(&mut page, KeyCode::Enter), Effect::Task(address) if address == "cluster-health-20261019-0600@homelab-gitops"));
+        assert!(matches!(press(&mut page, KeyCode::Enter), Effect::Task(address) if address == "cluster-health-20261019-0600@infra"));
         page.selected = Some("disk".to_string());
         let (disk, state) = page.current().unwrap();
         assert_eq!(page.choices(&disk, &state).iter().map(|choice| (choice.key, choice.label.as_str())).collect::<Vec<_>>(), [('g', "Run now"), ('e', "Edit"), ('p', "Resume"), ('D', "Delete")], "never run and paused");
@@ -1054,7 +1054,7 @@ mod tests {
         press(&mut page, KeyCode::Char('n'));
         typed(&mut page, "Check every node.");
         press(&mut page, KeyCode::Enter);
-        typed(&mut page, "~/homelab-gitops-for-this-test");
+        typed(&mut page, "~/infra-for-this-test");
         press(&mut page, KeyCode::Enter);
         press(&mut page, KeyCode::Enter);
         press(&mut page, KeyCode::Enter);
@@ -1066,7 +1066,7 @@ mod tests {
         press(&mut page, KeyCode::Char('y'));
         assert!(matches!(&page.mode, Mode::Message(text) if text.starts_with("Added the routine node-check")), "nothing is written before y");
         let text = std::fs::read_to_string(&machine).unwrap();
-        assert!(text.starts_with("[keys]\ninbox = \"I\"\n\n[[routines]]\nid = \"node-check\"\ntitle = \"Node check\"\nrepo = \"~/homelab-gitops-for-this-test\"\nat = \"07:00\"\nmode = \"report\"\nprompt = \"\"\"Check every node.\"\"\"\n"), "{text}");
+        assert!(text.starts_with("[keys]\ninbox = \"I\"\n\n[[routines]]\nid = \"node-check\"\ntitle = \"Node check\"\nrepo = \"~/infra-for-this-test\"\nat = \"07:00\"\nmode = \"report\"\nprompt = \"\"\"Check every node.\"\"\"\n"), "{text}");
         assert_eq!(page.rows.len(), 1, "the page reads the file again at once");
         press(&mut page, KeyCode::Esc);
         press(&mut page, KeyCode::Char('p'));
@@ -1125,7 +1125,7 @@ mod tests {
         assert!(page.is_normal(), "a click on esc cancel closes the steps");
         press(&mut page, KeyCode::Char('n'));
         let Mode::Wizard(wizard) = &mut page.mode else { panic!("n opens the steps") };
-        wizard.repos = ["homelab-gitops", "greenhouse", "kebbie"].iter().map(|name| Repo { value: format!("~/{name}"), name: name.to_string(), shown: format!("~/{name}") }).collect();
+        wizard.repos = ["infra", "greenhouse", "kebbie"].iter().map(|name| Repo { value: format!("~/{name}"), name: name.to_string(), shown: format!("~/{name}") }).collect();
         typed(&mut page, "Check every node.");
         click_on(&mut page, "⏎ next");
         assert_eq!(step(&page), 1, "a click on ⏎ next is ⏎");
