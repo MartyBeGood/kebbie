@@ -1176,7 +1176,7 @@ pub fn entries(loaded: &Loaded) -> Vec<Entry> {
     key("notify.command", notify_command.value.as_ref().map_or("none".to_string(), |command| format!("{command:?}")), notify_command.layer, Kind::Text, Scope::Machine,
         "The shell command kebbie runs when something needs you (a task needs you or is ready, a question waits, the lead's summary); KEBBIE_EVENT, KEBBIE_TASK, KEBBIE_REPO and KEBBIE_TEXT describe it, and $1 is the text. None sends no notifications; config.toml only.");
     key("vault.command", vault_command.value.as_ref().map_or("none".to_string(), |command| format!("{command:?}")), vault_command.layer, Kind::Text, Scope::Machine,
-        "The notes-vault-mcp command kebbie writes task notes and log lines with, before its own arguments (task open, log append, ...); none runs the vault plugin's own pinned command from its hooks. Used only while the vault plugin is installed and enabled; config.toml only.");
+        "The vault command kebbie runs for task notes, log lines and the board's snapshot, before its own arguments (about --json, task open, log append, ...), such as \"uvx mindin\"; it is kebbie's own, whatever agent runs the task. kebbie setup finds the candidates on this machine and writes your choice. None falls back to the Claude vault plugin's pinned command; config.toml only.");
     key("ci.watch", ci_watch.value.to_string(), ci_watch.layer, Kind::Bool, Scope::Either,
         "Whether kebbie watches GitHub Actions after a push and keeps the task open under CI running until every run for the pushed commit is green; a failed run moves the task to Needs you and its Claude gets the failing job's log. Needs origin on GitHub and gh logged in; false closes the task right after the push. A repo config can turn it off for one repo.");
     key("comments.watch", comments_watch.value.to_string(), comments_watch.layer, Kind::Bool, Scope::Either,
@@ -1842,7 +1842,7 @@ mod tests {
         assert!(parse_repo("[vault]\ncommand = \"evil\"\n", "/home/u/.config/kebbie/repos/app.toml").unwrap_err().starts_with("/home/u/.config/kebbie/repos/app.toml: vault: applies to every repo"));
         assert!(unknown_machine("[vault]\ncmd = \"x\"\n").contains("vault.cmd: unknown key; known keys here: command"));
         let default = Loaded { machine: PathBuf::from("/c.toml"), repo: None, settings: settings(&Worktree::default(), &Machine::default()) };
-        assert!(describe(&default).contains("vault.command = none  (default)\n  The notes-vault-mcp command"), "{}", describe(&default));
+        assert!(describe(&default).contains("vault.command = none  (default)\n  The vault command kebbie runs"), "{}", describe(&default));
     }
 
     #[test]

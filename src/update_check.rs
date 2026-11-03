@@ -11,7 +11,6 @@ pub const EVERY: u64 = 6 * 60 * 60;
 pub const PENDING_EVERY: u64 = 15 * 60;
 pub const KEBBIE: &str = "kebbie";
 pub const VAULT: &str = "vault";
-pub const PIN: &str = "notes-vault-mcp";
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Component {
@@ -89,11 +88,12 @@ pub struct Places {
     pub claude_dir: PathBuf,
     pub channel: Channel,
     pub binaries: Option<crate::release::Binaries>,
+    pub vault: Option<(String, String)>,
 }
 
 impl Places {
     pub fn new(root: Option<PathBuf>, claude_dir: PathBuf, channel: Channel) -> Self {
-        Self { root, claude_dir, channel, binaries: None }
+        Self { root, claude_dir, channel, binaries: None, vault: crate::vault_cli::kept_identity() }
     }
 
     pub fn current() -> Self {
@@ -125,10 +125,14 @@ fn kebbie_version(read: impl Fn(&str) -> Option<String>) -> Option<String> {
     read(".claude-plugin/plugin.json").as_deref().and_then(plugin_version).or_else(|| read("Cargo.toml").as_deref().and_then(cargo_version))
 }
 
-pub fn pin(hooks: &str) -> Option<String> {
-    let at = hooks.find("notes-vault-mcp==")? + "notes-vault-mcp==".len();
-    let version: String = hooks[at..].chars().take_while(|character| character.is_ascii_alphanumeric() || *character == '.').collect();
-    (!version.is_empty()).then_some(version)
+// The first "<package>==<version>" in the plugin's hooks: the package and version the plugin pins.
+pub fn pin(hooks: &str) -> Option<(String, String)> {
+    let package = |character: char| character.is_ascii_alphanumeric() || "._-".contains(character);
+    hooks.match_indices("==").find_map(|(at, _)| {
+        let name: String = hooks[..at].chars().rev().take_while(|character| package(*character)).collect::<Vec<_>>().into_iter().rev().collect();
+        let version: String = hooks[at + 2..].chars().take_while(|character| character.is_ascii_alphanumeric() || *character == '.').collect();
+        (!name.is_empty() && !version.is_empty()).then_some((name, version))
+    })
 }
 
 fn read_json(path: &Path) -> Option<Value> {
@@ -159,7 +163,8 @@ pub fn installed(places: &Places) -> Vec<Component> {
     let mut components = vec![installed_kebbie(places.root.as_deref())];
     if let Some((_, version, root)) = crate::vault_cli::installed(&places.claude_dir) {
         components.push(Component::new(VAULT, Some(version)));
-        components.push(Component::new(PIN, pin(&crate::vault_cli::hooks_of(&root))));
+        let package = places.vault.clone().or_else(|| pin(&crate::vault_cli::hooks_of(&root)));
+        components.extend(package.map(|(name, version)| Component::new(&name, Some(version))));
     }
     components
 }
@@ -225,7 +230,7 @@ fn latest_vault(claude_dir: &Path, id: &str) -> Result<(String, Option<String>)>
         .and_then(|entry| entry["source"].as_str()).ok_or_else(|| format!("the marketplace {marketplace} has no {plugin} in its own repo"))?;
     let path = source.trim_start_matches("./").trim_end_matches('/');
     let version = show(&dir, &head, &format!("{path}/.claude-plugin/plugin.json")).as_deref().and_then(plugin_version).ok_or_else(|| format!("no {plugin} version on {head}"))?;
-    Ok((version, show(&dir, &head, &format!("{path}/hooks/hooks.json")).as_deref().and_then(pin)))
+    Ok((version, show(&dir, &head, &format!("{path}/hooks/hooks.json")).as_deref().and_then(pin).map(|(_, version)| version)))
 }
 
 pub fn check(places: &Places) -> Vec<Component> {
@@ -367,7 +372,7 @@ pub fn current(state: &Path, now: u64, channel: Channel, installed: Vec<Componen
 
 pub fn notice(components: &[Component], running: Option<&crate::release::Override>, channel: Channel) -> Vec<(String, String)> {
     let running = running.map(|found| ("running".to_string(), format!("{}, not the channel", found.name())));
-    running.into_iter().chain(components.iter().filter(|component| component.name != PIN)
+    running.into_iter().chain(components.iter().filter(|component| [KEBBIE, VAULT].contains(&component.name.as_str()))
         .filter_map(|component| Some((component.name.clone(), if on_main(component, channel) { component.target().map(|_| main_news(component))? } else { component.target()?.clone() })))).collect()
 }
 
@@ -474,11 +479,12 @@ mod tests {
             vault_release(&market, "0.2.17", "0.6.1");
             let install = claude_dir.join("plugins/cache/gronare/vault/0.2.16");
             write(&install.join("hooks/hooks.json"), &hooks("0.6.0"));
+            write(&install.join(".mcp.json"), r#"{"mcpServers":{"vault":{"command":"uvx","args":["notes-vault-mcp==0.6.0"]}}}"#);
             write(&claude_dir.join("plugins/installed_plugins.json"), &json!({ "plugins": { "vault@gronare": [{ "installPath": install, "version": "0.2.16" }] } }).to_string());
             write(&claude_dir.join("plugins/known_marketplaces.json"), &json!({ "gronare": { "installLocation": clone } }).to_string());
         }
         let binaries = crate::release::Binaries { base: Some(format!("file://{}", dir.join("releases").display())), target: crate::release::target_triple(std::env::consts::OS, std::env::consts::ARCH), curl: crate::release::fake_curl(dir) };
-        Places { binaries: Some(binaries), ..Places::new(Some(dir.join("root")), claude_dir, Channel::Main) }
+        Places { binaries: Some(binaries), vault: None, ..Places::new(Some(dir.join("root")), claude_dir, Channel::Main) }
     }
 
     #[test]
@@ -503,6 +509,17 @@ mod tests {
         assert!(run_git(&root, &["status", "--porcelain"]).is_empty() && run_git(&market, &["status", "--porcelain"]).is_empty());
         assert_eq!(notice(&components, None, Channel::Main), [("kebbie".to_string(), "main, 1 new".to_string()), ("vault".to_string(), "0.2.17".to_string())], "kebbie on main is a count of commits, the vault keeps its version");
         assert_eq!(notice(&components, None, Channel::Release), [("kebbie".to_string(), "0.18.10".to_string()), ("vault".to_string(), "0.2.17".to_string())]);
+    }
+
+    #[test]
+    fn the_vault_package_is_named_by_what_the_vault_command_answered() {
+        let dir = scratch("renamed");
+        let places = Places { vault: Some(("mindin".to_string(), "0.14.0".to_string())), ..fake_install(&dir, true) };
+        let components = check(&places);
+        let package = components.iter().find(|component| component.name == "mindin").unwrap_or_else(|| panic!("{components:?}"));
+        assert_eq!((package.installed.as_deref(), package.latest.as_deref()), (Some("0.14.0"), Some("0.6.1")));
+        assert!(!components.iter().any(|component| component.name == "notes-vault-mcp"), "the plugin's pin names the package only when the vault command has not answered: {components:?}");
+        assert!(render(&components, None, Channel::Release).contains("mindin  "), "{}", render(&components, None, Channel::Release));
     }
 
     #[test]
@@ -703,9 +720,11 @@ mod tests {
 
     #[test]
     fn the_pin_is_read_from_the_hook_commands() {
-        assert_eq!(pin(r#"{"hooks":{"SessionStart":[{"hooks":[{"command":"uvx notes-vault-mcp==0.6.0 hook session-start"}]}]}}"#), Some("0.6.0".to_string()));
+        let pinned = |name: &str, version: &str| Some((name.to_string(), version.to_string()));
+        assert_eq!(pin(r#"{"hooks":{"SessionStart":[{"hooks":[{"command":"uvx notes-vault-mcp==0.6.0 hook session-start"}]}]}}"#), pinned("notes-vault-mcp", "0.6.0"));
+        assert_eq!(pin("uvx mindin==0.14.0 hook stop"), pinned("mindin", "0.14.0"), "the package is whatever the hooks pin");
         assert_eq!(pin("uvx notes-vault-mcp hook"), None);
-        assert_eq!(pin("notes-vault-mcp==0.6.0rc1 hook"), Some("0.6.0rc1".to_string()));
+        assert_eq!(pin("notes-vault-mcp==0.6.0rc1 hook"), pinned("notes-vault-mcp", "0.6.0rc1"));
         assert_eq!(pin("notes-vault-mcp== hook"), None);
     }
 

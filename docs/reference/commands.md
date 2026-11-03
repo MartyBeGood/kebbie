@@ -662,7 +662,7 @@ After a ready report the keeper starts the reviewer. It checks the commits again
 | `kebbie config edit [--repo <path>]` | The board's [Settings page](board.md#settings-page) on its own, for config.toml and the repo's config. Needs a terminal, and is yours only: the lead and tasks cannot run it. |
 | `kebbie docs [<words>]` | Search kebbie's docs on this machine, or list them. See [below](#kebbie-docs). |
 | `kebbie doctor` | Check this machine, with the fix for each gap, the task sandbox's state among them. Exits non-zero on a `fail`. See [Requirements](requirements.md#what-kebbie-doctor-checks). |
-| `kebbie doctor --fix` | Link kebbie in herdr again when herdr links it from a folder that is gone, then start the board and the keeper; install kebbie's push block again in each worktree that still has an earlier one; then check. |
+| `kebbie doctor --fix` | Link kebbie in herdr again when herdr links it from a folder that is gone, then start the board and the keeper; install kebbie's push block again in each worktree that still has an earlier one; offer the `vault.command` line `kebbie doctor` suggests, for a renamed vault package or one run through the Claude plugin, and write it to kebbie's `config.toml` on your `y` (without a terminal it only shows the line); then check. |
 | `kebbie routes [--plain-http]` | Print a Caddy config that serves each worktree's dev server at its own host. See [below](#kebbie-routes). |
 | `kebbie setup [--yes]` | The setup guide: from this machine's name to error signals, with each chosen agent's own steps after Agents, then everything it writes in one go. `--yes` takes the defaults without asking. See [below](#kebbie-setup). |
 | `kebbie setup claude [--yes]` | The guide on Claude Code's steps alone. See [below](#kebbie-setup-claude-and-kebbie-setup-codex). |
@@ -716,6 +716,7 @@ Safe to run again. Yours alone: a task cannot run it. In a terminal it is a guid
 | Claude Code: Vault | None, a local folder, or an S3 bucket (endpoint, bucket, access key and a masked secret). | `claude plugin marketplace add`, `install` and `configure --values-stdin` |
 | Claude Code: Updates | Nothing: Claude Code updates itself, and kebbie restarts its sessions. | Nothing |
 | Codex: Plugin, Approvals, Vault in Codex, Codex updates | See [`kebbie setup claude` and `kebbie setup codex`](#kebbie-setup-claude-and-kebbie-setup-codex). | |
+| Vault for kebbie | Shown when a vault command is found or `vault.command` is set: which command kebbie itself runs for the vault, or None. Each choice names where it was found, the command and what it answered, such as `uvx mindin==0.14.0 · mindin 0.14.0`. See [How setup finds the command](../explanation/vault.md#setup-finds-the-command). | `vault.command` in kebbie's `config.toml`, or None takes it out |
 | herdr keys | `prefix+space` (the lead), `prefix+f` (the board and the lead's chat), `prefix+t` (the board). | Those keys at the end of herdr's `config.toml` |
 | Backlog | Local, vault and Linear, in any combination; the first is where the lead files new ideas. | `board.backlog.sources` |
 | Error signals | Keep them on or turn them off. | `report.signals` |
@@ -757,6 +758,7 @@ herdr's config is `$HERDR_CONFIG_PATH`, else `$XDG_CONFIG_HOME/herdr/config.toml
 - Without a terminal the herdr write is skipped unless `--yes`, and `--yes` never writes through a symlinked config.
 - They end the same way, with `Setup done · doctor: <n> ok` and the next steps, then, while the machine is not connected, `Your board on your phone: kebbie hub connect, or H on the board` and `kebbie.dev/hub`.
 - They fix no `kebbie doctor` warning: those are rows of the guide's review, shown before they are applied.
+- They write no `vault.command`. With none set, the `vault cmd` line names the first vault command found and the line to set, such as `yourself  vault cmd  mindin on PATH runs the vault: set vault.command = "mindin" under [vault] in ~/.config/kebbie/config.toml`.
 
 #### Next steps after setup
 

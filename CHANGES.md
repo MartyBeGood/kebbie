@@ -5,6 +5,10 @@ What each kebbie release brings, one line per change, as you would tell someone 
 ## Unreleased
 
 ### What's new
+- kebbie reaches the vault through its own [vault] command, the same for tasks in Claude Code, Codex or Cursor: kebbie setup finds the vault commands in the Claude vault plugin, Codex's and Cursor's MCP config and on PATH, shows what each answered, asks once which to use and writes it to kebbie's config.toml only
+- kebbie asks the vault command what it is with about --json and makes only the calls its stated capabilities cover; a vault without about, such as notes-vault-mcp up to 0.13, is read from its status and help as before
+- kebbie doctor shows the vault command's package, version and capabilities, and says when it fails, lacks a capability or its package has a new name; kebbie doctor --fix writes the suggested [vault] command after your y
+- kebbie update --check names the vault plugin's package as the plugin pins it and its command answers, and the vault plugin is known by its vault server rather than by a package name, so updates keep finding both after a rename
 - A release action's bump marker can name {package}, the repo's package name from pyproject.toml, Cargo.toml or package.json, so a renamed package keeps its release action
 - A Claude task is asked by the vault plugin to save what you or the lead told it once a few messages have gone without a vault write; it still skips the log check, since kebbie writes a task's log lines (needs the vault plugin release that brings this)
 

@@ -1,8 +1,34 @@
 # The vault
 
-This page explains what a vault note adds to a task, and how two machines share one vault.
+This page explains what a vault note adds to a task, how kebbie reaches the vault, and how two machines share one vault.
 
-The vault plugin, [notes-vault-mcp](https://github.com/gronare/notes-vault-mcp) in Claude Code, is optional. Without it, kebbie keeps its backlog and state on its own. With it installed, enabled and configured, kebbie finds it by itself and keeps a note for every task.
+The vault, such as [mindin](https://github.com/gronare/notes-vault-mcp), is optional. Without it, kebbie keeps its backlog and state on its own. With a vault command in [`vault.command`](../reference/configuration.md#machine), kebbie keeps a note for every task, whatever agent runs it.
+
+## kebbie runs its own vault command
+
+kebbie writes task notes, claims and log lines, and reads the board's snapshot, by running one command: `vault.command` in its own `config.toml`, such as `uvx mindin`. It is the same for a task in Claude Code, Codex or Cursor, so kebbie's notes never depend on one agent's plugin.
+
+Without `vault.command`, kebbie runs the Claude vault plugin's pinned command from its hooks, and `kebbie doctor` suggests the line to set.
+
+## Setup finds the command
+
+`kebbie setup` looks where a vault already runs on this machine, shows what it found and asks once which one kebbie uses:
+
+- the Claude Code vault plugin's server, the exact command Claude Code starts;
+- each MCP server in Codex's `~/.codex/config.toml` and in Cursor's `~/.cursor/mcp.json`, kept when it answers as a vault, whatever it is named;
+- `mindin` and `notes-vault-mcp` on `PATH`.
+
+Your choice goes into kebbie's `config.toml` only. Another tool's file is never written. A run without a terminal names the line to set instead.
+
+## The vault says what it can do
+
+kebbie asks the command what it is with `about --json`: its name, its version and its capabilities. It makes only the calls those capabilities cover, so a vault without claims still keeps notes, and a renamed package is known by its answer, not by a name kebbie expects. The exact shape is [The vault contract](../reference/vault-contract.md).
+
+`kebbie doctor` asks again at each run. When the answer names the package's new name, it suggests the `vault.command` line with it, and `kebbie doctor --fix` writes that line after your `y`.
+
+## Each agent reaches the vault on its own
+
+`vault.command` is kebbie's connection, not the agent's. A task's agent reads and writes the vault through its own MCP server: the vault plugin in Claude Code, `[mcp_servers.vault]` in Codex's `config.toml`, which [`kebbie setup codex`](../how-to/run-a-task-with-codex.md) can add, or Cursor's `mcp.json`. Each agent tool installs the vault once for itself.
 
 ## A note keeps the why after the session ends
 
@@ -33,7 +59,7 @@ Two kebbies, say on a Mac and a work devbox, can share one vault. Each claims th
 
 A note gets a `kebbie` key in its frontmatter when a task is started from it, when kebbie opens it for a task, and when `kebbie link` ties it to a task. The key holds `machine` (this kebbie's [`machine.name`](../reference/configuration.md#keys)), `task`, `repo` and `since`. kebbie owns the key: the vault server keeps it as it is when a session rewrites the note, so never edit it by hand.
 
-Claims need a notes-vault-mcp that has `task claim`. With an older vault plugin kebbie claims nothing, everything else works as before, and `kebbie doctor` says once that the plugin is too old for cross-machine claims.
+Claims need a vault that states the `claims` capability. With an older vault kebbie claims nothing, everything else works as before, and `kebbie doctor` says once that the vault is too old for cross-machine claims.
 
 ## The other machine sees the claim
 
@@ -72,9 +98,10 @@ The Problem gate catches the common ways Claude writes files. A script that writ
 
 ## The board reads without credentials
 
-The Areas page and the vault backlog read notes-vault-mcp's local index, so a vault stored on S3 needs no credentials on the board's side. The index is as fresh as the last session that used the vault.
+The Areas page and the vault backlog read the vault's local index, so a vault stored on S3 needs no credentials on the board's side. The index is as fresh as the last session that used the vault.
 
 ## Related
 
 - [Run without the vault](../how-to/run-without-the-vault.md)
 - [Connect the vault](../how-to/connect-the-vault.md)
+- [The vault contract](../reference/vault-contract.md)

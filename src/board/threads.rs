@@ -32,7 +32,7 @@ pub(super) struct Snapshot {
 }
 
 fn load_ongoing() -> Vec<Ongoing> {
-    if !config::sources().is_ok_and(|sources| sources.contains(&Source::Vault)) && !crate::vault_cli::plugin_enabled() {
+    if !config::sources().is_ok_and(|sources| sources.contains(&Source::Vault)) && !crate::vault_cli::connected() {
         return Vec::new();
     }
     let Ok(index) = vault::Index::open() else { return Vec::new() };

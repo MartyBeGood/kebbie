@@ -18,6 +18,7 @@ pub struct Cli {
     pub claims: bool,
     pub machine: String,
     pub plugin: String,
+    pub capabilities: Option<Vec<String>>,
 }
 
 // What `task claim` answered: claimed, or held by another machine with that machine's claim.
@@ -40,19 +41,41 @@ pub struct Opened {
     pub created: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+pub const CONTRACT: u64 = 1;
+pub const TASKS: &str = "tasks";
+pub const CLAIMS: &str = "claims";
+pub const LOG: &str = "log";
+pub const SNAPSHOT: &str = "snapshot";
+pub const READ: &str = "read";
+
+// What the vault command says it is: `about --json` where it answers that, else the bridge read from `status` and its help (vaults up to 0.13).
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Probe {
     pub configured: bool,
     pub writable: Option<bool>,
-    pub tasks: bool,
-    pub claims: bool,
     pub version: String,
     pub backend: String,
+    pub name: String,
+    pub contract: Option<u64>,
+    pub capabilities: Vec<String>,
+    pub former_names: Vec<String>,
 }
 
 impl Probe {
+    pub fn can(&self, capability: &str) -> bool {
+        self.capabilities.iter().any(|stated| stated == capability)
+    }
+
+    pub fn claims(&self) -> bool {
+        self.can(CLAIMS)
+    }
+
+    pub fn speaks(&self) -> bool {
+        self.contract.is_none_or(|contract| contract == CONTRACT)
+    }
+
     pub fn on(&self) -> bool {
-        self.configured && self.writable != Some(false) && self.tasks
+        self.configured && self.writable != Some(false) && self.can(TASKS) && self.speaks()
     }
 }
 
@@ -62,7 +85,12 @@ fn field(value: &Value, key: &str) -> String {
 
 impl Cli {
     pub fn new(command: Vec<String>) -> Self {
-        Self { command, claims: false, machine: String::new(), plugin: String::new() }
+        Self { command, claims: false, machine: String::new(), plugin: String::new(), capabilities: None }
+    }
+
+    // A command whose capabilities are not yet known is trusted with every call; once probed, only the stated ones run.
+    pub fn can(&self, capability: &str) -> bool {
+        self.capabilities.as_ref().is_none_or(|stated| stated.iter().any(|one| one == capability))
     }
 
     pub fn shown(&self) -> String {
@@ -75,6 +103,9 @@ impl Cli {
     }
 
     fn output(&self, args: &[&str]) -> Result<std::result::Result<String, String>> {
+        if let Some(capability) = needs(args).filter(|capability| !self.can(capability)) {
+            return Ok(Err(format!("the vault states no {capability} capability")));
+        }
         let answer = self.run(&self.command, args)?;
         match (&answer, self.refreshed()) {
             (Err(error), Some(refreshed)) if error.contains("unsatisfiable") => self.run(&refreshed, args),
@@ -216,21 +247,81 @@ impl Cli {
         self.output(&args)
     }
 
-    // A vault server older than the task commands answers status but refuses `task --help`, and one older than claims lists no `claim` there; writes are tried only with try_write, which doctor alone asks for.
+    // `about --json` is the contract; a vault that refuses it is read the way vaults up to 0.13 answer, and writes are tried only with try_write, which doctor alone asks for.
     pub fn probe(&self, try_write: bool) -> Result<Probe> {
+        let about = self.output(&["about", "--json"])?.ok().and_then(|answer| serde_json::from_str::<Value>(answer.trim()).ok()).filter(|about| about["contract"].as_u64().is_some());
         let status = self.call(if try_write { &["status", "--probe"] } else { &["status"] })?;
-        let help = match self.output(&["task", "--help"]) {
-            Ok(Ok(help)) => Some(help),
-            _ => None,
-        };
-        let claims = help.as_deref().is_some_and(|help| subcommands(help).iter().any(|command| command == "claim"));
-        Ok(Probe { configured: status["configured"] == true, writable: status["writable"].as_bool(), tasks: help.is_some(), claims, version: field(&status, "version"), backend: field(&status, "backend") })
+        let probe = Probe { configured: status["configured"] == true, writable: status["writable"].as_bool(), version: field(&status, "version"), backend: field(&status, "backend"), ..Probe::default() };
+        Ok(match about {
+            Some(about) => from_about(&about, probe),
+            None => self.bridge(probe),
+        })
+    }
+
+    // A vault older than the task commands refuses `task --help`, one older than claims lists no `claim` there; argparse names the package in its usage line.
+    fn bridge(&self, probe: Probe) -> Probe {
+        let task_help = self.output(&["task", "--help"]).ok().and_then(std::result::Result::ok);
+        let help = self.output(&["--help"]).ok().and_then(std::result::Result::ok).unwrap_or_default();
+        let mut capabilities = Vec::new();
+        if let Some(task_help) = &task_help {
+            capabilities.extend([TASKS, LOG]);
+            capabilities.extend(subcommands(task_help).iter().any(|command| command == "claim").then_some(CLAIMS));
+        }
+        let top = subcommands(&help);
+        capabilities.extend([SNAPSHOT, READ].into_iter().filter(|command| top.iter().any(|listed| listed == command)));
+        let name = task_help.as_deref().and_then(|help| help.split_whitespace().skip_while(|word| *word != "usage:").nth(1)).unwrap_or_default().to_string();
+        Probe { name, capabilities: capabilities.into_iter().map(str::to_string).collect(), ..probe }
+    }
+}
+
+fn strings(value: &Value) -> Vec<String> {
+    value.as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect()
+}
+
+fn from_about(about: &Value, probe: Probe) -> Probe {
+    let version = field(about, "version");
+    Probe {
+        name: field(about, "name"),
+        version: if version.is_empty() { probe.version.clone() } else { version },
+        contract: about["contract"].as_u64(),
+        capabilities: strings(&about["capabilities"]),
+        former_names: strings(&about["former_names"]),
+        ..probe
     }
 }
 
 // argparse's usage line names the subcommands in braces: "{open,check,close,backlog}".
 fn subcommands(help: &str) -> Vec<String> {
     help.split_once('{').and_then(|(_, rest)| rest.split_once('}')).map_or(Vec::new(), |(inside, _)| inside.split(',').map(|command| command.trim().to_string()).collect())
+}
+
+// The capability a call needs; status, about and help need none.
+fn needs(args: &[&str]) -> Option<&'static str> {
+    match (args.first().copied()?, args.get(1).copied()) {
+        ("task", Some("--help")) => None,
+        ("task", Some("claim" | "release")) => Some(CLAIMS),
+        ("task", _) => Some(TASKS),
+        ("log", _) => Some(LOG),
+        ("snapshot", _) => Some(SNAPSHOT),
+        ("read", _) => Some(READ),
+        _ => None,
+    }
+}
+
+// The command with each word that names a former name of the package renamed, a pin following the version that answered.
+pub fn renamed(command: &[String], probe: &Probe) -> Option<Vec<String>> {
+    if probe.name.is_empty() {
+        return None;
+    }
+    let renamed: Vec<String> = command.iter().map(|word| {
+        let (base, pinned) = word.split_once("==").map_or((word.as_str(), false), |(base, _)| (base, true));
+        match (probe.former_names.iter().any(|former| former == base), pinned) {
+            (true, true) => format!("{}=={}", probe.name, probe.version),
+            (true, false) => probe.name.clone(),
+            (false, _) => word.clone(),
+        }
+    }).collect();
+    (renamed != command).then_some(renamed)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -248,12 +339,20 @@ pub fn hooks_of(root: &Path) -> String {
     std::fs::read_to_string(root.join("hooks/hooks.json")).unwrap_or_default()
 }
 
+// The Claude Code plugin whose .mcp.json starts a server named vault.
 pub fn installed(claude_home: &Path) -> Option<(String, String, PathBuf)> {
     let installed = read_json(&claude_home.join("plugins/installed_plugins.json")).unwrap_or_default();
     installed["plugins"].as_object().into_iter().flatten().filter(|(id, _)| id.starts_with("vault@")).find_map(|(id, installs)| {
-        let entry = installs.as_array()?.iter().find(|entry| entry["installPath"].as_str().is_some_and(|root| hooks_of(Path::new(root)).contains("notes-vault-mcp")))?;
+        let entry = installs.as_array()?.iter().find(|entry| entry["installPath"].as_str().is_some_and(|root| server_command(Path::new(root)).is_some()))?;
         Some((id.clone(), field(entry, "version"), PathBuf::from(field(entry, "installPath"))))
     })
+}
+
+// The command and args Claude Code starts the plugin's vault server with; one that needs a setting kebbie cannot fill is none.
+pub fn server_command(root: &Path) -> Option<Vec<String>> {
+    let server = read_json(&root.join(".mcp.json"))?["mcpServers"]["vault"].clone();
+    let words: Vec<String> = std::iter::once(server["command"].as_str()?.to_string()).chain(strings(&server["args"])).map(|word| word.replace("${CLAUDE_PLUGIN_ROOT}", &root.to_string_lossy())).collect();
+    (!words.iter().any(|word| word.contains("${"))).then_some(words)
 }
 
 pub fn plugin(claude_home: &Path) -> Plugin {
@@ -265,7 +364,7 @@ pub fn plugin(claude_home: &Path) -> Plugin {
     }
 }
 
-// "uvx notes-vault-mcp==0.5.1 hook session-start" -> the words before `hook`, so kebbie runs the plugin's own pin.
+// Bridge for machines without [vault] command: "uvx mindin==0.14.1 hook session-start" or the former "uvx notes-vault-mcp==0.5.1 hook session-start" -> the words before `hook`.
 pub fn hook_prefix(hooks: &str) -> Option<Vec<String>> {
     fn commands(value: &Value, found: &mut Vec<String>) {
         match value {
@@ -276,22 +375,30 @@ pub fn hook_prefix(hooks: &str) -> Option<Vec<String>> {
     }
     let mut found = Vec::new();
     commands(&serde_json::from_str(hooks).ok()?, &mut found);
-    found.iter().filter(|command| command.contains("notes-vault-mcp")).find_map(|command| {
+    found.iter().filter(|command| command.contains("mindin") || command.contains("notes-vault-mcp")).find_map(|command| {
         let words: Vec<String> = command.split_whitespace().map(str::to_string).collect();
         let at = words.iter().position(|word| word == "hook")?;
         (at > 0).then(|| words[..at].to_vec())
     })
 }
 
-pub fn command(env_bin: Option<String>, configured: Option<String>, plugin: &Plugin) -> Option<Vec<String>> {
+// Where the command kebbie runs came from: KEBBIE_VAULT_BIN, [vault] command, or the bridge through the Claude plugin's hooks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Origin {
+    Env,
+    Config,
+    PluginHooks,
+}
+
+pub fn command(env_bin: Option<String>, configured: Option<String>, plugin: &Plugin) -> Option<(Vec<String>, Origin)> {
     if let Some(bin) = env_bin.filter(|bin| !bin.is_empty()) {
-        return Some(vec![bin]);
+        return Some((vec![bin], Origin::Env));
     }
-    if let Some(configured) = configured {
-        return Some(configured.split_whitespace().map(str::to_string).collect());
+    if let Some(configured) = configured.filter(|configured| !configured.trim().is_empty()) {
+        return Some((configured.split_whitespace().map(str::to_string).collect(), Origin::Config));
     }
     match plugin {
-        Plugin::Enabled { root, .. } => hook_prefix(&hooks_of(root)),
+        Plugin::Enabled { root, .. } => hook_prefix(&hooks_of(root)).map(|command| (command, Origin::PluginHooks)),
         _ => None,
     }
 }
@@ -300,23 +407,31 @@ fn claude_home() -> PathBuf {
     crate::agent::claude::home().unwrap_or_default()
 }
 
+pub fn configured() -> Option<String> {
+    crate::config::resolve(None).ok().and_then(|loaded| loaded.settings.vault_command.value).filter(|command| !command.trim().is_empty())
+}
+
 pub fn cli() -> Option<Cli> {
     let env_bin = std::env::var(BIN_VAR).ok().filter(|bin| !bin.is_empty());
     #[cfg(test)]
     env_bin.as_ref()?;
-    let plugin = if env_bin.is_some() { Plugin::Missing } else { plugin(&claude_home()) };
-    if env_bin.is_none() && !matches!(plugin, Plugin::Enabled { .. }) {
-        return None;
-    }
-    let configured = crate::config::resolve(None).ok().and_then(|loaded| loaded.settings.vault_command.value);
-    let command = command(env_bin, configured, &plugin)?;
-    let version = match &plugin { Plugin::Enabled { version, .. } => version.clone(), _ => String::new() };
-    Some(Cli { plugin: version, ..Cli::new(command) })
+    let configured = if env_bin.is_some() { None } else { configured() };
+    cli_from(env_bin, configured, || plugin(&claude_home()), crate::lead::state_dir().ok().as_deref())
 }
 
-// Cheap, for the board: the plugin is installed and enabled, without asking the vault.
-pub fn plugin_enabled() -> bool {
-    !cfg!(test) && matches!(plugin(&claude_home()), Plugin::Enabled { .. })
+// The Claude plugin is read only when neither KEBBIE_VAULT_BIN nor [vault] command names the command.
+fn cli_from(env_bin: Option<String>, configured: Option<String>, plugin: impl FnOnce() -> Plugin, state: Option<&Path>) -> Option<Cli> {
+    let plugin = if env_bin.is_some() || configured.is_some() { Plugin::Missing } else { plugin() };
+    let (command, origin) = command(env_bin, configured, &plugin)?;
+    let version = match (&plugin, origin) { (Plugin::Enabled { version, .. }, Origin::PluginHooks) => version.clone(), _ => String::new() };
+    let cli = Cli { plugin: version, ..Cli::new(command) };
+    let capabilities = state.and_then(|state| kept_capabilities(&cli, state));
+    Some(Cli { capabilities, ..cli })
+}
+
+// Cheap, for the board: a vault command is configured, or the plugin bridge gives one, without asking the vault.
+pub fn connected() -> bool {
+    !cfg!(test) && (configured().is_some() || matches!(plugin(&claude_home()), Plugin::Enabled { .. }))
 }
 
 fn status_file(state: &Path) -> PathBuf {
@@ -335,17 +450,35 @@ pub fn verdict_with(cli: &Cli, state: &Path, at: u64, probe: impl FnOnce(&Cli) -
     }
     let probed = probe(cli).ok();
     let on = probed.as_ref().is_some_and(Probe::on);
-    let claims = on && probed.is_some_and(|probe| probe.claims);
-    let _ = crate::state::write(&status_file(state), json!({ "command": cli.cache_key(), "at": at, "on": on, "claims": claims }).to_string());
+    let claims = on && probed.as_ref().is_some_and(Probe::claims);
+    let (name, version, capabilities) = probed.map_or((String::new(), String::new(), None), |probe| (probe.name, probe.version, Some(probe.capabilities)));
+    let _ = crate::state::write(&status_file(state), json!({ "command": cli.cache_key(), "at": at, "on": on, "claims": claims, "name": name, "version": version, "capabilities": capabilities }).to_string());
     (on, claims)
 }
 
-// The vault kebbie keeps tasks in: the plugin is there, enabled and configured, and its server has the task commands; the board lives for days, so the verdict is the kept one and not the process's first.
+// The capabilities the kept verdict for this command states; a verdict kept before kebbie read them states none, which trusts every call.
+pub fn kept_capabilities(cli: &Cli, state: &Path) -> Option<Vec<String>> {
+    read_json(&status_file(state)).filter(|cached| cached["command"] == cli.cache_key()).and_then(|cached| cached["capabilities"].as_array().map(|_| strings(&cached["capabilities"])))
+}
+
+// The package name and version the vault command last answered with, for the update check, which never runs the vault itself.
+pub fn kept_identity_in(cli: &Cli, state: &Path) -> Option<(String, String)> {
+    let cached = read_json(&status_file(state)).filter(|cached| cached["command"] == cli.cache_key())?;
+    Some((field(&cached, "name"), field(&cached, "version"))).filter(|(name, version)| !name.is_empty() && !version.is_empty())
+}
+
+// Only for the plugin's own command, as the update check reports what kebbie update moves: the plugin's pin.
+pub fn kept_identity() -> Option<(String, String)> {
+    kept_identity_in(&cli().filter(|cli| !cli.plugin.is_empty())?, &crate::lead::state_dir().ok()?)
+}
+
+// The vault kebbie keeps tasks in: its command answers, is configured and states the task capability; the board lives for days, so the verdict is the kept one and not the process's first.
 pub fn detect() -> Option<Cli> {
     let cli = cli()?;
     let state = crate::lead::state_dir().ok()?;
     let (on, claims) = verdict_with(&cli, &state, now(), |cli| cli.probe(false));
-    on.then(|| Cli { claims, machine: crate::config::machine(), ..cli })
+    let capabilities = kept_capabilities(&cli, &state);
+    on.then(|| Cli { claims, machine: crate::config::machine(), capabilities, ..cli })
 }
 
 // The last verdict kept for this command, at any age, without running the vault: for the board's own thread.
@@ -493,10 +626,16 @@ mod tests {
     use super::fake::Fake;
     use super::*;
 
+    fn probed(claims: bool, version: &str, backend: &str) -> Probe {
+        let capabilities = [TASKS, LOG].into_iter().chain(claims.then_some(CLAIMS)).map(str::to_string).collect();
+        Probe { configured: true, version: version.to_string(), backend: backend.to_string(), capabilities, ..Probe::default() }
+    }
+
     #[test]
     fn the_command_is_the_plugins_own_pin_read_from_its_hooks() {
         let hooks = r#"{"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":"uvx notes-vault-mcp==0.5.1 hook session-start","timeout":30}]}]}}"#;
         assert_eq!(hook_prefix(hooks), Some(vec!["uvx".to_string(), "notes-vault-mcp==0.5.1".to_string()]));
+        assert_eq!(hook_prefix(r#"{"hooks":{"Stop":[{"hooks":[{"command":"uvx mindin==0.14.1 hook stop"}]}]}}"#), Some(vec!["uvx".to_string(), "mindin==0.14.1".to_string()]), "a plugin that pins mindin bridges like the former name");
         assert_eq!(hook_prefix(r#"{"hooks":{"Stop":[{"hooks":[{"command":"sh other.sh hook"}]}]}}"#), None);
         assert_eq!(hook_prefix("not json"), None);
     }
@@ -521,12 +660,27 @@ mod tests {
         std::fs::create_dir_all(dir.join("hooks")).unwrap();
         std::fs::write(dir.join("hooks/hooks.json"), r#"{"hooks":{"Stop":[{"hooks":[{"command":"uvx notes-vault-mcp==0.6.0 hook stop"}]}]}}"#).unwrap();
         let plugin = Plugin::Enabled { id: "vault@gronare".to_string(), version: "0.3.0".to_string(), root: dir.clone() };
-        assert_eq!(command(None, None, &plugin), Some(vec!["uvx".to_string(), "notes-vault-mcp==0.6.0".to_string()]));
-        assert_eq!(command(None, Some("uv run notes-vault-mcp".to_string()), &plugin), Some(vec!["uv".to_string(), "run".to_string(), "notes-vault-mcp".to_string()]));
-        assert_eq!(command(Some("/tmp/fake vault".to_string()), Some("uv run x".to_string()), &plugin), Some(vec!["/tmp/fake vault".to_string()]));
+        let words = |text: &str| text.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(command(None, None, &plugin), Some((words("uvx notes-vault-mcp==0.6.0"), Origin::PluginHooks)));
+        assert_eq!(command(None, Some("uvx mindin".to_string()), &plugin), Some((words("uvx mindin"), Origin::Config)));
+        assert_eq!(command(None, Some("uvx mindin".to_string()), &Plugin::Missing), Some((words("uvx mindin"), Origin::Config)), "kebbie's own [vault] command needs no Claude plugin");
+        assert_eq!(command(None, Some("  ".to_string()), &Plugin::Missing), None);
+        assert_eq!(command(Some("/tmp/fake vault".to_string()), Some("uv run x".to_string()), &plugin), Some((vec!["/tmp/fake vault".to_string()], Origin::Env)));
         assert_eq!(command(None, None, &Plugin::Missing), None);
         assert_eq!(command(None, None, &Plugin::Disabled { id: "vault@gronare".to_string(), version: "0.3.0".to_string() }), None);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn kebbies_own_vault_command_runs_without_reading_the_claude_plugin_and_keeps_its_stated_capabilities() {
+        let fake = Fake::new("own-command");
+        let state = fake.state();
+        let configured = Some("uvx mindin".to_string());
+        let cli = cli_from(None, configured.clone(), || unreachable!("the plugin is never read"), Some(&state)).unwrap();
+        assert_eq!((cli.command.as_slice(), cli.plugin.as_str(), cli.capabilities.as_ref()), (["uvx".to_string(), "mindin".to_string()].as_slice(), "", None));
+        verdict_with(&cli, &state, 1000, |_| Ok(probed(false, "0.14.0", "s3")));
+        assert_eq!(cli_from(None, configured, || unreachable!(), Some(&state)).unwrap().capabilities, Some(vec!["tasks".to_string(), "log".to_string()]), "a call outside the kept capabilities is refused wherever the command is used");
+        assert_eq!(cli_from(None, None, || Plugin::Missing, Some(&state)), None);
     }
 
     #[test]
@@ -536,8 +690,11 @@ mod tests {
         let root = home.join("plugins/cache/gronare/vault/0.2.15");
         std::fs::create_dir_all(root.join("hooks")).unwrap();
         assert_eq!(plugin(&home), Plugin::Missing);
-        std::fs::write(root.join("hooks/hooks.json"), r#"{"hooks":{"Stop":[{"hooks":[{"command":"uvx notes-vault-mcp==0.5.1 hook stop"}]}]}}"#).unwrap();
         std::fs::write(home.join("plugins/installed_plugins.json"), json!({ "plugins": { "vault@gronare": [{ "installPath": root, "version": "0.2.15" }] } }).to_string()).unwrap();
+        std::fs::write(root.join("hooks/hooks.json"), r#"{"hooks":{"Stop":[{"hooks":[{"command":"uvx notes-vault-mcp==0.5.1 hook stop"}]}]}}"#).unwrap();
+        assert_eq!(plugin(&home), Plugin::Missing, "a plugin is the vault's when its .mcp.json starts a server named vault");
+        std::fs::write(root.join(".mcp.json"), r#"{"mcpServers":{"vault":{"command":"uvx","args":["mindin==0.14.0"],"env":{"VAULT_PATH":"${user_config.vault_path}"}}}}"#).unwrap();
+        assert_eq!(server_command(&root), Some(vec!["uvx".to_string(), "mindin==0.14.0".to_string()]), "whatever package it runs");
         assert_eq!(plugin(&home), Plugin::Enabled { id: "vault@gronare".to_string(), version: "0.2.15".to_string(), root: root.clone() });
         std::fs::write(home.join("settings.json"), r#"{"enabledPlugins":{"vault@gronare":false}}"#).unwrap();
         assert_eq!(plugin(&home), Plugin::Disabled { id: "vault@gronare".to_string(), version: "0.2.15".to_string() });
@@ -566,10 +723,11 @@ mod tests {
     #[test]
     fn an_old_vault_that_answers_status_but_lacks_the_task_commands_is_read_only() {
         let fake = Fake::new("probe");
+        fake.fail("about---json", "invalid choice: 'about'");
         fake.answer("status", r#"{"configured":true,"version":"0.5.1","backend":"s3","writable":true}"#);
         fake.fail("task---help", "invalid choice: 'task'");
         let probe = fake.cli.probe(false).unwrap();
-        assert!(probe.configured && !probe.tasks && !probe.on(), "{probe:?}");
+        assert!(probe.configured && !probe.can(TASKS) && !probe.on(), "{probe:?}");
         let _ = std::fs::remove_file(fake.dir.join("answers/task---help.err"));
         assert!(fake.cli.probe(false).unwrap().on());
         fake.answer("status", r#"{"configured":true,"version":"0.6.0","backend":"local","writable":null}"#);
@@ -578,7 +736,58 @@ mod tests {
         assert!(!fake.cli.probe(false).unwrap().on());
         fake.answer("status", r#"{"configured":true,"version":"0.6.0","backend":"s3","writable":false}"#);
         assert!(!fake.cli.probe(true).unwrap().on());
-        assert!(fake.calls().contains(&"status".to_string()) && fake.calls().last().unwrap() == "task --help" && fake.calls().contains(&"status --probe".to_string()), "{:?}", fake.calls());
+        assert!(fake.calls().contains(&"status".to_string()) && fake.calls().contains(&"task --help".to_string()) && fake.calls().contains(&"status --probe".to_string()), "{:?}", fake.calls());
+    }
+
+    #[test]
+    fn a_vault_that_answers_about_is_read_by_its_contract_and_nothing_else() {
+        let fake = Fake::new("about");
+        fake.answer("about---json", r#"{"name":"mindin","version":"0.14.0","contract":1,"capabilities":["tasks","log","snapshot"],"former_names":["notes-vault-mcp"]}"#);
+        fake.answer("status", r#"{"configured":true,"version":"0.14.0","backend":"server","writable":null}"#);
+        let probe = fake.cli.probe(false).unwrap();
+        assert_eq!((probe.name.as_str(), probe.version.as_str(), probe.contract, probe.backend.as_str()), ("mindin", "0.14.0", Some(1), "server"));
+        assert!(probe.on() && !probe.claims(), "only the stated capabilities count: {probe:?}");
+        assert_eq!(probe.former_names, ["notes-vault-mcp"]);
+        assert_eq!(fake.calls(), ["about --json", "status"], "no help is read when about answers");
+        fake.answer("about---json", r#"{"name":"mindin","version":"2.0.0","contract":2,"capabilities":["tasks"]}"#);
+        let newer = fake.cli.probe(false).unwrap();
+        assert!(!newer.speaks() && !newer.on(), "a contract this kebbie does not read keeps the vault off: {newer:?}");
+    }
+
+    #[test]
+    fn the_bridge_reads_the_package_name_and_capabilities_from_the_help_of_vaults_up_to_0_13() {
+        let fake = Fake::new("bridge");
+        fake.fail("about---json", "notes-vault-mcp: error: argument command: invalid choice: 'about'");
+        fake.answer("status", r#"{"configured":true,"version":"0.13.0","backend":"server","writable":null}"#);
+        fake.answer("task---help", "usage: notes-vault-mcp task [-h] {open,check,close,backlog,claim,release} ...");
+        fake.answer("--help", "usage: notes-vault-mcp [-h]\n                       {serve,init,read,task,log,snapshot,status} ...\n");
+        let probe = fake.cli.probe(false).unwrap();
+        assert_eq!((probe.name.as_str(), probe.version.as_str(), probe.contract), ("notes-vault-mcp", "0.13.0", None));
+        assert_eq!(probe.capabilities, ["tasks", "log", "claims", "snapshot", "read"]);
+        fake.answer("--help", "usage: notes-vault-mcp [-h]\n                       {serve,init,task,log,status} ...\n");
+        assert!(!fake.cli.probe(false).unwrap().can(SNAPSHOT), "a vault without the snapshot command states no snapshot capability");
+    }
+
+    #[test]
+    fn a_call_the_vault_states_no_capability_for_is_never_run() {
+        let fake = Fake::new("capabilities");
+        fake.answer("log-append", r#"{"path":"Log/x.md"}"#);
+        let cli = Cli { capabilities: Some(vec![TASKS.to_string()]), ..fake.cli.clone() };
+        assert_eq!(cli.log(Path::new("/src/app"), None, "line", &[]).unwrap_err(), "vault log append: the vault states no log capability");
+        assert!(cli.claim("Projects/x.md", "billing", "app", false).is_err());
+        assert!(fake.calls().is_empty(), "{:?}", fake.calls());
+        assert_eq!(fake.cli.log(Path::new("/src/app"), None, "line", &[]).unwrap(), "Log/x.md", "a command not probed yet runs every call");
+    }
+
+    #[test]
+    fn a_renamed_package_gives_the_command_with_its_new_name() {
+        let words = |text: &str| text.split(' ').map(str::to_string).collect::<Vec<_>>();
+        let probe = Probe { name: "mindin".to_string(), version: "0.14.0".to_string(), former_names: vec!["notes-vault-mcp".to_string()], ..Probe::default() };
+        assert_eq!(renamed(&words("uvx notes-vault-mcp==0.13.0"), &probe), Some(words("uvx mindin==0.14.0")));
+        assert_eq!(renamed(&words("uvx notes-vault-mcp"), &probe), Some(words("uvx mindin")));
+        assert_eq!(renamed(&words("uv run --project ~/src/notes-vault-mcp notes-vault-mcp"), &probe), Some(words("uv run --project ~/src/notes-vault-mcp mindin")), "a path keeps its folder's name");
+        assert_eq!(renamed(&words("uvx mindin"), &probe), None);
+        assert_eq!(renamed(&words("uvx notes-vault-mcp"), &Probe { former_names: Vec::new(), ..probe.clone() }), None, "without former names nothing is renamed");
     }
 
     #[test]
@@ -586,7 +795,7 @@ mod tests {
         let fake = Fake::new("cache");
         let state = fake.state();
         let probes = std::cell::Cell::new(0);
-        let probe = |_: &Cli| { probes.set(probes.get() + 1); Ok(Probe { configured: true, writable: None, tasks: true, claims: true, version: "0.6.0".to_string(), backend: "local".to_string() }) };
+        let probe = |_: &Cli| { probes.set(probes.get() + 1); Ok(probed(true, "0.6.0", "local")) };
         assert!(verdict_with(&fake.cli, &state, 1000, probe).0);
         assert!(verdict_with(&fake.cli, &state, 1000 + STATUS_TTL - 1, |_| unreachable!()).0);
         assert!(verdict_with(&fake.cli, &state, 1000 + STATUS_TTL, probe).0);
@@ -619,11 +828,11 @@ mod tests {
     fn a_kept_verdict_is_for_one_plugin_version() {
         let fake = Fake::new("verdict-version");
         let state = fake.state();
-        let probe = |_: &Cli| Ok(Probe { configured: true, writable: None, tasks: true, claims: false, version: "0.7.0".to_string(), backend: "s3".to_string() });
+        let probe = |_: &Cli| Ok(probed(false, "0.7.0", "s3"));
         let old = Cli { plugin: "0.3.0".to_string(), ..fake.cli.clone() };
         assert_eq!(verdict_with(&old, &state, 1000, probe), (true, false));
         let new = Cli { plugin: "0.4.0".to_string(), ..fake.cli.clone() };
-        let fresh = |_: &Cli| Ok(Probe { configured: true, writable: None, tasks: true, claims: true, version: "0.8.0".to_string(), backend: "s3".to_string() });
+        let fresh = |_: &Cli| Ok(probed(true, "0.8.0", "s3"));
         assert_eq!(verdict_with(&new, &state, 1001, fresh), (true, true), "an updated plugin is probed again at once");
     }
 
@@ -633,25 +842,38 @@ mod tests {
         fake.answer("status", r#"{"configured":true,"version":"0.7.0","backend":"s3","writable":null}"#);
         fake.answer("task---help", OLD_TASK_HELP);
         let old = fake.cli.probe(false).unwrap();
-        assert!(old.on() && !old.claims, "{old:?}");
+        assert!(old.on() && !old.claims(), "{old:?}");
         fake.answer("task---help", "usage: notes-vault-mcp task [-h] {open,check,close,backlog,claim,release} ...");
-        assert!(fake.cli.probe(false).unwrap().claims);
+        assert!(fake.cli.probe(false).unwrap().claims());
         fake.answer("task---help", "usage: notes-vault-mcp task [-h] {open,check,close,backlog,claimed} ...");
-        assert!(!fake.cli.probe(false).unwrap().claims, "a word that only starts with claim is no claim command");
+        assert!(!fake.cli.probe(false).unwrap().claims(), "a word that only starts with claim is no claim command");
     }
 
     #[test]
     fn the_kept_verdict_says_whether_claims_are_on_and_is_never_on_without_the_vault() {
         let fake = Fake::new("verdict-claims");
         let state = fake.state();
-        let probe = |claims: bool| move |_: &Cli| Ok(Probe { configured: true, writable: None, tasks: true, claims, version: "0.8.0".to_string(), backend: "s3".to_string() });
+        let probe = |claims: bool| move |_: &Cli| Ok(probed(claims, "0.8.0", "s3"));
         assert_eq!(verdict_with(&fake.cli, &state, 1000, probe(true)), (true, true));
         assert_eq!(verdict_with(&fake.cli, &state, 1001, |_| unreachable!()), (true, true), "kept like on");
         assert_eq!(verdict_with(&fake.cli, &state, 1000 + STATUS_TTL, probe(false)), (true, false));
-        let off = |_: &Cli| Ok(Probe { configured: false, writable: None, tasks: true, claims: true, version: String::new(), backend: String::new() });
+        let off = |_: &Cli| Ok(Probe { configured: false, ..probed(true, "", "") });
         assert_eq!(verdict_with(&fake.cli, &state, 5000, off), (false, false));
         std::fs::write(status_file(&state), json!({ "command": fake.cli.shown(), "at": 5000, "on": true }).to_string()).unwrap();
         assert_eq!(verdict_with(&fake.cli, &state, 5001, |_| unreachable!()), (true, false), "a verdict kept before claims existed reads as no claims");
+    }
+
+    #[test]
+    fn the_kept_verdict_carries_the_capabilities_and_the_package_the_vault_answered_with() {
+        let fake = Fake::new("verdict-identity");
+        let state = fake.state();
+        assert_eq!((kept_capabilities(&fake.cli, &state), kept_identity_in(&fake.cli, &state)), (None, None));
+        let mindin = |_: &Cli| Ok(Probe { name: "mindin".to_string(), contract: Some(1), ..probed(false, "0.14.0", "s3") });
+        verdict_with(&fake.cli, &state, 1000, mindin);
+        assert_eq!(kept_capabilities(&fake.cli, &state), Some(vec!["tasks".to_string(), "log".to_string()]));
+        assert_eq!(kept_identity_in(&fake.cli, &state), Some(("mindin".to_string(), "0.14.0".to_string())));
+        let other = Cli::new(vec!["uvx".to_string(), "other".to_string()]);
+        assert_eq!(kept_identity_in(&other, &state), None, "the kept answer is for one command");
     }
 
     #[test]
@@ -678,7 +900,7 @@ mod tests {
 
     #[test]
     fn without_the_override_tests_never_reach_the_real_plugin() {
-        assert!(std::env::var_os(BIN_VAR).is_none() && cli().is_none() && detect().is_none() && !plugin_enabled() && !known_on(), "vault off: no vault command is ever run");
+        assert!(std::env::var_os(BIN_VAR).is_none() && cli().is_none() && detect().is_none() && !connected() && !known_on(), "vault off: no vault command is ever run");
     }
 
     #[test]

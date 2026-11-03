@@ -147,7 +147,7 @@ An assessment with no answer reads as `review not assessed`, a suggestion in eve
 | --- | --- | --- | --- |
 | `machine.name` | the host's short name | config.toml only | The machine's one name, on your phone through the hub and on the vault notes it claims. |
 | `notify.command` | none | config.toml only | The shell command kebbie runs when something needs you. Unset sends nothing. See [Notify command](#notify-command). |
-| `vault.command` | none | config.toml only | The notes-vault-mcp command kebbie writes task notes and log lines with, before its own arguments. |
+| `vault.command` | none | config.toml only | The vault command kebbie runs for task notes, log lines and the board's snapshot, before its own arguments, such as `"uvx mindin"`. |
 | `hub.url` | the kebbie hub, `https://hub.kebbie.dev` | config.toml only | The [kebbie hub](../how-to/see-your-board-on-your-phone.md) `kebbie hub connect` and the board's `H` window connect this machine to. |
 
 `machine.name`: your phone shows it through the [hub](../how-to/see-your-board-on-your-phone.md#connect-the-machine), and kebbie claims vault notes under it. See [Two machines, one vault](../explanation/vault.md#two-machines-one-vault).
@@ -158,7 +158,12 @@ An assessment with no answer reads as `review not assessed`, a suggestion in eve
 - A task started from a vault note, or one kebbie opens a note for, writes this name and the task's into the note's `kebbie` frontmatter key. kebbie on another machine sharing the vault shows the note as `working on <name> · <task>` and asks before starting it.
 - Give each machine its own stable name, such as `"mac"` and `"devbox"`.
 
-`vault.command`: unset runs the vault plugin's pinned command from its hooks. It is used only while the vault plugin is installed and enabled.
+`vault.command` is kebbie's own way to the vault, whatever agent runs the task: Claude Code, Codex or another.
+
+- [`kebbie setup`](commands.md#kebbie-setup) finds the vault commands on this machine and writes the one you pick. See [How setup finds the command](../explanation/vault.md#setup-finds-the-command).
+- The command and its leading words, split at spaces: `"uvx mindin"`, `"uvx mindin==0.14.0"`, or a checkout of your own, `"uv run --project ~/code/mindin mindin"`.
+- kebbie asks it what it is with `about --json` and uses only the capabilities it states. See [The vault contract](vault-contract.md).
+- Unset, kebbie runs the Claude vault plugin's pinned command from its hooks while the plugin is installed and enabled, and `kebbie doctor` suggests the line to set.
 
 `hub.url` is `https`, or `http` on this machine.
 

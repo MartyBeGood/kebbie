@@ -135,7 +135,7 @@ A `comments/` file holds the comment as GitHub gave it (author, text, file and l
 | `update-override.json` | The `--from` override, while it holds. |
 | `notify.log` | Notify command failures. |
 | `notify-sent.json` | When each kind of notification last went out, for the limit of one per event a minute. |
-| `vault-status.json` | Whether the vault plugin is on and writes claims, kept a while so a start or a push does not ask the vault each time. |
+| `vault-status.json` | What the vault command last answered: on or off, its name, version and capabilities, kept a while so a start or a push does not ask the vault each time. |
 | `vault-logs/` | Each repo's vault log note, or an empty file where the vault named none, asked again after an hour. |
 | `vault-snapshot.json` | The last vault snapshot, which the Areas page, the backlog and the ongoing notes read. |
 | `vault-snapshot-verdict.json` | Whether the vault server answers snapshots, so a server without them is asked again only after ten minutes or a plugin update. |

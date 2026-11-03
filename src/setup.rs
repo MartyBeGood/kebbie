@@ -81,7 +81,7 @@ pub fn vault() -> Result<String> {
     Ok(configure_text(&claude))
 }
 
-fn yes(question: &str, input: &mut impl BufRead, output: &mut impl Write) -> Result<bool> {
+pub fn yes(question: &str, input: &mut impl BufRead, output: &mut impl Write) -> Result<bool> {
     write!(output, "{question}\n  [y/N] ").map_err(|error| error.to_string())?;
     output.flush().map_err(|error| error.to_string())?;
     let mut answer = String::new();

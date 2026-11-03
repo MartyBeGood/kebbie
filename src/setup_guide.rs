@@ -33,6 +33,7 @@ pub enum Step {
     CodexApprovals,
     CodexVault,
     CodexUpdates,
+    VaultCommand,
     Keys,
     Backlog,
     Signals,
@@ -42,7 +43,7 @@ pub enum Step {
 const CLAUDE_STEPS: [Step; 5] = [Step::ClaudePlugin, Step::ClaudeLogin, Step::ClaudeApprovals, Step::Vault, Step::ClaudeUpdates];
 
 impl Step {
-    pub const ALL: [Step; 15] = [Step::Name, Step::Agents, Step::ClaudePlugin, Step::ClaudeLogin, Step::ClaudeApprovals, Step::Vault, Step::ClaudeUpdates, Step::CodexPlugin, Step::CodexApprovals, Step::CodexVault, Step::CodexUpdates, Step::Keys, Step::Backlog, Step::Signals, Step::Review];
+    pub const ALL: [Step; 16] = [Step::Name, Step::Agents, Step::ClaudePlugin, Step::ClaudeLogin, Step::ClaudeApprovals, Step::Vault, Step::ClaudeUpdates, Step::CodexPlugin, Step::CodexApprovals, Step::CodexVault, Step::CodexUpdates, Step::VaultCommand, Step::Keys, Step::Backlog, Step::Signals, Step::Review];
 
     fn index(self) -> usize {
         Step::ALL.iter().position(|step| *step == self).unwrap_or(0)
@@ -67,6 +68,7 @@ impl Step {
             Step::ClaudeUpdates => "Updates",
             Step::CodexVault => "Vault in Codex",
             Step::CodexUpdates => "Codex updates",
+            Step::VaultCommand => "Vault for kebbie",
             Step::Keys => "herdr keys",
             Step::Backlog => "Backlog",
             Step::Signals => "Error signals",
@@ -87,6 +89,7 @@ impl Step {
             Step::CodexApprovals => "Codex asks before each command that leaves its sandbox, kebbie's own included: report, tell, ask, steps. A rules file lets the ten commands a task may run go through; push, approve and review still ask, and kebbie refuses them to a task anyway.",
             Step::CodexVault => "Your Claude sessions reach the vault through the vault plugin. Codex needs the same server in its config.toml, so a Codex task keeps its own note instead of asking the lead to write it.",
             Step::CodexUpdates => "Codex does not update itself while it runs, and kebbie turns off its update question in the sessions it starts. kebbie checks once a day for a newer Codex and for models that go away.",
+            Step::VaultCommand => "The command kebbie itself runs for task notes, log lines and the board's snapshot, whatever agent runs the task. Each agent reaches the vault through its own MCP server; this is kebbie's own line in its config.toml, and no other tool's file changes.",
             Step::Keys => "Three keys added to the end of herdr's config.toml. The rest of the file stays as it is. Updating is U on the board.",
             Step::Backlog => "Where work waits. Pick any combination; the first one is where the lead files new ideas.",
             Step::Signals => "When kebbie itself crashes or hits some internal errors, it sends its maintainers an error signal, at most once a day. A signal holds only kebbie's version and commit, your OS and CPU architecture, the part of kebbie that failed, the kind of failure and a count; never your code, paths or text. Once a day it also sends an install signal, so they can count active installs: a random id made for this install, kebbie's version, your OS and CPU architecture and the update channel.",
@@ -169,6 +172,8 @@ pub struct Facts {
     pub vault_server: Option<Server>,
     pub agent_updates: Option<config::AgentUpdates>,
     pub codex_default: Option<String>,
+    pub vault_found: Vec<crate::vault_found::Found>,
+    pub vault_command: Option<String>,
 }
 
 fn version(program: &str) -> Option<String> {
@@ -195,6 +200,9 @@ impl Facts {
         let rules = codex_setup::rules_text(&codex_setup::rule_forms(&env.kebbie, &env.machine.home.join(".local/bin/kebbie")));
         let vault = crate::vault_cli::plugin(&env.machine.claude_dir);
         let vault_server = match &vault { Plugin::Enabled { root, .. } => codex_setup::vault_server(root, &options), _ => None };
+        let cursor = env.machine.home.join(".cursor");
+        let places = crate::vault_found::Places { claude_dir: &env.machine.claude_dir, codex_home: env.codex_home.as_deref(), cursor_dir: &cursor, path: &env.machine.path };
+        let vault_found = crate::vault_found::candidates(&places, |command| crate::vault_found::probe_on(&env.machine.path, command));
         let codex_default = env.codex_home.as_deref().and_then(|home| crate::agent::codex::configured_model(home).or_else(|| codex_setup::default_model(&crate::agent::codex::cached_models(home)?).map(|model| model.slug.clone())));
         let found = crate::doctor::Found {
             claude_settings: &read_json(&env.machine.claude_dir.join("settings.json")),
@@ -232,7 +240,25 @@ impl Facts {
             vault_server,
             agent_updates: machine.agent_updates,
             codex_default,
+            vault_found,
+            vault_command: machine.worktree.vault_command.clone().filter(|command| !command.trim().is_empty()),
         }
+    }
+
+    // The choices on the Vault for kebbie step: the command already set when no tool shows it, each one found, then None.
+    fn vault_commands(&self) -> Vec<(String, String, Option<String>)> {
+        let found = self.vault_found.iter().map(|found| (found.source.clone(), format!("{} · {}", found.shown(), found.answered()), Some(found.shown())));
+        let kept = self.vault_command.clone().filter(|command| !self.vault_found.iter().any(|found| found.shown() == *command)).map(|command| ("Keep [vault] command".to_string(), command.clone(), Some(command)));
+        kept.into_iter().chain(found).chain([("None".to_string(), "kebbie keeps tasks without the vault".to_string(), None)]).collect()
+    }
+
+    fn vault_command_choice(&self) -> usize {
+        let choices = self.vault_commands();
+        let at = |wanted: Option<&String>| choices.iter().position(|(_, _, command)| command.as_ref() == wanted);
+        match &self.vault_command {
+            Some(command) => at(Some(command)),
+            None => (choices.len() > 1).then_some(0),
+        }.unwrap_or(choices.len() - 1)
     }
 
     fn vault_choice(&self) -> usize {
@@ -275,6 +301,7 @@ pub struct Answers {
     pub approvals: Way,
     pub codex_vault: Way,
     pub agent_updates: usize,
+    pub vault_command: usize,
 }
 
 impl Answers {
@@ -295,6 +322,7 @@ impl Answers {
             approvals: Way::Kebbie,
             codex_vault: Way::Kebbie,
             agent_updates: config::AgentUpdates::ALL.iter().position(|mode| Some(*mode) == facts.agent_updates).unwrap_or(0),
+            vault_command: facts.vault_command_choice(),
         }
     }
 
@@ -338,6 +366,7 @@ pub enum Act {
     Rules(String),
     CodexVault,
     AgentUpdates(config::AgentUpdates),
+    VaultCommand(Option<String>),
     Yourself(Own),
     Signals(bool),
     Repair(Repair),
@@ -448,6 +477,11 @@ impl Guide {
         }
     }
 
+    // Asked once something runs the vault on this machine, or kebbie already has a line for it.
+    fn vault_command_shown(&self) -> bool {
+        self.facts.vault_commands().len() > 1
+    }
+
     fn claude_shown(&self) -> bool {
         self.scope != Scope::Agent(Agent::Codex)
     }
@@ -466,6 +500,7 @@ impl Guide {
             steps.extend(codex);
         }
         if self.scope == Scope::All {
+            steps.extend(self.vault_command_shown().then_some(Step::VaultCommand));
             steps.extend([Step::Keys, Step::Backlog, Step::Signals]);
         }
         steps.push(Step::Review);
@@ -499,6 +534,7 @@ impl Guide {
             Step::Signals => vec![Spot::Choice(0), Spot::Choice(1)],
             Step::ClaudePlugin | Step::CodexPlugin | Step::CodexApprovals | Step::CodexUpdates => (0..3).map(Spot::Choice).collect(),
             Step::CodexVault => (0..2).map(Spot::Choice).collect(),
+            Step::VaultCommand => (0..self.facts.vault_commands().len()).map(Spot::Choice).collect(),
             Step::ClaudeLogin | Step::ClaudeApprovals | Step::ClaudeUpdates | Step::Review => Vec::new(),
         }
     }
@@ -517,6 +553,7 @@ impl Guide {
             Step::CodexApprovals => self.answers.approvals.index(),
             Step::CodexVault => self.answers.codex_vault.index(),
             Step::CodexUpdates => self.answers.agent_updates,
+            Step::VaultCommand => self.answers.vault_command,
             _ => 0,
         }
     }
@@ -538,6 +575,7 @@ impl Guide {
             Step::CodexApprovals => self.answers.approvals = Way::at(at),
             Step::CodexVault => self.answers.codex_vault = Way::at(at),
             Step::CodexUpdates => self.answers.agent_updates = at,
+            Step::VaultCommand => self.answers.vault_command = at,
             _ => {}
         }
     }
@@ -578,6 +616,7 @@ impl Guide {
             Step::CodexPlugin => self.answers.codex_plugin = Way::Skip,
             Step::CodexApprovals => self.answers.approvals = Way::Skip,
             Step::CodexUpdates => self.answers.agent_updates = today.agent_updates,
+            Step::VaultCommand => self.answers.vault_command = today.vault_command,
             Step::CodexVault | Step::ClaudeLogin | Step::ClaudeApprovals | Step::ClaudeUpdates | Step::Review => {}
         }
     }
@@ -704,6 +743,7 @@ impl Guide {
             Step::Backlog if facts.sources_set => Some(format!("board.backlog.sources is [{}]", facts.sources.iter().map(|source| format!("{:?}", source.key())).collect::<Vec<_>>().join(", "))),
             Step::Vault if matches!(facts.vault, Plugin::Enabled { .. }) && facts.vault_choice() > 0 => Some(match facts.vault_choice() { 1 => format!("the vault plugin points at {}", facts.vault_path), _ => format!("the vault plugin points at the S3 bucket {}", facts.s3[1]) }),
             Step::Signals if facts.signals_set => Some(format!("report.signals is {}", facts.signals)),
+            Step::VaultCommand => facts.vault_command.as_ref().map(|command| format!("vault.command is \"{command}\"")),
             _ => None,
         }
     }
@@ -831,6 +871,9 @@ impl Guide {
             _ if sources == facts.sources => row("backlog", "already", listed, Act::Nothing),
             _ => row("backlog", "to do", listed, Act::Sources(sources)),
         });
+        if self.vault_command_shown() {
+            rows.push(self.vault_command_row());
+        }
         let on = answers.signals == 0;
         let said = |on: bool| if on { "on" } else { "off" };
         rows.push(match () {
@@ -843,6 +886,18 @@ impl Guide {
             row(step, "to do", detail.to_string(), Act::Repair(*repair))
         }));
         rows
+    }
+
+    fn vault_command_row(&self) -> Planned {
+        let row = |verb, detail: String, act| Planned { step: "vault cmd", verb, detail, act };
+        let chosen = self.facts.vault_commands().get(self.answers.vault_command).and_then(|(_, _, command)| command.clone());
+        match (chosen, &self.facts.vault_command) {
+            _ if self.skipped(Step::VaultCommand) => row("skipped", "stays as it is".to_string(), Act::Nothing),
+            (Some(command), Some(kept)) if command == *kept => row("already", format!("vault.command = \"{command}\""), Act::Nothing),
+            (Some(command), _) => row("to do", format!("vault.command = \"{command}\" in kebbie's config.toml"), Act::VaultCommand(Some(command))),
+            (None, Some(_)) => row("to do", "vault.command out of kebbie's config.toml".to_string(), Act::VaultCommand(None)),
+            (None, None) => row("skipped", "kebbie keeps tasks without the vault".to_string(), Act::Nothing),
+        }
     }
 
     fn vault_row(&self) -> Planned {
@@ -906,6 +961,13 @@ fn when_done(outcome: Outcome, detail: impl Into<String>) -> Outcome {
 fn write_key(env: &Env, key: &str, set: &Set) -> Outcome {
     match config_edit::write(&env.config, true, false, |text| config_edit::set(text, key, set)) {
         Ok(()) => Outcome::new("done", format!("{key} = {} in {}", set.shown(), home(&env.config))),
+        Err(error) => Outcome::new("failed", error.lines().next().unwrap_or_default().to_string()),
+    }
+}
+
+fn remove_key(env: &Env, key: &str) -> Outcome {
+    match config_edit::write(&env.config, true, false, |text| config_edit::remove(text, key)) {
+        Ok(()) => Outcome::new("done", format!("{key} out of {}", home(&env.config))),
         Err(error) => Outcome::new("failed", error.lines().next().unwrap_or_default().to_string()),
     }
 }
@@ -1034,6 +1096,8 @@ pub fn apply(planned: &[Planned], env: &Env, hooks: &mut dyn Hooks) -> Vec<(Stri
             Act::Rules(text) => rules(env, text),
             Act::CodexVault => codex_vault(env),
             Act::AgentUpdates(mode) => when_done(write_key(env, "update.agents", &Set::Text(mode.key().to_string())), format!("update.agents = \"{}\"", mode.key())),
+            Act::VaultCommand(Some(command)) => when_done(write_key(env, "vault.command", &Set::Text(command.clone())), format!("vault.command = \"{command}\"")),
+            Act::VaultCommand(None) => remove_key(env, "vault.command"),
             Act::Yourself(_) => Outcome::new("yourself", row.detail.clone()),
             Act::Name(name) => when_done(write_key(env, "machine.name", &Set::Text(name.clone())), row.detail.clone()),
             Act::Keys(plan, bindings) => keys(env, plan, bindings, &row.detail),
@@ -1057,8 +1121,21 @@ pub fn without_asking(env: &Env, asking: Asking) -> Vec<(String, Outcome)> {
         Ok(files) => Outcome::new("done", format!("kebbie's Codex plugin updated: {}", files.join(", "))),
         Err(error) => Outcome::new("failed", format!("Codex: {error}")),
     });
-    let rows = [("link", Some(setup::link_binary(&env.machine.home, &env.machine.path))), ("plugin", Some(setup::claude_plugin(env.machine))), ("codex", codex), ("keys", Some(keys))];
+    let rows = [("link", Some(setup::link_binary(&env.machine.home, &env.machine.path))), ("plugin", Some(setup::claude_plugin(env.machine))), ("codex", codex), ("keys", Some(keys)), ("vault cmd", vault_command_unasked(&facts, &env.config))];
     rows.into_iter().filter_map(|(step, outcome)| Some((step.to_string(), outcome?))).collect()
+}
+
+// A run that asks nothing names the vault command it found and the line to set, and writes no choice of its own.
+fn vault_command_unasked(facts: &Facts, config: &std::path::Path) -> Option<Outcome> {
+    if let Some(command) = &facts.vault_command {
+        return Some(Outcome::new("already", format!("vault.command = \"{command}\"")));
+    }
+    let first = facts.vault_found.first()?;
+    let more = match facts.vault_found.len() - 1 {
+        0 => String::new(),
+        others => format!("; kebbie setup in a terminal offers {others} more"),
+    };
+    Some(Outcome::new("yourself", format!("{} runs the vault: set vault.command = \"{}\" under [vault] in {}{more}", first.source, first.shown(), home(config))))
 }
 
 // What the agent's guide would write besides the plugin, for a run that asks nothing.
@@ -1218,6 +1295,15 @@ impl Guide {
                     lines.push(Line::from(Span::styled(format!("runs: {claude} plugin marketplace add {}", setup::VAULT_MARKETPLACE), style(SUBTEXT)).style(Style::new().bg(MANTLE))));
                     lines.push(Line::from(Span::styled(format!("      {claude} plugin install {}", setup::VAULT_PLUGIN), style(SUBTEXT)).style(Style::new().bg(MANTLE))));
                     lines.push(Line::from(vec![Span::styled(format!("      {claude} plugin configure {}", setup::VAULT_PLUGIN), style(SUBTEXT)), Span::styled(format!(" (with the {} above)", if answers.vault == 1 { "path" } else { "bucket" }), style(MUTED))]));
+                }
+            }
+            Step::VaultCommand => {
+                if facts.vault_found.is_empty() {
+                    lines.push(Line::from(Span::styled("No other vault command answers on this machine.", style(MUTED))));
+                    lines.push(Line::default());
+                }
+                for (at, (label, about, _)) in facts.vault_commands().into_iter().enumerate() {
+                    lines.push(self.option(Spot::Choice(at), Self::radio(answers.vault_command == at), label, about));
                 }
             }
             Step::Signals => {
@@ -1772,6 +1858,7 @@ mod tests {
         let vault_root = lab.dir.join("vault-plugin");
         std::fs::create_dir_all(vault_root.join("hooks")).unwrap();
         std::fs::write(vault_root.join("hooks/hooks.json"), "uvx notes-vault-mcp==0.6.0 hook session-start").unwrap();
+        std::fs::write(vault_root.join(".mcp.json"), r#"{"mcpServers":{"vault":{"command":"uvx","args":["notes-vault-mcp==0.6.0"]}}}"#).unwrap();
         std::fs::write(plugins.join("installed_plugins.json"), json!({ "plugins": { "kebbie@kebbie": [{ "version": "0.27.0" }], "vault@gronare": [{ "version": "0.3.0", "installPath": vault_root }] } }).to_string()).unwrap();
         std::fs::write(lab.machine.claude_dir.join("settings.json"), json!({ "pluginConfigs": { "vault@gronare": { "options": { "vault_path": "/notes/vault" } } } }).to_string()).unwrap();
         let rerun = Guide::new(Facts::read(&lab.env()), Step::Name);
@@ -2087,6 +2174,56 @@ mod tests {
         let lines: Vec<String> = without_asking(&lab.env(), Asking::Yes).iter().map(|(step, outcome)| outcome.line(step)).collect();
         assert!(lines.iter().any(|line| line.starts_with("done") && line.contains("kebbie's Codex plugin updated: bin/kebbie-hook")), "an installed plugin follows kebbie: {lines:?}");
         assert_eq!(crate::agent::codex::installed(&lab.dir.join("codex"), "/opt/kebbie"), Installed::Current);
+    }
+
+    fn found(source: &str, command: &str) -> crate::vault_found::Found {
+        let answer = crate::vault_cli::Probe { name: "mindin".to_string(), version: "0.14.0".to_string(), ..crate::vault_cli::Probe::default() };
+        crate::vault_found::Found { source: source.to_string(), command: command.split(' ').map(str::to_string).collect(), answer: Some(answer) }
+    }
+
+    #[test]
+    fn setup_shows_the_vault_commands_it_found_and_writes_the_one_picked_to_kebbies_own_config() {
+        let lab = Lab::new("guide-vault-command");
+        let mut facts = fresh(&lab).facts;
+        assert!(!Guide::new(facts.clone(), Step::Name).steps().contains(&Step::VaultCommand), "nothing found, nothing asked");
+        facts.vault_found = vec![found("the Claude Code vault plugin vault@gronare", "uvx mindin==0.14.0"), found("Codex's [mcp_servers.notes]", "uv run --project /src/mindin mindin")];
+        let mut guide = Guide::new(facts.clone(), Step::VaultCommand);
+        let shown = screen(&guide);
+        assert!(shown.contains("Vault for kebbie") && shown.contains("the Claude Code vault plugin vault@gronare") && shown.contains("uvx mindin==0.14.0 · mindin 0.14.0") && shown.contains("Codex's [mcp_servers.notes]") && shown.contains("None"), "{shown}");
+        assert_eq!(plan(&guide).iter().find(|row| row.contains(" vault cmd ")).map(String::as_str), Some("to do vault cmd vault.command = \"uvx mindin==0.14.0\" in kebbie's config.toml"), "the first one found is the default");
+        press(&mut guide, &[KeyCode::Down, KeyCode::Enter]);
+        let planned: Vec<Planned> = guide.plan().into_iter().filter(|row| row.step == "vault cmd").collect();
+        apply(&planned, &lab.env(), &mut Fake { drawn: 0 });
+        assert_eq!(lab.config(), "[vault]\ncommand = \"uv run --project /src/mindin mindin\"\n");
+        assert!(!lab.dir.join("codex/config.toml").exists(), "no other tool's file is written");
+        facts.vault_command = Some("uv run --project /src/mindin mindin".to_string());
+        let again = Guide::new(facts.clone(), Step::VaultCommand);
+        assert_eq!(plan(&again).iter().find(|row| row.contains(" vault cmd ")).map(String::as_str), Some("already vault cmd vault.command = \"uv run --project /src/mindin mindin\""));
+        let mut none = Guide::new(facts.clone(), Step::VaultCommand);
+        press(&mut none, &[KeyCode::Down, KeyCode::Enter]);
+        let planned: Vec<Planned> = none.plan().into_iter().filter(|row| row.step == "vault cmd").collect();
+        assert_eq!(planned[0].act, Act::VaultCommand(None));
+        apply(&planned, &lab.env(), &mut Fake { drawn: 0 });
+        assert!(!lab.config().contains("command"), "None takes kebbie's line out: {}", lab.config());
+        facts.vault_found.clear();
+        facts.vault_command = Some("uvx mindin".to_string());
+        let kept = Guide::new(facts, Step::VaultCommand);
+        assert!(screen(&kept).contains("Keep [vault] command") && kept.answers.vault_command == 0, "a line no tool shows is offered to keep");
+    }
+
+    #[test]
+    fn a_run_that_asks_nothing_names_the_vault_command_it_found_and_writes_none() {
+        let lab = Lab::new("guide-vault-unasked");
+        let mut facts = fresh(&lab).facts;
+        let config = lab.dir.join("kebbie/config.toml");
+        assert_eq!(vault_command_unasked(&facts, &config), None);
+        facts.vault_found = vec![found("mindin on PATH", "mindin"), found("Codex's [mcp_servers.notes]", "uvx mindin")];
+        let said = vault_command_unasked(&facts, &config).unwrap();
+        assert_eq!(said.verb, "yourself");
+        assert!(said.detail.starts_with("mindin on PATH runs the vault: set vault.command = \"mindin\" under [vault] in ") && said.detail.ends_with("; kebbie setup in a terminal offers 1 more"), "{said:?}");
+        facts.vault_command = Some("uvx mindin".to_string());
+        assert_eq!(vault_command_unasked(&facts, &config).unwrap().verb, "already");
+        assert_eq!(lab.config(), "");
     }
 
     fn check(level: crate::doctor::Level, name: &str, fact: &str, fix: &[&str]) -> crate::doctor::Check {

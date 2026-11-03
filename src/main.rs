@@ -79,6 +79,7 @@ mod update_progress;
 mod usage;
 mod vault;
 mod vault_cli;
+mod vault_found;
 mod vault_snapshot;
 mod when;
 
@@ -318,12 +319,14 @@ const USAGE: &str = "kebbie: herding coding agents in herdr
                                   (task.sandbox; on Linux it needs bubblewrap, socat and the seccomp filter), and
                                   whether open tasks' hooks run a kebbie that is there; --fix first links kebbie in
                                   herdr again when herdr links it from a folder that is gone (then starts the board
-                                  and the keeper), and installs kebbie's push block again in each worktree that still
-                                  has an earlier one
+                                  and the keeper), installs kebbie's push block again in each worktree that still
+                                  has an earlier one, and offers the [vault] command line doctor suggests, written to
+                                  kebbie's config.toml only on your y
   kebbie setup [--yes]            the setup guide, one step at a time: this machine's name, the agents (Claude Code,
                                   Codex), herdr's three keys (appended to its config.toml, a taken key named with a
                                   free one offered), the backlog's sources, the vault (a folder or an S3 bucket, its
-                                  plugin installed and configured) and error signals; nothing is written before ⏎ on
+                                  plugin installed and configured), the vault command kebbie itself runs (from what
+                                  it finds in the Claude plugin, Codex, Cursor and PATH) and error signals; nothing is written before ⏎ on
                                   the last step, which lists what it writes and runs, the doctor warnings setup fixes
                                   itself among them; ends with the doctor's count, what is left for you, and the hub
                                   as an offer (h); safe to run again, from this machine's values (--yes, and a run

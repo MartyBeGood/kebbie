@@ -23,7 +23,7 @@ pub struct Entry {
     pub claim: Option<Claim>,
 }
 
-// What `notes-vault-mcp snapshot --json` answered, as kebbie last kept it.
+// What the vault command's `snapshot --json` answered, as kebbie last kept it.
 #[derive(Debug, PartialEq)]
 pub struct Snapshot {
     pub etag: String,
@@ -146,6 +146,9 @@ fn keep_verdict(cli: &Cli, state: &Path, at: u64, supported: bool) {
 
 // Asks the server for what changed since the kept etag; a server without the command is asked again after RETRY or once its plugin version changes.
 pub fn refresh(cli: &Cli, state: &Path, now: u64) -> Result<Refreshed> {
+    if !cli.can(crate::vault_cli::SNAPSHOT) {
+        return Ok(Refreshed::Unsupported);
+    }
     let verdict = read_json(&state.join(VERDICT)).filter(|verdict| verdict["command"] == cli.cache_key());
     if verdict.as_ref().is_some_and(|verdict| verdict["supported"] == false && verdict["at"].as_u64().is_some_and(|then| now.saturating_sub(then) < RETRY)) {
         return Ok(Refreshed::Unsupported);
@@ -277,5 +280,17 @@ mod tests {
         fake.fail("snapshot---json", "invalid choice: 'snapshot'");
         assert_eq!(refresh(&other, &state, 3001), Ok(Refreshed::Unsupported), "another plugin version is asked afresh");
         assert!(current(&state).is_none(), "a server without snapshots is read through the index, whatever file is left");
+    }
+
+    #[test]
+    fn a_vault_that_states_no_snapshot_capability_is_never_asked_for_one() {
+        let fake = Fake::new("snapshot-capability");
+        let state = fake.state();
+        fake.answer("snapshot---json", ANSWER);
+        let without = Cli { capabilities: Some(vec!["tasks".to_string(), "log".to_string()]), ..fake.cli.clone() };
+        assert_eq!(refresh(&without, &state, 1000), Ok(Refreshed::Unsupported));
+        assert!(fake.calls().is_empty(), "{:?}", fake.calls());
+        let with = Cli { capabilities: Some(vec!["snapshot".to_string()]), ..fake.cli.clone() };
+        assert_eq!(refresh(&with, &state, 1000), Ok(Refreshed::Written));
     }
 }

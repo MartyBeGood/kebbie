@@ -75,6 +75,7 @@ Working on kebbie
 - [Skills](reference/skills.md): the Claude Code plugin's skills and hooks.
 - [Files and paths](reference/files.md): config, state, the backlog file and the setup note.
 - [Environment variables](reference/environment.md): what kebbie reads and sets.
+- [The vault contract](reference/vault-contract.md): what a vault command answers kebbie with `about --json`.
 - [Requirements](reference/requirements.md): tools, versions and what `kebbie doctor` checks.
 
 ## Explanation

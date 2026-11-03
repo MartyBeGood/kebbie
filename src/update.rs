@@ -60,7 +60,7 @@ pub fn run(claude_dir: &Path, visible: bool, request: &Request) -> Result<Outcom
     });
     tracker = Tracker::resume(&path).unwrap_or(tracker);
     let outcome = result.map(|lines| {
-        let after = update_check::installed(&places);
+        let after = update_check::installed(&Places::new(root.clone(), claude_dir.to_path_buf(), channel));
         let running = release::read_override(&state);
         let mut details = versions(&before, &after, channel);
         details.insert(0, match &running {
@@ -646,6 +646,7 @@ mod tests {
         let install = home.join("plugins/cache/gronare/vault/0.2.16");
         std::fs::create_dir_all(install.join("hooks")).unwrap();
         std::fs::write(install.join("hooks/hooks.json"), r#"{"command":"uvx notes-vault-mcp==0.6.0 hook session-start"}"#).unwrap();
+        std::fs::write(install.join(".mcp.json"), r#"{"mcpServers":{"vault":{"command":"uvx","args":["notes-vault-mcp==0.6.0"]}}}"#).unwrap();
         std::fs::write(home.join("plugins/installed_plugins.json"), json!({ "plugins": { "vault@gronare": [{ "installPath": install, "version": "0.2.16" }] } }).to_string()).unwrap();
         assert!(vault_plugin(&home, &claude).is_empty());
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "plugin marketplace update gronare\nplugin update vault@gronare\n");

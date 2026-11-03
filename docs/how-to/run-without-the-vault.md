@@ -2,30 +2,32 @@
 
 Run kebbie with no vault: the backlog comes from the local file and each task's decisions go to kebbie's own note for it.
 
-When the vault plugin is not installed, there is nothing to do. When it is installed and you want kebbie to work without it:
+With no `vault.command` and no vault plugin, there is nothing to do. Otherwise:
 
-1. Disable the plugin in Claude Code:
+1. Take `vault.command` out of `~/.config/kebbie/config.toml`, or pick None at the Vault for kebbie step of `kebbie setup`.
+
+2. If the vault plugin is installed in Claude Code, disable it:
 
    ```bash
    claude plugin disable vault@gronare
    ```
 
-   kebbie uses the vault whenever the plugin is installed and enabled, so this turns it off for every Claude session on the machine.
+   Without `vault.command`, kebbie runs the plugin's command whenever the plugin is installed and enabled, so this turns the vault off for kebbie and for every Claude session on the machine.
 
-2. Take `"vault"` out of the backlog sources in `~/.config/kebbie/config.toml`:
+3. Take `"vault"` out of the backlog sources in `~/.config/kebbie/config.toml`:
 
    ```toml
    [board.backlog]
    sources = ["local"]
    ```
 
-3. Restart the lead so its role drops the vault:
+4. Restart the lead so its role drops the vault:
 
    ```bash
    kebbie lead --restart
    ```
 
-4. Check the result:
+5. Check the result:
 
    ```bash
    kebbie doctor

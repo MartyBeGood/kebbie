@@ -80,7 +80,7 @@ Each line is `ok`, `skip`, `warn` or `fail`; `skip` is a check that got no answe
 | `machine` | With the vault on or a hub connected only: the name the phone and the other machines on the vault see. |
 | `notify` | Whether `notify.command` is set. It is never run. |
 | `sandbox` | Whether tasks run in the sandbox. |
-| `vault` | The vault plugin: on, missing (fine, it is optional) or too old. |
+| `vault` | The vault command kebbie runs, asked with `about --json` at each run: its name, version and capabilities; none set (fine, it is optional), failing, lacking a capability, or renamed, with the `vault.command` line to set. `kebbie doctor --fix` writes that line after your `y`. |
 | `codex`, `codex plugin`, `codex hooks`, `codex login` | Codex at 0.163.0 or later, kebbie's plugin in it, its hooks on, and `codex login status` logged in. |
 | `codex model` | The model in Codex's `config.toml`, which a Codex profile without `model` runs. Shown only when the file names one. |
 | `codex old plugin` | An unused copy under `kebbie@kebbie`, which Codex installed from a repo's marketplace named kebbie and nothing turns on; the fix removes it. |

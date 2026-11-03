@@ -487,6 +487,9 @@ fn known_repos() -> Vec<PathBuf> {
 pub fn fix(state: &Path) -> Vec<String> {
     let mut lines = crate::herdr_link::heal().unwrap_or_else(|error| vec![error]);
     lines.extend(crate::push_block::renew_old_blocks(&known_repos(), state));
+    let mut asked = |question: &str| crate::setup::yes(question, &mut std::io::stdin().lock(), &mut std::io::stdout()).unwrap_or(false);
+    let ask: Option<&mut dyn FnMut(&str) -> bool> = if crate::setup::in_terminal() { Some(&mut asked) } else { None };
+    lines.extend(vault_fix(vault_suggestion(), &config::path(), ask));
     if lines.is_empty() { vec!["Nothing to fix: herdr's kebbie folder is there and no worktree has an earlier push block.".to_string()] } else { lines }
 }
 
@@ -544,11 +547,11 @@ fn plugin_ids<'a>(installed: Option<&'a Value>, prefix: &'a str) -> impl Iterato
     installed.and_then(|installed| installed["plugins"].as_object()).into_iter().flatten().filter(move |(id, _)| id.starts_with(prefix))
 }
 
-// The vault plugin that runs notes-vault-mcp, by its marketplace name or its plugin files.
+// The vault plugin: one whose .mcp.json starts a server named vault.
 pub fn vault_plugin(installed: Option<&Value>, read: impl Fn(&Path) -> Option<String>) -> Option<String> {
-    plugin_ids(installed, "vault@").find(|(id, entries)| {
-        id.contains("notes-vault-mcp") || entries.as_array().into_iter().flatten().filter_map(|entry| entry["installPath"].as_str()).any(|root| {
-            [".mcp.json", ".claude-plugin/plugin.json"].iter().any(|file| read(&Path::new(root).join(file)).is_some_and(|text| text.contains("notes-vault-mcp")))
+    plugin_ids(installed, "vault@").find(|(_, entries)| {
+        entries.as_array().into_iter().flatten().filter_map(|entry| entry["installPath"].as_str()).any(|root| {
+            read(&Path::new(root).join(".mcp.json")).and_then(|text| serde_json::from_str::<Value>(&text).ok()).is_some_and(|mcp| mcp["mcpServers"]["vault"].is_object())
         })
     }).map(|(id, _)| id.clone())
 }
@@ -578,26 +581,92 @@ pub fn unused_sources(sources: &[Source], vault: Option<String>, linear: Option<
     checks
 }
 
-// Optional: without the plugin kebbie keeps its own backlog and state, so a missing plugin is no gap.
-// override_bin is KEBBIE_VAULT_BIN, which stands in for the plugin as it does for detect().
-pub fn vault(plugin: &crate::vault_cli::Plugin, override_bin: Option<&str>, probe: Option<Result<crate::vault_cli::Probe, String>>) -> Check {
-    use crate::vault_cli::{NEEDS_UPDATE, Plugin};
-    let name = "vault";
-    let shown = match (override_bin, plugin) {
-        (Some(bin), _) => Plugin::Enabled { id: format!("KEBBIE_VAULT_BIN={bin}"), version: "(in place of the plugin)".to_string(), root: PathBuf::new() },
-        (None, plugin) => plugin.clone(),
-    };
-    match (&shown, probe) {
-        (Plugin::Missing, _) => ok(name, "the vault plugin is not installed (optional): with it, kebbie keeps each task's note and the repos' logs in your Obsidian vault").with(one("kebbie setup vault")),
-        (Plugin::Disabled { id, version }, _) => ok(name, format!("{id} {version} is installed but disabled (optional), so kebbie keeps tasks without the vault")).with(one(format!("claude plugin enable {id}"))),
-        (Plugin::Enabled { id, version, .. }, None) => warn(name, format!("{id} {version} has no notes-vault-mcp command in its hooks, so kebbie cannot reach the vault"), vec![NEEDS_UPDATE.to_string(), "or set [vault] command in the machine config".to_string()]),
-        (Plugin::Enabled { id, version, .. }, Some(Err(error))) => warn(name, format!("{id} {version}: the vault command failed ({error}), so kebbie keeps tasks without the vault"), one("check that uvx runs, or set [vault] command in the machine config")),
-        (Plugin::Enabled { id, version, .. }, Some(Ok(probe))) if !probe.configured => warn(name, format!("{id} {version} is installed but no vault is configured"), vec![format!("claude plugin configure {id} shows its options: vault_path for a local folder, or the s3_ ones"), "kebbie setup vault walks through it".to_string()]),
-        (Plugin::Enabled { id, version, .. }, Some(Ok(probe))) if !probe.tasks => warn(name, format!("{id} {version} (notes-vault-mcp {}) is older than the task and log commands: the vault is read-only to kebbie, so tasks get no notes and pushes no log lines", probe.version), one(NEEDS_UPDATE)),
-        (Plugin::Enabled { id, version, .. }, Some(Ok(probe))) if probe.writable == Some(false) => warn(name, format!("{id} {version}: the {} vault is not writable, so kebbie keeps tasks without it", probe.backend), one("check the vault folder's permissions or the S3 key's write access")),
-        (Plugin::Enabled { id, version, .. }, Some(Ok(probe))) if !probe.claims => warn(name, format!("{id} {version} (notes-vault-mcp {}) is too old for cross-machine claims: tasks get notes and logs, but kebbie on another machine sharing this vault cannot see which machine works on a note", probe.version), one(NEEDS_UPDATE)),
-        (Plugin::Enabled { id, version, .. }, Some(Ok(probe))) => ok(name, format!("{id} {version} (notes-vault-mcp {}, {}): each task gets a note claimed for this machine, edits wait for its Problem, pushes are logged, done closes it", probe.version, probe.backend)),
+// The [vault] command line doctor offers: the package's new name, or the command the plugin bridge runs, so kebbie reaches the vault without the Claude plugin.
+pub fn suggested_command(command: &[String], origin: crate::vault_cli::Origin, probe: Option<&crate::vault_cli::Probe>) -> Option<String> {
+    use crate::vault_cli::Origin;
+    if origin == Origin::Env {
+        return None;
     }
+    match probe.and_then(|probe| crate::vault_cli::renamed(command, probe)) {
+        Some(renamed) => Some(renamed.join(" ")),
+        None => (origin == Origin::PluginHooks).then(|| command.join(" ")),
+    }
+}
+
+fn identity(probe: &crate::vault_cli::Probe) -> String {
+    let name = if probe.name.is_empty() { "the vault" } else { probe.name.as_str() };
+    let read = if probe.contract.is_none() { ", read from its status and help as it answers no about --json yet" } else { "" };
+    format!("{name} {}{read}", probe.version)
+}
+
+fn newer_vault(origin: crate::vault_cli::Origin, probe: &crate::vault_cli::Probe) -> Vec<String> {
+    match origin {
+        crate::vault_cli::Origin::PluginHooks => vec![crate::vault_cli::NEEDS_UPDATE.to_string(), "or set [vault] command in the machine config to a newer vault".to_string()],
+        _ => one(format!("point [vault] command at a newer {}", if probe.name.is_empty() { "vault" } else { probe.name.as_str() })),
+    }
+}
+
+// Optional: without a vault command kebbie keeps its own backlog and state, so none is no gap; KEBBIE_VAULT_BIN stands in for the command as it does for detect().
+pub fn vault(plugin: &crate::vault_cli::Plugin, command: Option<&(Vec<String>, crate::vault_cli::Origin)>, probe: Option<Result<crate::vault_cli::Probe, String>>) -> Check {
+    use crate::vault_cli::{Origin, Plugin};
+    let name = "vault";
+    let Some((command, origin)) = command else {
+        return match plugin {
+            Plugin::Enabled { id, version, .. } => warn(name, format!("{id} {version} names no vault command kebbie can run"), vec!["kebbie setup finds the vault commands on this machine and asks which to use".to_string(), "or set [vault] command in the machine config".to_string()]),
+            _ => ok(name, "no [vault] command (optional): with one, kebbie keeps each task's note and the repos' logs in your notes vault, whatever agent runs the task").with(one("kebbie setup finds the vault commands on this machine and asks which to use")),
+        };
+    };
+    let shown = command.join(" ");
+    let who = match (origin, plugin) {
+        (Origin::Env, _) => format!("KEBBIE_VAULT_BIN={shown}"),
+        (Origin::Config, _) => format!("[vault] command \"{shown}\""),
+        (Origin::PluginHooks, Plugin::Enabled { id, version, .. }) => format!("{id} {version}'s \"{shown}\""),
+        (Origin::PluginHooks, _) => format!("\"{shown}\""),
+    };
+    let probe = match probe {
+        None => return warn(name, format!("{who} was not run"), Vec::new()),
+        Some(Err(error)) => return warn(name, format!("{who} failed ({error}), so kebbie keeps tasks without the vault"), vec![format!("check that it runs: {shown} about --json"), "or kebbie setup to pick another vault command".to_string()]),
+        Some(Ok(probe)) => probe,
+    };
+    let suggested = suggested_command(command, *origin, Some(&probe));
+    let label = identity(&probe);
+    match () {
+        _ if !probe.speaks() => warn(name, format!("{who} answers contract {}, and this kebbie reads contract {}, so it keeps tasks without the vault", probe.contract.unwrap_or_default(), crate::vault_cli::CONTRACT), one("kebbie update")),
+        _ if !probe.configured => warn(name, format!("{who} ({label}) answers, but no vault is configured"), vec![format!("{shown} status says what it is missing"), "kebbie setup vault walks through a folder or an S3 bucket for the Claude vault plugin".to_string()]),
+        _ if !probe.can(crate::vault_cli::TASKS) => warn(name, format!("{who} ({label}) states no tasks capability: the vault is read-only to kebbie, so tasks get no notes and pushes no log lines"), newer_vault(*origin, &probe)),
+        _ if probe.writable == Some(false) => warn(name, format!("{who}: the {} vault is not writable, so kebbie keeps tasks without it", probe.backend), one("check the vault folder's permissions or the S3 key's write access")),
+        _ if suggested.is_some() && *origin == Origin::Config => warn(name, format!("{who} runs {label}, the package's new name"), vec![format!("set [vault] command = \"{}\" in the machine config", suggested.unwrap_or_default()), "kebbie doctor --fix writes it after your yes".to_string()]),
+        _ if !probe.claims() => warn(name, format!("{who} ({label}) is too old for cross-machine claims: tasks get notes and logs, but kebbie on another machine sharing this vault cannot see which machine works on a note"), newer_vault(*origin, &probe)),
+        _ => {
+            let found = ok(name, format!("{who}: {label}, {}, states {}: each task gets a note claimed for this machine, edits wait for its Problem, pushes are logged, done closes it", probe.backend, probe.capabilities.join(", ")));
+            match suggested {
+                Some(line) => found.with(vec![format!("set [vault] command = \"{line}\" in the machine config, so kebbie reaches the vault without the Claude plugin"), "kebbie doctor --fix writes it after your yes".to_string()]),
+                None => found,
+            }
+        }
+    }
+}
+
+fn vault_suggestion() -> Option<String> {
+    let plugin = crate::vault_cli::plugin(&crate::agent::claude::home().unwrap_or_default());
+    let env_bin = std::env::var(crate::vault_cli::BIN_VAR).ok().filter(|bin| !bin.is_empty());
+    let (command, origin) = crate::vault_cli::command(env_bin, crate::vault_cli::configured(), &plugin)?;
+    let probe = crate::vault_cli::Cli::new(command.clone()).probe(false).ok();
+    suggested_command(&command, origin, probe.as_ref())
+}
+
+// kebbie doctor --fix: the suggested [vault] command, written to kebbie's own config only on a yes; without a terminal it is only shown.
+pub fn vault_fix(suggested: Option<String>, config: &Path, ask: Option<&mut dyn FnMut(&str) -> bool>) -> Option<String> {
+    let line = suggested?;
+    let question = format!("Set [vault] command = \"{line}\" in {}?", config.display());
+    let Some(ask) = ask else { return Some(format!("{question} Run kebbie doctor --fix in a terminal, or set it yourself.")) };
+    if !ask(&question) {
+        return Some("[vault] command stays as it is.".to_string());
+    }
+    Some(match crate::config_edit::write(config, true, false, |text| crate::config_edit::set(text, "vault.command", &crate::config_edit::Set::Text(line.clone()))) {
+        Ok(()) => format!("[vault] command = \"{line}\" in {}", config.display()),
+        Err(error) => format!("[vault] command not written: {error}"),
+    })
 }
 
 // The phone and the other machines on the vault show this name, so a name nobody chose is worth one warning.
@@ -832,10 +901,10 @@ pub fn checks(env: &Env) -> Vec<Check> {
     checks.push(sandbox(&settings.sandbox, &crate::sandbox::missing_here()));
     let plugin = crate::vault_cli::plugin(&env.claude_dir);
     let override_bin = std::env::var(crate::vault_cli::BIN_VAR).ok().filter(|bin| !bin.is_empty());
-    let reachable = override_bin.is_some() || matches!(plugin, crate::vault_cli::Plugin::Enabled { .. });
-    let command = crate::vault_cli::command(override_bin.clone(), settings.vault_command.value.clone(), &plugin).filter(|_| reachable);
+    let command = crate::vault_cli::command(override_bin, settings.vault_command.value.clone(), &plugin);
     let reached = command.is_some();
-    checks.push(vault(&plugin, override_bin.as_deref(), command.map(|command| crate::vault_cli::Cli::new(command).probe(true))));
+    let probe = command.as_ref().map(|(command, _)| crate::vault_cli::Cli::new(command.clone()).probe(true));
+    checks.push(vault(&plugin, command.as_ref(), probe));
     if reached || crate::hub::identity::load(&env.kebbie_state).ok().flatten().is_some() {
         checks.push(machine_name(&settings.machine_name, &env.config));
     }
@@ -1261,7 +1330,8 @@ mod tests {
         let files = |file: &Path| (file == Path::new("/plugins/vault/1.0/.mcp.json")).then(|| r#"{"mcpServers":{"vault":{"command":"uvx","args":["notes-vault-mcp"]}}}"#.to_string());
         assert_eq!(vault_plugin(Some(&installed), files).as_deref(), Some("vault@gronare"));
         assert_eq!(vault_plugin(Some(&installed), |_| None), None, "a vault plugin of some other server is not this one");
-        assert_eq!(vault_plugin(Some(&json!({ "plugins": { "vault@notes-vault-mcp": [] } })), |_| None).as_deref(), Some("vault@notes-vault-mcp"));
+        let other = |file: &Path| (file == Path::new("/plugins/vault/1.0/.mcp.json")).then(|| r#"{"mcpServers":{"notes":{"command":"uvx","args":["mindin"]}}}"#.to_string());
+        assert_eq!(vault_plugin(Some(&installed), other), None, "the server is found by its name in .mcp.json, not by the package it runs");
         assert_eq!(vault_plugin(None, files), None);
         assert_eq!(linear_mcp(Some(&json!({ "plugins": { "linear@claude-plugins": [] } })), None).as_deref(), Some("the plugin linear@claude-plugins"));
         assert_eq!(linear_mcp(None, Some(&json!({ "mcpServers": { "Linear": {} } }))).as_deref(), Some("the MCP server Linear"));
@@ -1287,29 +1357,84 @@ mod tests {
         assert!(unset.fix[1].contains("/kebbie:configure"), "{unset:?}");
     }
 
+    fn vault_probe(configured: bool, tasks: bool, writable: Option<bool>) -> crate::vault_cli::Probe {
+        let capabilities = if tasks { vec!["tasks".to_string(), "log".to_string(), "claims".to_string()] } else { Vec::new() };
+        crate::vault_cli::Probe { configured, writable, version: "0.5.1".to_string(), backend: "s3".to_string(), name: "notes-vault-mcp".to_string(), capabilities, ..crate::vault_cli::Probe::default() }
+    }
+
+    fn words(text: &str) -> Vec<String> {
+        text.split(' ').map(str::to_string).collect()
+    }
+
     #[test]
-    fn the_vault_plugin_is_optional_and_an_old_one_reads_as_read_only() {
-        use crate::vault_cli::{Plugin, Probe};
+    fn the_vault_command_is_optional_and_an_old_one_reads_as_read_only() {
+        use crate::vault_cli::{Origin, Plugin};
         let missing = vault(&Plugin::Missing, None, None);
-        assert_eq!(missing.level, Level::Ok, "a user without the vault plugin sees no error");
-        assert!(missing.fact.contains("(optional)") && missing.fix == ["kebbie setup vault"], "{missing:?}");
+        assert_eq!(missing.level, Level::Ok, "a user without a vault command sees no error");
+        assert!(missing.fact.contains("(optional)") && missing.fix[0].starts_with("kebbie setup"), "{missing:?}");
         let enabled = Plugin::Enabled { id: "vault@gronare".to_string(), version: "0.2.15".to_string(), root: "/x".into() };
-        let probe = |configured: bool, tasks: bool, writable: Option<bool>| Some(Ok(Probe { configured, writable, tasks, claims: tasks, version: "0.5.1".to_string(), backend: "s3".to_string() }));
-        let old = vault(&enabled, None, probe(true, false, Some(true)));
+        let bridged = (words("uvx notes-vault-mcp==0.5.1"), Origin::PluginHooks);
+        let probe = |configured: bool, tasks: bool, writable: Option<bool>| Some(Ok(vault_probe(configured, tasks, writable)));
+        let old = vault(&enabled, Some(&bridged), probe(true, false, Some(true)));
         assert_eq!(old.level, Level::Warn);
-        assert!(old.fact.contains("read-only") && old.fix == ["claude plugin update vault@gronare"], "{old:?}");
-        assert!(vault(&enabled, None, probe(false, true, None)).fact.contains("no vault is configured"));
-        assert!(vault(&enabled, None, probe(true, true, Some(false))).fact.contains("not writable"));
-        assert_eq!(vault(&enabled, None, probe(true, true, Some(true))).level, Level::Ok);
+        assert!(old.fact.contains("read-only") && old.fix[0] == "claude plugin update vault@gronare", "{old:?}");
+        assert!(vault(&enabled, Some(&bridged), probe(false, true, None)).fact.contains("no vault is configured"));
+        assert!(vault(&enabled, Some(&bridged), probe(true, true, Some(false))).fact.contains("not writable"));
+        let fine = vault(&enabled, Some(&bridged), probe(true, true, Some(true)));
+        assert_eq!(fine.level, Level::Ok);
+        assert_eq!(fine.fix, ["set [vault] command = \"uvx notes-vault-mcp==0.5.1\" in the machine config, so kebbie reaches the vault without the Claude plugin", "kebbie doctor --fix writes it after your yes"], "the plugin bridge suggests kebbie's own line");
         assert_eq!(vault(&Plugin::Disabled { id: "vault@gronare".to_string(), version: "0.2.15".to_string() }, None, None).level, Level::Ok);
-        assert_eq!(vault(&enabled, None, Some(Err("uvx: not found".to_string()))).level, Level::Warn);
-        let stood_in = vault(&Plugin::Missing, Some("/tmp/fake-vault"), probe(true, true, Some(true)));
-        assert_eq!(stood_in.level, Level::Ok, "KEBBIE_VAULT_BIN stands in for a missing plugin, as detect() lets it: {stood_in:?}");
-        assert!(stood_in.fact.contains("KEBBIE_VAULT_BIN=/tmp/fake-vault") && stood_in.fact.contains("each task gets a note"), "{stood_in:?}");
-        assert!(vault(&Plugin::Missing, Some("/tmp/fake-vault"), Some(Err("no such file".to_string()))).fact.contains("the vault command failed"));
-        let unclaimed = vault(&enabled, None, Some(Ok(Probe { configured: true, writable: Some(true), tasks: true, claims: false, version: "0.7.0".to_string(), backend: "s3".to_string() })));
+        assert_eq!(vault(&enabled, Some(&bridged), Some(Err("uvx: not found".to_string()))).level, Level::Warn);
+        let stood_in = vault(&Plugin::Missing, Some(&(vec!["/tmp/fake-vault".to_string()], Origin::Env)), probe(true, true, Some(true)));
+        assert_eq!(stood_in.level, Level::Ok, "KEBBIE_VAULT_BIN stands in for the command, as detect() lets it: {stood_in:?}");
+        assert!(stood_in.fact.contains("KEBBIE_VAULT_BIN=/tmp/fake-vault") && stood_in.fact.contains("each task gets a note") && stood_in.fix.is_empty(), "{stood_in:?}");
+        assert!(vault(&Plugin::Missing, Some(&(vec!["/tmp/fake-vault".to_string()], Origin::Env)), Some(Err("no such file".to_string()))).fact.contains("failed (no such file)"));
+        let unclaimed = vault(&enabled, Some(&bridged), Some(Ok(crate::vault_cli::Probe { capabilities: vec!["tasks".to_string(), "log".to_string()], version: "0.7.0".to_string(), ..vault_probe(true, true, Some(true)) })));
         assert_eq!(unclaimed.level, Level::Warn, "a server without claims still keeps notes, and says once what it lacks");
-        assert!(unclaimed.fact.contains("too old for cross-machine claims") && unclaimed.fact.contains("notes-vault-mcp 0.7.0") && unclaimed.fix == ["claude plugin update vault@gronare"], "{unclaimed:?}");
+        assert!(unclaimed.fact.contains("too old for cross-machine claims") && unclaimed.fact.contains("notes-vault-mcp 0.7.0") && unclaimed.fix[0] == "claude plugin update vault@gronare", "{unclaimed:?}");
+    }
+
+    #[test]
+    fn a_configured_vault_command_is_checked_by_its_contract_without_the_claude_plugin() {
+        use crate::vault_cli::{Origin, Plugin, Probe};
+        let configured = (words("uvx mindin"), Origin::Config);
+        let about = Probe { name: "mindin".to_string(), version: "0.14.0".to_string(), contract: Some(1), capabilities: words("tasks claims log snapshot"), ..vault_probe(true, true, None) };
+        let fine = vault(&Plugin::Missing, Some(&configured), Some(Ok(about.clone())));
+        assert_eq!(fine.level, Level::Ok, "{fine:?}");
+        assert_eq!(fine.fact, "[vault] command \"uvx mindin\": mindin 0.14.0, s3, states tasks, claims, log, snapshot: each task gets a note claimed for this machine, edits wait for its Problem, pushes are logged, done closes it");
+        assert!(fine.fix.is_empty());
+        let bridge = vault(&Plugin::Missing, Some(&configured), Some(Ok(vault_probe(true, true, None))));
+        assert!(bridge.fact.contains("read from its status and help as it answers no about --json yet"), "{bridge:?}");
+        let lacking = vault(&Plugin::Missing, Some(&configured), Some(Ok(Probe { capabilities: words("log"), ..about.clone() })));
+        assert_eq!(lacking.level, Level::Warn);
+        assert!(lacking.fact.contains("states no tasks capability") && lacking.fix == ["point [vault] command at a newer mindin"], "{lacking:?}");
+        let broken = vault(&Plugin::Missing, Some(&configured), Some(Err("uvx: not found".to_string())));
+        assert!(broken.fact.starts_with("[vault] command \"uvx mindin\" failed (uvx: not found)") && broken.fix[0] == "check that it runs: uvx mindin about --json", "{broken:?}");
+        let newer = vault(&Plugin::Missing, Some(&configured), Some(Ok(Probe { contract: Some(2), ..about.clone() })));
+        assert!(newer.level == Level::Warn && newer.fact.contains("answers contract 2") && newer.fix == ["kebbie update"], "{newer:?}");
+        let old_name = (words("uvx notes-vault-mcp==0.14.0"), Origin::Config);
+        let renamed = vault(&Plugin::Missing, Some(&old_name), Some(Ok(Probe { former_names: vec!["notes-vault-mcp".to_string()], ..about })));
+        assert_eq!(renamed.level, Level::Warn);
+        assert!(renamed.fact.contains("the package's new name") && renamed.fix == ["set [vault] command = \"uvx mindin==0.14.0\" in the machine config", "kebbie doctor --fix writes it after your yes"], "{renamed:?}");
+    }
+
+    #[test]
+    fn doctor_fix_writes_the_suggested_vault_command_only_on_a_yes() {
+        let dir = scratch("vault-fix");
+        let config = dir.join("config.toml");
+        std::fs::write(&config, "# mine\n[vault]\ncommand = \"uvx notes-vault-mcp==0.14.0\"\n").unwrap();
+        assert_eq!(vault_fix(None, &config, None), None);
+        let unasked = vault_fix(Some("uvx mindin==0.14.0".to_string()), &config, None).unwrap();
+        assert!(unasked.contains("Run kebbie doctor --fix in a terminal"), "{unasked}");
+        let mut no = |_: &str| false;
+        assert_eq!(vault_fix(Some("uvx mindin==0.14.0".to_string()), &config, Some(&mut no)).as_deref(), Some("[vault] command stays as it is."));
+        assert!(std::fs::read_to_string(&config).unwrap().contains("notes-vault-mcp"), "nothing is written without a yes");
+        let mut asked = Vec::new();
+        let mut yes = |question: &str| { asked.push(question.to_string()); true };
+        vault_fix(Some("uvx mindin==0.14.0".to_string()), &config, Some(&mut yes)).unwrap();
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), "# mine\n[vault]\ncommand = \"uvx mindin==0.14.0\"\n");
+        assert_eq!(asked, [format!("Set [vault] command = \"uvx mindin==0.14.0\" in {}?", config.display())]);
+        assert_eq!(suggested_command(&words("uvx notes-vault-mcp"), crate::vault_cli::Origin::Env, None), None, "KEBBIE_VAULT_BIN is never written over");
     }
 
     #[test]
