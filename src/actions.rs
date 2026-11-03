@@ -217,6 +217,28 @@ fn quoted_version(line: &str) -> Option<&str> {
     line.split('"').skip(1).step_by(2).find(|part| part.contains('.') && part.split('.').all(|piece| !piece.is_empty() && piece.chars().all(|character| character.is_ascii_digit())))
 }
 
+pub const PACKAGE: &str = "{package}";
+
+// The repo's own package name, as its manifest declares it: pyproject.toml's [project], Cargo.toml's [package], or package.json.
+pub fn package_name(repo: &Path) -> Option<String> {
+    let toml_name = |file: &str, table: &str| std::fs::read_to_string(repo.join(file)).ok()?.parse::<Table>().ok()?.get(table)?.get("name")?.as_str().map(str::to_string);
+    toml_name("pyproject.toml", "project").or_else(|| toml_name("Cargo.toml", "package")).or_else(|| {
+        let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(repo.join("package.json")).ok()?).ok()?;
+        manifest["name"].as_str().map(str::to_string)
+    })
+}
+
+// A marker naming {package} follows the manifest, so a renamed package needs no edit to its release action.
+fn resolved(repo: &Path, bump: &Bump) -> Result<Bump> {
+    match &bump.after {
+        Some(marker) if marker.contains(PACKAGE) => {
+            let name = package_name(repo).ok_or_else(|| format!("{}: after names {PACKAGE}, and the repo declares no package name in pyproject.toml, Cargo.toml or package.json", bump.file))?;
+            Ok(Bump { file: bump.file.clone(), after: Some(marker.replace(PACKAGE, &name)) })
+        }
+        _ => Ok(bump.clone()),
+    }
+}
+
 fn candidates<'a>(text: &'a str, bump: &Bump) -> Vec<(usize, &'a str)> {
     let lines = text.lines().enumerate();
     match &bump.after {
@@ -227,9 +249,9 @@ fn candidates<'a>(text: &'a str, bump: &Bump) -> Vec<(usize, &'a str)> {
 
 // The current version, from the first file to bump.
 pub fn current_version(repo: &Path, script: &Script) -> Option<String> {
-    let bump = script.bump.first()?;
+    let bump = resolved(repo, script.bump.first()?).ok()?;
     let text = std::fs::read_to_string(repo.join(&bump.file)).ok()?;
-    candidates(&text, bump).first().and_then(|(_, line)| quoted_version(line)).map(str::to_string)
+    candidates(&text, &bump).first().and_then(|(_, line)| quoted_version(line)).map(str::to_string)
 }
 
 pub fn next_patch(version: &str) -> String {
@@ -276,6 +298,7 @@ pub fn plan(script: &Script, repo: &Path, branch: &str, answers: &Answers) -> Re
             return Err(format!("{new} is already the version"));
         }
         for bump in &script.bump {
+            let bump = &resolved(repo, bump)?;
             let text = std::fs::read_to_string(repo.join(&bump.file)).map_err(|error| format!("{}: {error}", bump.file))?;
             let found: Vec<(usize, &str)> = candidates(&text, bump).into_iter().filter(|(_, line)| quoted_version(line) == Some(old.as_str())).collect();
             if found.is_empty() {
@@ -370,7 +393,7 @@ key = "R"
 title = "Release"
 about = "bump, commit, tag, push"
 ask = "version"
-bump = ["pyproject.toml", { file = "uv.lock", after = 'name = "notes-vault-mcp"' }]
+bump = ["pyproject.toml", { file = "uv.lock", after = 'name = "{package}"' }]
 commit = "{version}"
 tag = "v{version}"
 push = true
@@ -406,7 +429,7 @@ task = "Bump {plugin}'s pin to {version}; commit."
         assert_eq!(actions[0].key, 'R');
         assert_eq!(actions[0].asks, ["version"]);
         assert_eq!(actions[0].then, ["claude-plugins:bump-pin"]);
-        assert_eq!(release().bump[1], Bump { file: "uv.lock".to_string(), after: Some("name = \"notes-vault-mcp\"".to_string()) });
+        assert_eq!(release().bump[1], Bump { file: "uv.lock".to_string(), after: Some("name = \"{package}\"".to_string()) });
         assert!(release().push);
         assert_eq!(actions[1].id, "bump-pin");
         assert_eq!(actions[1].asks, ["plugin", "version"]);
@@ -510,14 +533,28 @@ task = "Bump {plugin}'s pin to {version}; commit."
     }
 
     #[test]
+    fn a_marker_naming_the_package_follows_the_name_in_the_manifest() {
+        let repo = scratch("package");
+        std::fs::write(repo.join("pyproject.toml"), "[project]\nname = \"mindin\"\nversion = \"0.5.0\"\n").unwrap();
+        std::fs::write(repo.join("uv.lock"), "[[package]]\nname = \"notes-vault-mcp\"\nversion = \"0.5.0\"\n\n[[package]]\nname = \"mindin\"\nversion = \"0.5.0\"\n").unwrap();
+        let steps = plan(&release(), &repo, "main", &vec![("version".to_string(), "0.5.1".to_string())]).unwrap();
+        assert_eq!(steps[1], Step::Edit { file: "uv.lock".to_string(), line: 6, old: "version = \"0.5.0\"".to_string(), new: "version = \"0.5.1\"".to_string() }, "the renamed package's line, not the old name's");
+        std::fs::write(repo.join("pyproject.toml"), "version = \"0.5.0\"\n").unwrap();
+        assert!(plan(&release(), &repo, "main", &vec![("version".to_string(), "0.5.1".to_string())]).unwrap_err().contains("declares no package name"));
+        std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"billing\"\n").unwrap();
+        assert_eq!(package_name(&repo).as_deref(), Some("billing"));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
     fn local_steps_edit_commit_and_tag_without_pushing() {
         let repo = scratch("run");
         let git = |args: &[&str]| crate::repo::git(&repo, args).unwrap();
         git(&["init", "--quiet", "-b", "main"]);
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
-        std::fs::write(repo.join("pyproject.toml"), "version = \"0.5.0\"\n").unwrap();
-        std::fs::write(repo.join("uv.lock"), "name = \"notes-vault-mcp\"\nversion = \"0.5.0\"\n").unwrap();
+        std::fs::write(repo.join("pyproject.toml"), "[project]\nname = \"app\"\nversion = \"0.5.0\"\n").unwrap();
+        std::fs::write(repo.join("uv.lock"), "name = \"app\"\nversion = \"0.5.0\"\n").unwrap();
         git(&["add", "."]);
         git(&["commit", "--quiet", "-m", "start"]);
         let mut script = release();
@@ -525,7 +562,7 @@ task = "Bump {plugin}'s pin to {version}; commit."
         let steps = plan(&script, &repo, "main", &vec![("version".to_string(), "0.5.1".to_string())]).unwrap();
         let done = run_local(&repo, &steps).unwrap();
         assert_eq!(done.len(), 5);
-        assert_eq!(std::fs::read_to_string(repo.join("pyproject.toml")).unwrap(), "version = \"0.5.1\"\n");
+        assert_eq!(std::fs::read_to_string(repo.join("pyproject.toml")).unwrap(), "[project]\nname = \"app\"\nversion = \"0.5.1\"\n");
         assert_eq!(git(&["log", "-1", "--format=%s"]), "0.5.1");
         assert_eq!(git(&["tag"]), "v0.5.1");
         assert_eq!(git(&["status", "--porcelain"]), "?? built");

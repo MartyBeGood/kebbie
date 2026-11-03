@@ -5,6 +5,7 @@ What each kebbie release brings, one line per change, as you would tell someone 
 ## Unreleased
 
 ### What's new
+- A release action's bump marker can name {package}, the repo's package name from pyproject.toml, Cargo.toml or package.json, so a renamed package keeps its release action
 - A Claude task is asked by the vault plugin to save what you or the lead told it once a few messages have gone without a vault write; it still skips the log check, since kebbie writes a task's log lines (needs the vault plugin release that brings this)
 
 ### Fixed

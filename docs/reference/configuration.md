@@ -287,7 +287,7 @@ Repo config only. Each table adds an action to the repo's row on the board's Are
 | `title` | string | What the board shows. |
 | `about` | string | A line under the title. |
 | `ask` | string or list | Values asked in turn, used as `{name}` in the other keys. A value named `version` is prefilled with the next patch version. |
-| `bump` | list | Files whose version lines change: a path, or `{ file = "<path>", after = "<marker>" }` to change only the first version line after the marker. |
+| `bump` | list | Files whose version lines change: a path, or `{ file = "<path>", after = "<marker>" }` to change only the first version line after the marker. `{package}` in a marker is the repo's package name from `pyproject.toml`, `Cargo.toml` or `package.json`. |
 | `run` | list of strings | Shell commands run in the main checkout after the bump. |
 | `commit` | string | The commit message to create. |
 | `tag` | string | The tag to create. |

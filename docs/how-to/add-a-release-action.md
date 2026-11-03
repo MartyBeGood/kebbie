@@ -37,6 +37,8 @@ The Areas page needs the vault. The main checkout must be on the default branch,
 
 7. Press `y` again to push.
 
+`after = 'name = "{package}"'` follows the package name in `pyproject.toml`, `Cargo.toml` or `package.json`, so a renamed package keeps its release action as it is.
+
 Every key: [`[[actions]]`](../reference/configuration.md#actions).
 
 ## Hand the rest to a task
