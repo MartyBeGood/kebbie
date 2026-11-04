@@ -5,6 +5,12 @@ What each kebbie release brings, one line per change, as you would tell someone 
 ## Unreleased
 
 ### What's new
+
+### Fixed
+
+## 0.34.0
+
+### What's new
 - kebbie setup is six steps: this machine, agents, vault, backlog, error signals and one review of every write, grouped by tool; each agent found shows its version, sign-in and plugin, and every ticked agent gets kebbie's plugin and approval rules without a question
 - The vault step of kebbie setup asks where the vault lives, your own server, an S3 bucket, a local folder or none, preselected from what the vault answers, and runs mindin setup for a new place as you apply, installing mindin first when no command on the machine can; the command kebbie runs is its own pick, shown once, and the vault reaches kebbie's [vault] command, the Claude vault plugin and Codex's config.toml, each listed on the review
 - kebbie setup --yes applies the guide's defaults, herdr's keys and each ticked agent's plugin and rules among them, printing every write; kebbie setup codex --yes also writes Codex's rules file and vault server
