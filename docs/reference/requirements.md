@@ -50,7 +50,41 @@ npm install -g @openai/codex
 
 ## What `kebbie doctor` checks
 
-Each line is `ok`, `skip`, `warn` or `fail`; `skip` is a check that got no answer, counted apart as not checked. Every `warn` and `fail` carries a `fix:` line for macOS and Linux. `kebbie doctor` exits non-zero when any line fails.
+In a terminal, `kebbie doctor` opens with its count, then **Needs you**: each check marked `!` (warn), `✗` (fail) or `?` (not checked), with its text and each fix as `→ …`. One line per group follows, `✓` when every check in it is ok, else its worst mark, with what the ok checks found:
+
+```text
+kebbie doctor                                                       45 ok · 2 to look at
+
+ Needs you
+  ! codex approvals  ~/.codex/rules/kebbie.rules is not the file this kebbie writes
+                     → kebbie setup codex
+  ! sandbox          off (task.sandbox = false): a task's shell commands run unsandboxed
+                     and can pass as you to kebbie's user-only commands
+                     → set task.sandbox = true (now from the machine config)
+
+ kebbie        ✓ main @ 1a2b3c4 · built from source · keeper running · on PATH
+ Claude Code   ✓ claude · signed in · plugin current · status line
+ Vault         ✓ mindin 0.13.0 · server · task notes · claims as laptop · backlog
+ Tools         ✓ git · jq · curl · nvim · tig · cargo
+
+ kebbie doctor --all shows every check
+```
+
+`kebbie doctor --all` lists every check under the same groups. The groups:
+
+| Group | Checks |
+| --- | --- |
+| kebbie | `updates`, `plugin binary`, `keeper`, `kebbie on PATH`, `current link`, `herdr link` |
+| Claude Code | `claude`, `claude login`, `claude plugin`, `claude plugin source`, `status line`, `claude model` |
+| Codex | every `codex …` check |
+| Vault | `vault`, `machine`, `backlog vault` |
+| herdr | `herdr`, `herdr plugin` |
+| Tools | `git`, `jq`, `curl`, `nvim`, `tig`, `cargo` |
+| Files | `config`, `repo config`, `state dir`, `task hooks`, `setup skill` |
+| Tasks | `sandbox`, `push block`, `setup command`, `task profile`, `profile`, `reviewer`, `docs`, `comments`, `backlog`, `backlog local`, `backlog linear` |
+| Signals | `maintainers`, `reports`, `hub`, `notify` |
+
+With `--plain`, without a terminal or with `NO_COLOR` set, each line is `ok`, `skip`, `warn` or `fail`, the check's name and its text; `skip` is a check that got no answer, counted apart as not checked. Every `warn` and `fail` carries a `fix:` line for macOS and Linux. `kebbie doctor` exits non-zero when any check fails.
 
 | Check | Looks at |
 | --- | --- |

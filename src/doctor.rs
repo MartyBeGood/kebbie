@@ -21,18 +21,30 @@ pub struct Check {
     pub name: String,
     pub fact: String,
     pub fix: Vec<String>,
+    pub brief: String,
+}
+
+impl Check {
+    pub fn new(level: Level, name: impl Into<String>, fact: impl Into<String>, fix: Vec<String>) -> Self {
+        Check { level, name: name.into(), fact: fact.into(), fix, brief: String::new() }
+    }
+
+    pub fn brief(mut self, brief: impl Into<String>) -> Self {
+        self.brief = brief.into();
+        self
+    }
 }
 
 fn ok(name: &str, fact: impl Into<String>) -> Check {
-    Check { level: Level::Ok, name: name.to_string(), fact: fact.into(), fix: Vec::new() }
+    Check::new(Level::Ok, name, fact, Vec::new())
 }
 
 fn warn(name: &str, fact: impl Into<String>, fix: Vec<String>) -> Check {
-    Check { level: Level::Warn, name: name.to_string(), fact: fact.into(), fix }
+    Check::new(Level::Warn, name, fact, fix)
 }
 
 fn fail(name: &str, fact: impl Into<String>, fix: Vec<String>) -> Check {
-    Check { level: Level::Fail, name: name.to_string(), fact: fact.into(), fix }
+    Check::new(Level::Fail, name, fact, fix)
 }
 
 fn both(mac: &str, linux: &str) -> Vec<String> {
@@ -98,10 +110,10 @@ pub fn tool(tool: &Tool, found: Option<&Path>, version_output: Option<&str>) -> 
         let fact = if tool.required { "not on PATH".to_string() } else { format!("not on PATH; needed for {}", tool.feature) };
         return missing(fact, both(tool.mac, tool.linux));
     };
-    let Some(min) = &tool.min else { return ok(tool.name, found.display().to_string()) };
+    let Some(min) = &tool.min else { return ok(tool.name, found.display().to_string()).brief(tool.name) };
     let want = version(min).unwrap_or_default();
     match version_output.and_then(version) {
-        Some(have) if at_least(&have, &want) => ok(tool.name, format!("{} at {}", shown(&have), found.display())),
+        Some(have) if at_least(&have, &want) => ok(tool.name, format!("{} at {}", shown(&have), found.display())).brief(if tool.name == "herdr" { shown(&have) } else { tool.name.to_string() }),
         Some(have) => missing(format!("{} is older than {min}, needed for {}", shown(&have), tool.feature), both(tool.mac, tool.linux)),
         None => missing(format!("cannot read the version from {} --version; need {min}", found.display()), both(tool.mac, tool.linux)),
     }
@@ -121,7 +133,7 @@ pub fn herdr_plugin(list: Option<&str>, channel: config::Channel) -> (Check, Opt
     let plugin = Plugin { enabled: found["enabled"] == true, root: PathBuf::from(found["plugin_root"].as_str().unwrap_or_default()) };
     let kebbie = crate::shown_version(channel, found["version"].as_str().unwrap_or("?"));
     let check = if plugin.enabled {
-        ok("herdr plugin", format!("{kebbie} enabled, at {}", plugin.root.display()))
+        ok("herdr plugin", format!("{kebbie} enabled, at {}", plugin.root.display())).brief("plugin enabled")
     } else {
         fail("herdr plugin", format!("{kebbie} is registered but disabled"), one("herdr plugin enable kebbie"))
     };
@@ -132,8 +144,8 @@ pub fn herdr_link(link: &crate::herdr_link::Link) -> Option<Check> {
     use crate::herdr_link::Link;
     match link {
         Link::Unregistered => None,
-        Link::Installed => Some(ok("herdr link", "installed with herdr plugin install, not linked from a checkout")),
-        Link::Linked(root) => Some(ok("herdr link", format!("linked from {}", root.display()))),
+        Link::Installed => Some(ok("herdr link", "installed with herdr plugin install, not linked from a checkout").brief("installed in herdr")),
+        Link::Linked(root) => Some(ok("herdr link", format!("linked from {}", root.display())).brief("linked in herdr")),
         Link::Gone { linked, target: Some(target) } => Some(fail("herdr link", format!("herdr links kebbie from {}, which is gone, so its startup starts neither the board nor the keeper", linked.display()), vec![
             format!("kebbie doctor --fix links it again from {} and starts both; a running keeper does it within the hour", target.display()),
             format!("or herdr plugin unlink kebbie && herdr plugin link {}", target.display()),
@@ -144,19 +156,28 @@ pub fn herdr_link(link: &crate::herdr_link::Link) -> Option<Check> {
 
 pub fn updates(state: &Path, channel: crate::config::Channel, installed: &[crate::update_check::Component]) -> Check {
     let (latest, fact) = crate::update_check::doctor_line(state, channel, installed);
-    let check = ok("updates", fact);
-    let fix = if crate::release::read_override(state).is_some() { "kebbie update --stable" } else { "kebbie update" };
+    let running = crate::release::read_override(state);
+    let check = ok("updates", fact).brief(running.as_ref().map_or_else(|| running_brief(channel), crate::release::Override::brief));
+    let fix = if running.is_some() { "kebbie update --stable" } else { "kebbie update" };
     if latest { check } else { check.with(one(fix)) }
+}
+
+fn running_brief(channel: crate::config::Channel) -> String {
+    let number = crate::shown_number(channel, env!("CARGO_PKG_VERSION"));
+    match env!("KEBBIE_BUILT_FROM").split(' ').next().filter(|sha| !sha.is_empty()) {
+        Some(sha) => format!("{number} @ {sha}"),
+        None => number,
+    }
 }
 
 pub fn keeper(enabled: bool, running: Option<&crate::keeper::Holder>, now: u64) -> Check {
     match (enabled, running) {
-        (false, None) => ok("keeper", "off ([keeper] enabled = false): an open board runs the routines"),
+        (false, None) => ok("keeper", "off ([keeper] enabled = false): an open board runs the routines").brief("keeper off"),
         (false, Some(_)) => warn("keeper", "off in config.toml, but one still runs", one("kebbie keeper --stop")),
         (true, Some(running)) => {
             let pid = running.pid.map_or("?".to_string(), |pid| pid.to_string());
             let up = running.started.map_or(String::new(), |started| format!(", up {}", crate::keeper::span(now.saturating_sub(started))));
-            ok("keeper", format!("running, pid {pid}{up}; kebbie keeper --status shows its routines"))
+            ok("keeper", format!("running, pid {pid}{up}; kebbie keeper --status shows its routines")).brief("keeper running")
         }
         (true, None) => warn("keeper", "not running, so stale sessions, held messages and typed prompts wait for an open board", one("kebbie keeper --start (herdr's startup and the board start it too)")),
     }
@@ -165,7 +186,7 @@ pub fn keeper(enabled: bool, running: Option<&crate::keeper::Holder>, now: u64) 
 pub fn sandbox(on: &Setting<bool>, missing: &[String]) -> Check {
     match (on.value, missing.is_empty()) {
         (false, _) => warn("sandbox", crate::sandbox::OFF, one(format!("set task.sandbox = true (now from the {})", on.layer.label()))),
-        (true, true) => ok("sandbox", "on: a task's shell writes only in its worktree and the folders it is given, reaches only the allowed hosts and no Unix socket, and kebbie refuses its user-only commands to a sandboxed process"),
+        (true, true) => ok("sandbox", "on: a task's shell writes only in its worktree and the folders it is given, reaches only the allowed hosts and no Unix socket, and kebbie refuses its user-only commands to a sandboxed process").brief("sandbox on"),
         (true, false) => fail("sandbox", format!("on, but this machine cannot sandbox a task's shell fully, so kebbie starts no task: {} missing", missing.join(", ")), crate::sandbox::fixes(missing).into_iter().chain([format!("or set task.sandbox = false in {}", config::path().display())]).collect()),
     }
 }
@@ -173,7 +194,7 @@ pub fn sandbox(on: &Setting<bool>, missing: &[String]) -> Check {
 pub fn plugin_binary(root: &Path) -> Check {
     let binary = root.join("target/release/kebbie");
     match crate::update::binary_origin(root).filter(|_| binary.is_file()) {
-        Some(origin) => ok("plugin binary", format!("{}, {}", binary.display(), origin.describe())),
+        Some(origin) => ok("plugin binary", format!("{}, {}", binary.display(), origin.describe())).brief(origin.describe()),
         None => fail("plugin binary", format!("{} is missing", binary.display()), one(format!("sh {} in {} (herdr runs it on install and update)", crate::update::BUILD_SCRIPT, root.display()))),
     }
 }
@@ -181,7 +202,7 @@ pub fn plugin_binary(root: &Path) -> Check {
 pub fn cargo(tool: &Tool, found: Option<&Path>, channel: crate::config::Channel, origin: Option<&crate::update::Origin>) -> Check {
     let downloaded = matches!(origin, Some(crate::update::Origin::Downloaded { .. }));
     match found {
-        None if downloaded && channel == crate::config::Channel::Release => ok("cargo", "not on PATH, not needed: each release installs its prebuilt binary"),
+        None if downloaded && channel == crate::config::Channel::Release => ok("cargo", "not on PATH, not needed: each release installs its prebuilt binary").brief("no cargo needed"),
         None => warn("cargo", "not on PATH; needed for the main channel and kebbie update --from", both(tool.mac, tool.linux)),
         Some(found) => self::tool(tool, Some(found), None),
     }
@@ -190,9 +211,9 @@ pub fn cargo(tool: &Tool, found: Option<&Path>, channel: crate::config::Channel,
 // No answer from the agent is never read as logged out.
 pub fn login(name: &str, signed: Login, fix: &str, why: &str) -> Check {
     match signed {
-        Login::In => ok(name, "logged in"),
+        Login::In => ok(name, "logged in").brief("signed in"),
         Login::Out => warn(name, format!("not logged in, so {why}"), one(fix)),
-        Login::Unknown => Check { level: Level::Skip, name: name.to_string(), fact: "login not checked: no answer to its status command".to_string(), fix: Vec::new() },
+        Login::Unknown => Check::new(Level::Skip, name, "login not checked: no answer to its status command", Vec::new()),
     }
 }
 
@@ -218,14 +239,14 @@ pub fn claude_plugin(installed: Option<&Value>, settings: &Value, checkout: Opti
         };
         return warn("claude plugin", behind, one("kebbie update"));
     }
-    ok("claude plugin", format!("{id} {shown}"))
+    ok("claude plugin", format!("{id} {shown}")).brief("plugin current")
 }
 
 pub fn plugin_source(source: &crate::update::Marketplace, channel: crate::config::Channel) -> Check {
     use crate::update::Marketplace;
     match (source, channel) {
-        (Marketplace::InPlace(path), _) => ok("claude plugin source", format!("loaded in place from {}", path.display())),
-        (Marketplace::Git, crate::config::Channel::Main) => ok("claude plugin source", "GitHub, following the default branch like this machine's main channel"),
+        (Marketplace::InPlace(path), _) => ok("claude plugin source", format!("loaded in place from {}", path.display())).brief("plugin in place"),
+        (Marketplace::Git, crate::config::Channel::Main) => ok("claude plugin source", "GitHub, following the default branch like this machine's main channel").brief("plugin from GitHub"),
         (Marketplace::Git, crate::config::Channel::Release) => warn("claude plugin source", "GitHub, following the default branch, while this machine follows release tags; kebbie update leaves it as it is", one(crate::update::IN_PLACE_FIX)),
     }
 }
@@ -243,7 +264,7 @@ pub fn current_link(home: &Path, data_home: Option<&Path>, plugin_root: Option<&
     let Ok(target) = link.canonicalize() else { return fail("current link", format!("{} points nowhere", link.display()), start) };
     match plugin_root.map(|root| root.canonicalize().unwrap_or_else(|_| root.to_path_buf())) {
         Some(root) if root != target => warn("current link", format!("{} points at {}, herdr's kebbie is at {}", link.display(), target.display(), root.display()), one("restart herdr so its startup relinks it")),
-        _ => ok("current link", format!("{} → {}", link.display(), target.display())),
+        _ => ok("current link", format!("{} → {}", link.display(), target.display())).brief("current link"),
     }
 }
 
@@ -258,7 +279,7 @@ pub fn kebbie_on_path(home: &Path, path: &[PathBuf]) -> Check {
     };
     let resolved = found.canonicalize().unwrap_or_else(|_| found.clone());
     match current.canonicalize() {
-        Ok(binary) if binary == resolved => ok(ON_PATH, format!("{} → {}", found.display(), binary.display())),
+        Ok(binary) if binary == resolved => ok(ON_PATH, format!("{} → {}", found.display(), binary.display())).brief("on PATH"),
         _ => warn(ON_PATH, format!("{} resolves to {}, not {}", found.display(), resolved.display(), current.display()), one(format!("remove {} or put ~/.local/bin ahead of it on PATH, then {LINK_KEBBIE}", found.display()))),
     }
 }
@@ -289,7 +310,7 @@ pub fn writable(path: &Path, about: &str, uid: u32) -> Check {
     let mine = meta.uid() == uid;
     if (mine && meta.mode() & 0o200 != 0) || meta.mode() & 0o002 != 0 {
         let fact = if existing == path { format!("{} ({about})", path.display()) } else { format!("{} ({about}) is created on first use in {}", path.display(), existing.display()) };
-        return ok(name, fact);
+        return ok(name, fact).brief("state dir");
     }
     if mine {
         return fail(name, format!("{} ({about}): {} is not writable", path.display(), existing.display()), one(format!("chmod u+w {}", existing.display())));
@@ -301,8 +322,8 @@ pub fn writable(path: &Path, about: &str, uid: u32) -> Check {
 pub fn config_file(path: &Path) -> (Check, Option<Machine>) {
     match config::check_machine(path) {
         Ok((config, unknown)) if !unknown.is_empty() => (warn("config", unknown.join("; "), one(config::UNKNOWN_FIX)), Some(config)),
-        Ok((config, _)) if path.exists() => (ok("config", format!("{} parses", path.display())), Some(config)),
-        Ok((config, _)) => (ok("config", format!("{} not found; every machine setting is its default", path.display())), Some(config)),
+        Ok((config, _)) if path.exists() => (ok("config", format!("{} parses", path.display())).brief("config"), Some(config)),
+        Ok((config, _)) => (ok("config", format!("{} not found; every machine setting is its default", path.display())).brief("default config"), Some(config)),
         Err(error) => (fail("config", error, one("fix that key; kebbie config shows the result")), None),
     }
 }
@@ -317,9 +338,9 @@ pub fn repo_file(path: &Path) -> (Check, Option<Worktree>) {
         Ok((worktree, unknown)) if path.exists() => match crate::actions::load_from(path).1 {
             errors if !errors.is_empty() => (fail(name, errors.join("; "), fix()), Some(worktree)),
             _ if !unknown.is_empty() => (warn(name, unknown.join("; "), one(config::UNKNOWN_FIX)), Some(worktree)),
-            _ => (ok(name, format!("{shown} parses")), Some(worktree)),
+            _ => (ok(name, format!("{shown} parses")).brief("repo config"), Some(worktree)),
         },
-        Ok((worktree, _)) => (ok(name, format!("{shown}; config.toml and the defaults apply")), Some(worktree)),
+        Ok((worktree, _)) => (ok(name, format!("{shown}; config.toml and the defaults apply")).brief("repo config"), Some(worktree)),
         Err(error) => (fail(name, format!("{shown}: {error}"), fix()), None),
     }
 }
@@ -350,7 +371,7 @@ pub fn task_profiles(profiles_dir: &Path, named: &[(String, String)]) -> Option<
     let missing: Vec<String> = named.iter().filter(|(_, profile)| !names.contains(profile)).map(|(file, profile)| format!("task.profile = \"{profile}\" in {file} names no profile")).collect();
     if missing.is_empty() {
         let set: Vec<String> = named.iter().map(|(file, profile)| format!("\"{profile}\" in {file}")).collect();
-        return Some(ok("task profile", format!("task.profile names a profile there is: {}", set.join(", "))));
+        return Some(ok("task profile", format!("task.profile names a profile there is: {}", set.join(", "))).brief("task profile"));
     }
     Some(warn("task profile", format!("{}; the profiles are {}", missing.join("; "), names.join(", ")), one("pick it on the Settings page (,) under Tasks")))
 }
@@ -384,10 +405,10 @@ pub fn setup_skill(skill: &Setting<String>, installed: Option<&Value>, settings:
     let name = "setup skill";
     let shown = format!("{} ({})", skill.value, skill.layer.label());
     if let Some(path) = config::skill_path(&skill.value) {
-        return if path.is_file() { ok(name, format!("{shown}: a file a task reads")) } else { warn(name, format!("{shown}: no file at {}, so a task sets its worktree up without it", path.display()), one("create the file, or set worktree.setup_skill to a skill or a file this machine has")) };
+        return if path.is_file() { ok(name, format!("{shown}: a file a task reads")).brief("setup skill") } else { warn(name, format!("{shown}: no file at {}, so a task sets its worktree up without it", path.display()), one("create the file, or set worktree.setup_skill to a skill or a file this machine has")) };
     }
     let Some((plugin, _)) = skill.value.split_once(':') else {
-        return ok(name, format!("{shown}: a user or project skill, not checked"));
+        return ok(name, format!("{shown}: a user or project skill, not checked")).brief("setup skill");
     };
     let other = "or set worktree.setup_skill to a skill this machine has".to_string();
     let found = installed.and_then(|installed| installed["plugins"].as_object()).into_iter().flatten().find(|(id, _)| id.split_once('@').map(|(id, _)| id) == Some(plugin));
@@ -404,7 +425,7 @@ pub fn setup_skill(skill: &Setting<String>, installed: Option<&Value>, settings:
         let version = entry.and_then(|entry| entry["version"].as_str()).unwrap_or("?");
         return warn(name, format!("{shown}: {id} {version} has no skill {skill_name}"), vec![format!("claude plugin update {id}"), other]);
     }
-    ok(name, format!("{shown}: {id}"))
+    ok(name, format!("{shown}: {id}")).brief("setup skill")
 }
 
 // Looks for the command's program in the main checkout and never runs it.
@@ -414,23 +435,23 @@ pub fn setup_command(command: &Setting<Option<String>>, repo: &Path) -> Option<C
     let shown = format!("{value:?} ({})", command.layer.label());
     let program = value.split_whitespace().next().unwrap_or(value);
     if !program.contains('/') {
-        return Some(ok(name, format!("{shown}: {program} is found on PATH when it runs, not checked")));
+        return Some(ok(name, format!("{shown}: {program} is found on PATH when it runs, not checked")).brief("setup command"));
     }
     let path = repo.join(program);
     let fix = format!("add {program} to the main checkout, or set worktree.setup_command to the repo's prepare command");
     Some(match std::fs::metadata(&path) {
-        Err(_) if command.layer == config::Layer::Machine => ok(name, format!("{shown}: this repo has no {program}, so kebbie's default setup runs here")),
+        Err(_) if command.layer == config::Layer::Machine => ok(name, format!("{shown}: this repo has no {program}, so kebbie's default setup runs here")).brief("default setup"),
         Err(_) => warn(name, format!("{shown}: {} not found, so the setup skill cannot run it", path.display()), one(fix)),
         Ok(meta) if !meta.is_file() || meta.mode() & 0o111 == 0 => warn(name, format!("{shown}: {} is not an executable file", path.display()), vec![format!("chmod +x {program}"), fix]),
-        Ok(_) => ok(name, format!("{shown}: {}", path.display())),
+        Ok(_) => ok(name, format!("{shown}: {}", path.display())).brief("setup command"),
     })
 }
 
 // Reports whether the key is set and never runs the command, so doctor sends nothing.
 pub fn notify(command: &Setting<Option<String>>) -> Check {
     match &command.value {
-        Some(value) => ok("notify", format!("notify.command {value:?} ({}): run when a task needs you or is ready, a question waits, or the lead notifies; failures go to notify.log in the state dir", command.layer.label())),
-        None => ok("notify", "notify.command not set, so kebbie sends no notifications; set [notify] command to a shell command to get them"),
+        Some(value) => ok("notify", format!("notify.command {value:?} ({}): run when a task needs you or is ready, a question waits, or the lead notifies; failures go to notify.log in the state dir", command.layer.label())).brief("notifications on"),
+        None => ok("notify", "notify.command not set, so kebbie sends no notifications; set [notify] command to a shell command to get them").brief("no notifications"),
     }
 }
 
@@ -441,7 +462,7 @@ pub const STATUS_LINE_COMMAND: &str = "~/.local/share/kebbie/current/target/rele
 pub fn status_line(settings: &Value) -> Check {
     let command = settings["statusLine"]["command"].as_str().unwrap_or_default();
     if command.contains("kebbie") && command.contains("statusline") {
-        return ok("status line", format!("{command:?} keeps the plan's usage for the board"));
+        return ok("status line", format!("{command:?} keeps the plan's usage for the board")).brief("status line");
     }
     let fact = if command.is_empty() { "no statusLine command in Claude Code's settings, so the board shows no plan usage".to_string() } else { format!("statusLine runs {command:?}, so the board shows no plan usage") };
     let fix = if command.is_empty() { format!("add to ~/.claude/settings.json: {STATUS_LINE}") } else { "have your statusLine command pipe its stdin to `kebbie statusline` as well (it prints nothing, so your line stays as it is), or use kebbie's, which shows no line: ".to_string() + STATUS_LINE };
@@ -450,7 +471,7 @@ pub fn status_line(settings: &Value) -> Check {
 
 pub fn push_block(repo: &Path) -> Check {
     match crate::push_block::unsupported(repo) {
-        Ok(None) => ok("push block", format!("task worktrees of {} block git push", repo.display())),
+        Ok(None) => ok("push block", format!("task worktrees of {} block git push", repo.display())).brief("push block"),
         Ok(Some(why)) => warn("push block", why, one("move core.worktree, or core.bare = true, from the shared config into the main worktree's config.worktree, then restart the repo's tasks")),
         Err(error) => warn("push block", error, Vec::new()),
     }
@@ -459,7 +480,7 @@ pub fn push_block(repo: &Path) -> Check {
 // Task sessions whose hooks run a kebbie binary that is gone, so their test runs and edits go unrecorded.
 pub fn task_hooks(sessions: &[String]) -> Check {
     if sessions.is_empty() {
-        return ok("task hooks", "every open task's hooks run a kebbie that is there");
+        return ok("task hooks", "every open task's hooks run a kebbie that is there").brief("task hooks");
     }
     warn("task hooks", format!("the hooks of {} run a kebbie that is gone, so their test runs and edits go unrecorded", sessions.join(", ")), one("kebbie restart (a busy session restarts once it is idle; the restart writes its settings again)"))
 }
@@ -509,10 +530,10 @@ fn gh_on(path: &[PathBuf]) -> Option<PathBuf> {
 
 pub fn docs(required: &Setting<bool>, visibility: impl FnOnce() -> Option<String>, repo_config: &Path) -> Option<Check> {
     if required.value {
-        return Some(ok("docs", format!("docs.required is on ({}): the reviewer fails a branch that changes what a user sees or does and documents nothing", required.layer.label())));
+        return Some(ok("docs", format!("docs.required is on ({}): the reviewer fails a branch that changes what a user sees or does and documents nothing", required.layer.label())).brief("docs required"));
     }
     (visibility().as_deref() == Some("public")).then(|| {
-        ok("docs", "this repo is public on GitHub and docs.required is off, so nothing holds a change that leaves its README and docs/ behind")
+        ok("docs", "this repo is public on GitHub and docs.required is off, so nothing holds a change that leaves its README and docs/ behind").brief("docs not required")
             .with(one(format!("to turn it on, add [docs] required = true to {}", repo_config.display())))
     })
 }
@@ -520,26 +541,29 @@ pub fn docs(required: &Setting<bool>, visibility: impl FnOnce() -> Option<String
 // The same requirement and the same reasons as CI watching.
 pub fn comments(watch: &Setting<bool>, days: u64, target: impl FnOnce() -> std::result::Result<String, String>) -> Check {
     if !watch.value {
-        return ok("comments", format!("comments.watch is off ({}): comments on pushed commits are not read", watch.layer.label()));
+        return ok("comments", format!("comments.watch is off ({}): comments on pushed commits are not read", watch.layer.label())).brief("comments not read");
     }
     match target() {
-        Ok(slug) => ok("comments", format!("on: kebbie reads colleagues' comments on the commits it pushes to {slug}, for {days} days after each push")),
+        Ok(slug) => ok("comments", format!("on: kebbie reads colleagues' comments on the commits it pushes to {slug}, for {days} days after each push")).brief("comments read"),
         Err(reason) => warn("comments", format!("on, but comments here are not read: {reason}"), one("gh auth login, with origin on GitHub")),
     }
 }
 
 pub fn backlog(sources: &[Source], vault_source: impl Fn() -> Result<String, String>, local_file: &Path) -> Vec<Check> {
     if sources.is_empty() {
-        return vec![ok("backlog", "no source configured; set [board.backlog] sources to fill the board's Backlog tab")];
+        return vec![ok("backlog", "no source configured; set [board.backlog] sources to fill the board's Backlog tab").brief("no backlog source")];
     }
     sources.iter().map(|source| match source {
-        Source::Local if local_file.exists() => ok("backlog local", format!("{}: {} items", local_file.display(), crate::backlog_file::read(local_file).len())),
-        Source::Local => ok("backlog local", format!("{} is created by the first item (the board's a, or kebbie backlog add)", local_file.display())),
+        Source::Local if local_file.exists() => {
+            let items = crate::backlog_file::read(local_file).len();
+            ok("backlog local", format!("{}: {items} items", local_file.display())).brief(format!("{items} backlog items"))
+        }
+        Source::Local => ok("backlog local", format!("{} is created by the first item (the board's a, or kebbie backlog add)", local_file.display())).brief("local backlog"),
         Source::Vault => match vault_source() {
-            Ok(source) => ok("backlog vault", source),
+            Ok(source) => ok("backlog vault", source).brief("backlog"),
             Err(error) => warn("backlog vault", error, one("open a Claude session with the vault plugin once; the Areas page reads its index")),
         },
-        Source::Linear => ok("backlog linear", "the lead reads Linear through a Linear MCP server in Claude (not checked here)"),
+        Source::Linear => ok("backlog linear", "the lead reads Linear through a Linear MCP server in Claude (not checked here)").brief("Linear backlog"),
     }).collect()
 }
 
@@ -573,10 +597,10 @@ pub fn unused_sources(sources: &[Source], vault: Option<String>, linear: Option<
     };
     let mut checks = Vec::new();
     if let Some(id) = vault.filter(|_| !sources.contains(&Source::Vault)) {
-        checks.push(ok("backlog vault", format!("the vault plugin {id} is installed in Claude Code, but the vault is not a backlog source")).with(suggest(Source::Vault)));
+        checks.push(ok("backlog vault", format!("the vault plugin {id} is installed in Claude Code, but the vault is not a backlog source")).brief("not the backlog").with(suggest(Source::Vault)));
     }
     if let Some(found) = linear.filter(|_| !sources.contains(&Source::Linear)) {
-        checks.push(ok("backlog linear", format!("Claude Code has {found}, but Linear is not a backlog source")).with(suggest(Source::Linear)));
+        checks.push(ok("backlog linear", format!("Claude Code has {found}, but Linear is not a backlog source")).brief("Linear not the backlog").with(suggest(Source::Linear)));
     }
     checks
 }
@@ -613,7 +637,7 @@ pub fn vault(plugin: &crate::vault_cli::Plugin, command: Option<&(Vec<String>, c
     let Some((command, origin)) = command else {
         return match plugin {
             Plugin::Enabled { id, version, .. } => warn(name, format!("{id} {version} names no vault command kebbie can run"), vec!["kebbie setup finds the vault commands on this machine and asks which to use".to_string(), "or set [vault] command in the machine config".to_string()]),
-            _ => ok(name, "no [vault] command (optional): with one, kebbie keeps each task's note and the repos' logs in your notes vault, whatever agent runs the task").with(one("kebbie setup finds the vault commands on this machine and asks which to use")),
+            _ => ok(name, "no [vault] command (optional): with one, kebbie keeps each task's note and the repos' logs in your notes vault, whatever agent runs the task").brief("no vault (optional)").with(one("kebbie setup finds the vault commands on this machine and asks which to use")),
         };
     };
     let shown = command.join(" ");
@@ -638,7 +662,7 @@ pub fn vault(plugin: &crate::vault_cli::Plugin, command: Option<&(Vec<String>, c
         _ if suggested.is_some() && *origin == Origin::Config => warn(name, format!("{who} runs {label}, the package's new name"), vec![format!("set [vault] command = \"{}\" in the machine config", suggested.unwrap_or_default()), "kebbie doctor --fix writes it after your yes".to_string()]),
         _ if !probe.claims() => warn(name, format!("{who} ({label}) is too old for cross-machine claims: tasks get notes and logs, but kebbie on another machine sharing this vault cannot see which machine works on a note"), newer_vault(*origin, &probe)),
         _ => {
-            let found = ok(name, format!("{who}: {label}, {}, states {}: each task gets a note claimed for this machine, edits wait for its Problem, pushes are logged, done closes it", probe.backend, probe.capabilities.join(", ")));
+            let found = ok(name, format!("{who}: {label}, {}, states {}: each task gets a note claimed for this machine, edits wait for its Problem, pushes are logged, done closes it", probe.backend, probe.capabilities.join(", "))).brief(format!("{} {} · {} · task notes", if probe.name.is_empty() { "vault" } else { probe.name.as_str() }, probe.version, probe.backend));
             match suggested {
                 Some(line) => found.with(vec![format!("set [vault] command = \"{line}\" in the machine config, so kebbie reaches the vault without the Claude plugin"), "kebbie doctor --fix writes it after your yes".to_string()]),
                 None => found,
@@ -673,7 +697,7 @@ pub fn vault_fix(suggested: Option<String>, config: &Path, ask: Option<&mut dyn 
 pub fn machine_name(name: &config::Setting<String>, config_file: &Path) -> Check {
     match name.layer {
         config::Layer::Default => warn("machine", format!("machine.name is unset, so your phone and your other machines on the vault see this one as \"{}\", the host's short name", name.value), vec![format!("set [machine] name = \"<a name of your own, such as mac or devbox>\" in {}", config_file.display()), "or run /kebbie:configure, which asks for it first".to_string()]),
-        _ => ok("machine", format!("goes by \"{}\" on your phone and in vault claims", name.value)),
+        _ => ok("machine", format!("goes by \"{}\" on your phone and in vault claims", name.value)).brief(format!("claims as {}", name.value)),
     }
 }
 
@@ -763,17 +787,17 @@ pub fn codex(found: &crate::agent::codex::Availability, config: Option<&toml::Ta
     let missing = |name: &str, fact: String, fix: Vec<String>| if needed { fail(name, fact, fix) } else { warn(name, fact, fix) };
     let install = both("curl -fsSL https://chatgpt.com/codex/install.sh | sh (or brew install --cask codex)", "curl -fsSL https://chatgpt.com/codex/install.sh | sh (or npm install -g @openai/codex)");
     let Some(binary) = &found.binary else {
-        return vec![if needed { fail("codex", "not on PATH; a profile here runs Codex", install) } else { ok("codex", "not on PATH; only a profile with agent = \"codex\" needs it") }];
+        return vec![if needed { fail("codex", "not on PATH; a profile here runs Codex", install) } else { ok("codex", "not on PATH; only a profile with agent = \"codex\" needs it").brief("not installed") }];
     };
     let want = version(MIN_CODEX).unwrap_or_default();
     let mut checks = vec![match found.version.as_deref().and_then(version) {
-        Some(have) if at_least(&have, &want) => ok("codex", format!("{} at {}", shown(&have), binary.display())),
+        Some(have) if at_least(&have, &want) => ok("codex", format!("{} at {}", shown(&have), binary.display())).brief(shown(&have)),
         Some(have) => missing("codex", format!("{} is older than {MIN_CODEX}, whose plugin hooks kebbie's Codex tasks need", shown(&have)), one("codex update")),
         None => missing("codex", format!("cannot read the version from {} --version; need {MIN_CODEX}", binary.display()), one("codex update")),
     }];
     let root = crate::agent::codex::plugin_root(home);
     checks.push(match &found.plugin {
-        Installed::Current => ok("codex plugin", format!("kebbie's plugin at {}", root.display())),
+        Installed::Current => ok("codex plugin", format!("kebbie's plugin at {}", root.display())).brief("plugin"),
         Installed::Missing => missing("codex plugin", "kebbie's plugin is not installed, so a Codex task neither reports nor gets its role".to_string(), one("kebbie setup codex")),
         Installed::Stale(files) => missing("codex plugin", format!("kebbie's plugin is out of date ({})", files.join(", ")), one("kebbie setup codex")),
         Installed::Replaced(copies) => missing("codex plugin", format!("Codex replaced kebbie's plugin with {}, a copy from a repo's marketplace of the same name", crate::agent::codex::shown_paths(copies)), one("kebbie setup codex")),
@@ -785,12 +809,12 @@ pub fn codex(found: &crate::agent::codex::Availability, config: Option<&toml::Ta
     }
     let blocked = crate::agent::codex::hooks_blocked(config);
     checks.push(if blocked.is_empty() {
-        ok("codex hooks", "kebbie enables its plugin and trusts its three hooks by hash in each Codex session it starts")
+        ok("codex hooks", "kebbie enables its plugin and trusts its three hooks by hash in each Codex session it starts").brief("hooks")
     } else {
         missing("codex hooks", format!("{}: {}", home.join("config.toml").display(), blocked.join("; ")), one("turn them back on in Codex's /hooks, or drop [features] hooks = false"))
     });
     if let Some(model) = config.and_then(crate::agent::codex::model_in) {
-        checks.push(ok("codex model", format!("{model}, from {}, for a Codex profile without model", home.join("config.toml").display())));
+        checks.push(ok("codex model", format!("{model}, from {}, for a Codex profile without model", home.join("config.toml").display())).brief(format!("model {model}")));
     }
     checks.extend(signed.map(|signed| match login("codex login", signed, crate::agent::login::CODEX_FIX, "codex tasks cannot start") {
         check if check.level == Level::Warn && needed => Check { level: Level::Fail, ..check },
@@ -1514,6 +1538,18 @@ mod tests {
         assert!(text.starts_with("ok    git  /usr/bin/git\nfail  jq   not on PATH\n             fix: macOS: brew install jq\n"), "{text}");
         assert!(text.ends_with("1 failed, 0 warnings, 1 ok"));
         assert!(failed(&checks) && !failed(&checks[..1]));
+    }
+
+    #[test]
+    fn an_ok_check_carries_a_brief_for_its_group_line() {
+        let herdr = tools("0.9.0").into_iter().find(|tool| tool.name == "herdr").unwrap();
+        assert_eq!(tool(&herdr, Some(Path::new("/bin/herdr")), Some("herdr 0.9.5")).brief, "0.9.5");
+        let git = tools("0.9.0").into_iter().find(|tool| tool.name == "git").unwrap();
+        assert_eq!(tool(&git, Some(Path::new("/usr/bin/git")), None).brief, "git");
+        assert_eq!(login("claude login", Login::In, "", "").brief, "signed in");
+        assert_eq!(keeper(false, None, 0).brief, "keeper off");
+        assert_eq!(task_hooks(&[]).brief, "task hooks");
+        assert!(task_hooks(&["a@b".to_string()]).brief.is_empty(), "a check that needs you is shown by its text");
     }
 
     #[test]

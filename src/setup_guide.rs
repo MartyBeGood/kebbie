@@ -2242,7 +2242,7 @@ mod tests {
     }
 
     fn check(level: crate::doctor::Level, name: &str, fact: &str, fix: &[&str]) -> crate::doctor::Check {
-        crate::doctor::Check { level, name: name.to_string(), fact: fact.to_string(), fix: fix.iter().map(|fix| fix.to_string()).collect() }
+        crate::doctor::Check::new(level, name, fact, fix.iter().map(|fix| fix.to_string()).collect())
     }
 
     #[test]

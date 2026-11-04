@@ -28,6 +28,14 @@ impl Override {
         }
     }
 
+    pub fn brief(&self) -> String {
+        let name = match &self.source {
+            Source::Branch(branch) => branch.clone(),
+            Source::Path(path) => path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().to_string()),
+        };
+        format!("{name} @ {}", short(&self.sha))
+    }
+
     pub fn describe(&self, channel: Channel) -> String {
         format!("running {} @ {}, not the {} channel", self.name(), short(&self.sha), channel.key())
     }

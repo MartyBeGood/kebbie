@@ -188,7 +188,7 @@ fn tick_with(state: &Path, now: u64, machine: &Machine, latest: impl FnOnce(Opti
 }
 
 fn line(level: crate::doctor::Level, name: &str, fact: impl Into<String>, fix: &[String]) -> crate::doctor::Check {
-    crate::doctor::Check { level, name: name.to_string(), fact: fact.into(), fix: fix.to_vec() }
+    crate::doctor::Check::new(level, name, fact, fix.to_vec())
 }
 
 pub struct Doctor<'a> {
@@ -208,7 +208,7 @@ pub fn doctor(given: &Doctor) -> Vec<crate::doctor::Check> {
     let mut checks = Vec::new();
     let age = |at: u64| match crate::messages::age(at).as_str() { "now" => "just now".to_string(), age => format!("{age} ago") };
     checks.push(match given.found {
-        None => line(Level::Ok, "codex update", "not checked yet; kebbie checks once a day", &[]),
+        None => line(Level::Ok, "codex update", "not checked yet; kebbie checks once a day", &[]).brief("update not checked yet"),
         Some(found) => match (found.newer(), &found.error) {
             (Some((installed, latest)), _) => {
                 let how = found.installer.map_or("installed some way kebbie cannot tell".to_string(), |installer| format!("a {}", installer.shown()));
@@ -220,7 +220,7 @@ pub fn doctor(given: &Doctor) -> Vec<crate::doctor::Check> {
                 line(Level::Warn, "codex update", format!("Codex {installed} → {latest}, {how} (checked {})", age(found.checked_at)), &fix)
             }
             (None, Some(error)) => line(Level::Skip, "codex update", format!("could not read the latest Codex: {error} (checked {})", age(found.checked_at)), &[]),
-            (None, None) => line(Level::Ok, "codex update", format!("{} is the latest (checked {})", found.installed.as_deref().unwrap_or("Codex"), age(found.checked_at)), &[]),
+            (None, None) => line(Level::Ok, "codex update", format!("{} is the latest (checked {})", found.installed.as_deref().unwrap_or("Codex"), age(found.checked_at)), &[]).brief("up to date"),
         },
     });
     for finding in given.found.into_iter().flat_map(|found| &found.findings).filter(|finding| finding.key.starts_with("model-")) {
@@ -228,7 +228,7 @@ pub fn doctor(given: &Doctor) -> Vec<crate::doctor::Check> {
     }
     let rules = crate::area_page::home_relative(&codex_setup::rules_path(given.codex_home));
     checks.push(match codex_setup::rules_placed(given.codex_home, given.rules) {
-        codex_setup::Placed::Current => line(Level::Ok, "codex approvals", format!("{rules} lets kebbie's own task commands through"), &[]),
+        codex_setup::Placed::Current => line(Level::Ok, "codex approvals", format!("{rules} lets kebbie's own task commands through"), &[]).brief("rules"),
         codex_setup::Placed::Missing => line(Level::Warn, "codex approvals", format!("{rules} is missing, so Codex asks before each kebbie command a task runs"), &setup),
         codex_setup::Placed::Differs => line(Level::Warn, "codex approvals", format!("{rules} is not the file this kebbie writes"), &setup),
     });
@@ -241,7 +241,7 @@ pub fn doctor(given: &Doctor) -> Vec<crate::doctor::Check> {
         checks.push(match (present, server.map(|server| codex_setup::vault_placed(text.as_deref(), &server))) {
             (false, _) => line(Level::Fail, "codex vault", format!("{shown} has no [mcp_servers.vault], so the lead keeps Codex tasks' notes; tasks still run"), &setup),
             (true, Some(codex_setup::Placed::Differs)) => line(Level::Warn, "codex vault", format!("[mcp_servers.vault] in {shown} has other values than {}", if given.vault_command.is_some() { "kebbie's vault command" } else { "the vault plugin's" }), &setup),
-            (true, _) => line(Level::Ok, "codex vault", format!("[mcp_servers.vault] in {shown}; kebbie starts Codex tasks with its keys set"), &[]),
+            (true, _) => line(Level::Ok, "codex vault", format!("[mcp_servers.vault] in {shown}; kebbie starts Codex tasks with its keys set"), &[]).brief("vault entry"),
         });
     }
     checks

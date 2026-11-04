@@ -86,17 +86,22 @@ signals = false   # no error signals; text = "ask" (the default) still asks befo
    kebbie doctor
    ```
 
-2. Read one line per check, each starting with `ok`, `skip`, `warn` or `fail`:
+2. Read what needs you first, then one line per group:
 
    ```text
-   ok    git                   /usr/bin/git
-   ok    herdr                 0.9.5 at /opt/homebrew/bin/herdr
-   ok    claude                /Users/you/.local/bin/claude
+   kebbie doctor                                    40 ok · 1 to look at
+
+    Needs you
+     ! status line  no statusLine command in Claude Code's settings, so the board shows no plan usage
+                    → add to ~/.claude/settings.json: "statusLine": …
+
+    kebbie        ✓ main @ 1a2b3c4 · built from source · keeper running · on PATH
+    Claude Code   ! claude · signed in · plugin current
+    Tools         ✓ git · jq · curl · nvim · tig · cargo
    ...
-   ok    kebbie on PATH        /Users/you/.local/bin/kebbie → ...
    ```
 
-3. Run the `fix:` line under each `warn` and `fail`, then run `kebbie doctor` again. You are done when nothing says `fail`.
+3. Run the `→` line under each check in **Needs you**, then run `kebbie doctor` again. You are done when nothing is marked `✗`.
 
 ## 5. Make a practice repo
 

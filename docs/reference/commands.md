@@ -661,7 +661,9 @@ After a ready report the keeper starts the reviewer. It checks the commits again
 | `kebbie config --get <key>` | Print one machine-wide value for scripts: `worktree.server_name` or `worktree.worker_name`. |
 | `kebbie config edit [--repo <path>]` | The board's [Settings page](board.md#settings-page) on its own, for config.toml and the repo's config. Needs a terminal, and is yours only: the lead and tasks cannot run it. |
 | `kebbie docs [<words>]` | Search kebbie's docs on this machine, or list them. See [below](#kebbie-docs). |
-| `kebbie doctor` | Check this machine, with the fix for each gap, the task sandbox's state among them. Exits non-zero on a `fail`. See [Requirements](requirements.md#what-kebbie-doctor-checks). |
+| `kebbie doctor` | Check this machine, with the fix for each gap, the task sandbox's state among them. In a terminal it shows what needs you first, then one line per group. Exits non-zero on a `fail`. See [Requirements](requirements.md#what-kebbie-doctor-checks). |
+| `kebbie doctor --all` | Every check, under its group, each with its text and fix. |
+| `kebbie doctor --plain` | One `ok`, `skip`, `warn` or `fail` line per check with its `fix:` lines, as a script or agent reads it. kebbie prints these lines by itself when its output is not a terminal or `NO_COLOR` is set. |
 | `kebbie doctor --fix` | Link kebbie in herdr again when herdr links it from a folder that is gone, then start the board and the keeper; install kebbie's push block again in each worktree that still has an earlier one; offer the `vault.command` line `kebbie doctor` suggests, for a renamed vault package or one run through the Claude plugin, and write it to kebbie's `config.toml` on your `y` (without a terminal it only shows the line); then check. |
 | `kebbie routes [--plain-http]` | Print a Caddy config that serves each worktree's dev server at its own host. See [below](#kebbie-routes). |
 | `kebbie setup [--yes]` | The setup guide in six steps, from this machine's name to one review of everything it writes. `--yes` applies the defaults and prints each write. See [below](#kebbie-setup). |

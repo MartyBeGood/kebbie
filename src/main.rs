@@ -14,6 +14,7 @@ mod config;
 mod config_edit;
 mod decisions;
 mod doctor;
+mod doctor_view;
 mod docs;
 mod evidence;
 #[cfg(test)]
@@ -314,10 +315,14 @@ const USAGE: &str = "kebbie: herding coding agents in herdr
   kebbie hub move <url>           the hub moved: post there once <url> answers as a hub; move only to a hub you run or trust;
                                   a redirect to another host is never followed by itself; yours only
   kebbie hub leave                leave the hub: remove this machine's keys, token and pinned account key
-  kebbie doctor [--fix]           check that this machine has what kebbie needs, with the fix for each gap; checks
+  kebbie doctor [--all] [--plain] [--fix]
+                                  check that this machine has what kebbie needs, with the fix for each gap; checks
                                   config.toml and every repo config, and whether tasks run in the sandbox
                                   (task.sandbox; on Linux it needs bubblewrap, socat and the seccomp filter), and
-                                  whether open tasks' hooks run a kebbie that is there; --fix first links kebbie in
+                                  whether open tasks' hooks run a kebbie that is there; in a terminal it shows what
+                                  needs you first and one line per group, --all every check; --plain, NO_COLOR or
+                                  output that is not a terminal prints one ok|skip|warn|fail line per check with its
+                                  fix: lines; --fix first links kebbie in
                                   herdr again when herdr links it from a folder that is gone (then starts the board
                                   and the keeper), installs kebbie's push block again in each worktree that still
                                   has an earlier one, and offers the [vault] command line doctor suggests, written to
@@ -824,16 +829,23 @@ pub fn shown_kebbie() -> String {
     shown_version(config::channel().unwrap_or_default(), env!("CARGO_PKG_VERSION"))
 }
 
-fn doctor(fix: bool) -> ExitCode {
+fn doctor(fix: bool, all: bool, plain: bool) -> ExitCode {
     config::report_unknown_keys_quietly();
+    let laid_out = doctor_view::wanted(plain);
+    let mut fixed = Vec::new();
     if fix {
         match lead::state_dir() {
+            Ok(state) if laid_out => fixed = doctor::fix(&state),
             Ok(state) => println!("{}\n", doctor::fix(&state).join("\n")),
             Err(error) => eprintln!("kebbie doctor --fix: {error}"),
         }
     }
     let checks = doctor::checks(&doctor::Env::current());
-    println!("{}", doctor::render(&checks));
+    if laid_out {
+        println!("{}", doctor_view::render(&checks, &fixed, &doctor_view::Screen::current(all)));
+    } else {
+        println!("{}", doctor::render(&checks));
+    }
     if doctor::failed(&checks) { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 
@@ -845,7 +857,7 @@ fn main() -> ExitCode {
     }
     let arguments = Arguments::parse();
     if arguments.positional(0) == Some("doctor") {
-        return doctor(arguments.flag("--fix"));
+        return doctor(arguments.flag("--fix"), arguments.flag("--all"), arguments.flag("--plain"));
     }
     if arguments.positional(0) == Some("statusline") {
         let mut input = String::new();

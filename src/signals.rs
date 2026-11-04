@@ -292,15 +292,15 @@ pub fn doctor(state: &Path, settings: &crate::config::Report, now: u64) -> Check
     let arm = || vec![format!("run {} in your own terminal to send them without asking", crate::hub::report::ARM_COMMAND)];
     if !settings.signals() {
         let fact = format!("error signals and the install signal off ([report] signals = false); {text}");
-        return if unarmed { Check { level: Level::Warn, name, fact, fix: arm() } } else { Check { level: Level::Ok, name, fact, fix: Vec::new() } };
+        return if unarmed { Check::new(Level::Warn, name, fact, arm()) } else { Check::new(Level::Ok, name, fact, Vec::new()).brief("error signals off") };
     }
     let ledger = ledger(state);
     let sent = ledger.sent_at.map_or("none sent yet".to_string(), |at| format!("last sent {} ago", crate::keeper::span(now.saturating_sub(at))));
     let fact = format!("error signals on, at most once a day, holding only {CONTAINS} ({sent}); once a day an install signal holding only {}; {text}", crate::install_signal::CONTAINS);
     match ledger.error {
-        Some(error) => Check { level: Level::Warn, name, fact: format!("{fact}; the last send failed: {error}"), fix: vec!["the keeper tries again within the hour; [report] signals = false in config.toml turns them off".to_string()] },
-        None if unarmed => Check { level: Level::Warn, name, fact, fix: arm() },
-        None => Check { level: Level::Ok, name, fact, fix: Vec::new() },
+        Some(error) => Check::new(Level::Warn, name, format!("{fact}; the last send failed: {error}"), vec!["the keeper tries again within the hour; [report] signals = false in config.toml turns them off".to_string()]),
+        None if unarmed => Check::new(Level::Warn, name, fact, arm()),
+        None => Check::new(Level::Ok, name, fact, Vec::new()).brief("error signals on"),
     }
 }
 

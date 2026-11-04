@@ -8,9 +8,9 @@ Find what is wrong with kebbie, and the fix for each message it shows.
    kebbie doctor
    ```
 
-2. Apply the fix that comes with each `warn` and `fail`. What it checks: [Requirements](../reference/requirements.md#what-kebbie-doctor-checks).
+2. Apply the `→` fix under each check in **Needs you**. What it checks: [Requirements](../reference/requirements.md#what-kebbie-doctor-checks).
 
-3. Run `kebbie doctor` again. The `warn` and `fail` lines are gone.
+3. Run `kebbie doctor` again. **Needs you** is gone and every group shows `✓`.
 
 - If doctor is clean and the problem remains, find what you see in the tables below.
 - If kebbie itself got something wrong, save it as an issue and send it to kebbie's maintainers when you choose: [Report a problem with kebbie](report-a-problem-with-kebbie.md).

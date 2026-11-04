@@ -435,13 +435,13 @@ pub fn config_line(state: Option<&Path>) -> String {
 }
 
 fn check(level: Level, name: &str, fact: impl Into<String>, fix: Vec<String>) -> Check {
-    Check { level, name: name.to_string(), fact: fact.into(), fix }
+    Check::new(level, name, fact, fix)
 }
 
 pub fn doctor(state: &Path, configured: Option<&str>, now: u64, reach: impl FnOnce(&str) -> std::result::Result<(), String>) -> Check {
     let name = "hub";
     let Ok(Some(identity)) = identity::load(state) else {
-        return check(Level::Ok, name, "not connected; kebbie hub connect shows the board on your phone", Vec::new());
+        return check(Level::Ok, name, "not connected; kebbie hub connect shows the board on your phone", Vec::new()).brief("hub not connected");
     };
     let relay = relay::load(state);
     let posted = relay.posted_at.map_or("no board posted yet".to_string(), |at| format!("board rev {} posted {}", relay.rev, ago(Some(at), now)));
@@ -462,8 +462,8 @@ pub fn doctor(state: &Path, configured: Option<&str>, now: u64, reach: impl FnOn
     match (rename_line(&identity, configured), &identity.rename_error) {
         (Some(line), Some(_)) if identity.rename_stopped.is_some() => check(Level::Warn, name, format!("{fact}; {line}"), vec![format!("set [machine] name = {:?}, or a name the hub keeps as it is", identity.name)]),
         (Some(line), Some(_)) => check(Level::Warn, name, format!("{fact}; {line}"), vec!["kebbie hub status renames it now and shows the error if it fails again".to_string()]),
-        (Some(line), None) => check(Level::Ok, name, format!("{fact}; {line}"), Vec::new()),
-        (None, _) => check(Level::Ok, name, fact, Vec::new()),
+        (Some(line), None) => check(Level::Ok, name, format!("{fact}; {line}"), Vec::new()).brief(format!("hub {}", host(&identity.url))),
+        (None, _) => check(Level::Ok, name, fact, Vec::new()).brief(format!("hub {}", host(&identity.url))),
     }
 }
 
