@@ -7,6 +7,12 @@ What each kebbie release brings, one line per change, as you would tell someone 
 ### What's new
 
 ### Fixed
+
+## 0.34.1
+
+### What's new
+
+### Fixed
 - kebbie update --check finds the vault plugin's latest version when the plugin lives in another repo than its marketplace.
 
 ## 0.34.0
