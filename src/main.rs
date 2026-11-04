@@ -322,30 +322,27 @@ const USAGE: &str = "kebbie: herding coding agents in herdr
                                   and the keeper), installs kebbie's push block again in each worktree that still
                                   has an earlier one, and offers the [vault] command line doctor suggests, written to
                                   kebbie's config.toml only on your y
-  kebbie setup [--yes]            the setup guide, one step at a time: this machine's name, the agents (Claude Code,
-                                  Codex), herdr's three keys (appended to its config.toml, a taken key named with a
-                                  free one offered), the backlog's sources, the vault (a folder or an S3 bucket, its
-                                  plugin installed and configured), the vault command kebbie itself runs (from what
-                                  it finds in the Claude plugin, Codex, Cursor and PATH) and error signals; nothing is written before ⏎ on
-                                  the last step, which lists what it writes and runs, the doctor warnings setup fixes
-                                  itself among them; ends with the doctor's count, what is left for you, and the hub
-                                  as an offer (h); safe to run again, from this machine's values (--yes, and a run
-                                  without a terminal, ask nothing: link kebbie onto PATH, install or update its Claude
-                                  Code plugin, add the free herdr keys, never through a link)
-  kebbie setup vault              the guide at its Vault step; without a terminal, install the optional vault plugin
-                                  in Claude Code, showing each claude command and running it only on your y
-  kebbie setup claude [--yes]     the guide on Claude Code's steps alone: kebbie's plugin, the login, approvals,
-                                  the vault and updates, then review and apply; with --yes or without a terminal,
-                                  install or update kebbie's Claude Code plugin and name what else the guide offers
+  kebbie setup [--yes]            the setup guide in six steps: this machine's name; the agents it found (Claude Code,
+                                  Codex), each with its version, sign-in and plugin, ticked to use; the vault, read
+                                  from the vault command's own answer (or mindin's installer offered when none
+                                  answers); the backlog's sources; error signals; and a review that lists every
+                                  write, grouped by tool: kebbie's config.toml, each ticked agent's plugin, approval
+                                  rules and vault entry, herdr's keys and the doctor warnings setup fixes itself;
+                                  nothing is written before ⏎ there; ends with the doctor's count, what is left for
+                                  you, and the hub as an offer (h); safe to run again, from this machine's values
+                                  (--yes applies the defaults and prints each write; a run without a terminal only
+                                  links kebbie onto PATH, installs or updates its plugins and names the rest)
+  kebbie setup vault              the guide at its Vault step; without a terminal, show the vault command found, or
+                                  the line that installs mindin
+  kebbie setup claude [--yes]     the guide at its Agents step; with --yes or without a terminal, install or update
+                                  kebbie's Claude Code plugin (with --yes also the vault plugin when kebbie's vault
+                                  is on), naming the rest without --yes
   kebbie setup codex [--yes] [--uninstall]
-                                  the guide on Codex's steps alone: kebbie's plugin in Codex's plugin cache, a rules
-                                  file that lets kebbie's own task commands through, the vault server in Codex's
-                                  config.toml when kebbie's vault is on, and what happens to Codex updates; each
-                                  step that writes Codex's files offers kebbie does it, you add it yourself (the
-                                  end shows exactly what and where) or skip, and nothing is written before ⏎ on
-                                  the last step; with --yes or without a terminal, install or update the plugin
-                                  alone and name what else the guide offers (--uninstall removes the plugin, on
-                                  your y)
+                                  the guide at its Agents step; with --yes or without a terminal, install or update
+                                  kebbie's plugin in Codex's plugin cache, and with --yes also the rules file that
+                                  lets kebbie's own task commands through and the vault server in Codex's
+                                  config.toml when kebbie's vault is on, each printed (--uninstall removes the
+                                  plugin, on your y)
   kebbie restart [--all]          restart, with claude --resume or codex resume in its own pane and with its own
                                   flags, each Claude session or Codex task that runs older code than is installed
                                   (Claude Code, Codex, a plugin, MCP servers, kebbie) and is idle, not the pane you

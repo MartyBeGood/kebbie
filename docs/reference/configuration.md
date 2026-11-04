@@ -160,7 +160,7 @@ An assessment with no answer reads as `review not assessed`, a suggestion in eve
 
 `vault.command` is kebbie's own way to the vault, whatever agent runs the task: Claude Code, Codex or another.
 
-- [`kebbie setup`](commands.md#kebbie-setup) finds the vault commands on this machine and writes the one you pick. See [How setup finds the command](../explanation/vault.md#setup-finds-the-command).
+- [`kebbie setup`](commands.md#kebbie-setup) writes the vault command it runs the vault with, chosen from the ones on this machine. See [Setup picks the command](../explanation/vault.md#setup-picks-the-command).
 - The command and its leading words, split at spaces: `"uvx mindin"`, `"uvx mindin==0.14.0"`, or a checkout of your own, `"uv run --project ~/code/mindin mindin"`.
 - kebbie asks it what it is with `about --json` and uses only the capabilities it states. See [The vault contract](vault-contract.md).
 - Unset, kebbie runs the Claude vault plugin's pinned command from its hooks while the plugin is installed and enabled, and `kebbie doctor` suggests the line to set.

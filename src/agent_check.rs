@@ -198,6 +198,7 @@ pub struct Doctor<'a> {
     pub claude_dir: &'a Path,
     pub rules: &'a str,
     pub vault_on: bool,
+    pub vault_command: Option<&'a [String]>,
 }
 
 // What Codex lacks that kebbie setup codex offers, and what the daily check found; nothing here stops a task.
@@ -235,11 +236,11 @@ pub fn doctor(given: &Doctor) -> Vec<crate::doctor::Check> {
         let config = given.codex_home.join("config.toml");
         let shown = crate::area_page::home_relative(&config);
         let text = std::fs::read_to_string(&config).ok();
-        let server = crate::vault_cli::installed(given.claude_dir).and_then(|(_, _, root)| codex_setup::vault_server(&root, &codex_setup::vault_options(given.claude_dir)));
+        let server = codex_setup::wanted_server(given.claude_dir, given.vault_command);
         let present = codex_setup::found_server(&codex_setup::read_config(Some(given.codex_home))).is_some();
         checks.push(match (present, server.map(|server| codex_setup::vault_placed(text.as_deref(), &server))) {
             (false, _) => line(Level::Fail, "codex vault", format!("{shown} has no [mcp_servers.vault], so the lead keeps Codex tasks' notes; tasks still run"), &setup),
-            (true, Some(codex_setup::Placed::Differs)) => line(Level::Warn, "codex vault", format!("[mcp_servers.vault] in {shown} has other values than the vault plugin's"), &setup),
+            (true, Some(codex_setup::Placed::Differs)) => line(Level::Warn, "codex vault", format!("[mcp_servers.vault] in {shown} has other values than {}", if given.vault_command.is_some() { "kebbie's vault command" } else { "the vault plugin's" }), &setup),
             (true, _) => line(Level::Ok, "codex vault", format!("[mcp_servers.vault] in {shown}; kebbie starts Codex tasks with its keys set"), &[]),
         });
     }
@@ -320,7 +321,7 @@ mod tests {
         std::fs::create_dir_all(&codex).unwrap();
         let rules = codex_setup::rules_text(&["kebbie".to_string()]);
         let found = Found { checked_at: crate::messages::now(), installed: Some("0.163.0".to_string()), latest: Some("0.164.0".to_string()), installer: Some(Installer::Standalone), findings: vec![Finding { key: "model-gone:coder:gpt-5".to_string(), text: "coder: gpt-5 is gone from Codex's models; its tasks start on gpt-6.1-sol".to_string(), fix: "pick one with m on the Settings page".to_string() }], ..Found::default() };
-        let given = Doctor { found: Some(&found), mode: crate::config::AgentUpdates::Ask, codex_home: &codex, claude_dir: &dir.join("claude"), rules: &rules, vault_on: true };
+        let given = Doctor { found: Some(&found), mode: crate::config::AgentUpdates::Ask, codex_home: &codex, claude_dir: &dir.join("claude"), rules: &rules, vault_on: true, vault_command: None };
         let lines: Vec<(Level, String, String, Vec<String>)> = doctor(&given).into_iter().map(|check| (check.level, check.name, check.fact, check.fix)).collect();
         assert_eq!(lines[0], (Level::Warn, "codex update".to_string(), "Codex 0.163.0 → 0.164.0, a standalone install (checked just now)".to_string(), vec!["U on the board".to_string()]));
         assert_eq!((lines[1].0, lines[1].1.as_str(), lines[1].3[0].as_str()), (Level::Warn, "codex profile", "pick one with m on the Settings page"));
@@ -331,6 +332,13 @@ mod tests {
         assert!(notify.iter().all(|check| check.name != "codex vault"), "no vault, no vault line");
         codex_setup::write_rules(&codex, &rules).unwrap();
         assert_eq!(doctor(&Doctor { found: None, ..given })[..2].iter().map(|check| (check.level, check.name.as_str())).collect::<Vec<_>>(), [(Level::Ok, "codex update"), (Level::Ok, "codex approvals")]);
+        let command = ["/home/me/.local/bin/mindin".to_string()];
+        std::fs::write(codex.join("config.toml"), "[mcp_servers.vault]\ncommand = \"/home/me/.local/bin/mindin\"\n").unwrap();
+        let vault = |given: &Doctor| doctor(given).into_iter().find(|check| check.name == "codex vault").map(|check| (check.level, check.fact)).unwrap();
+        assert_eq!(vault(&Doctor { vault_command: Some(&command), ..given }).0, Level::Ok, "Codex's server runs kebbie's vault command");
+        let other = ["uvx".to_string(), "mindin".to_string()];
+        let differs = vault(&Doctor { vault_command: Some(&other), ..given });
+        assert!(differs.0 == Level::Warn && differs.1.ends_with("has other values than kebbie's vault command"), "{differs:?}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

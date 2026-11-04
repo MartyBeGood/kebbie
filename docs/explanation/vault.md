@@ -10,15 +10,22 @@ kebbie writes task notes, claims and log lines, and reads the board's snapshot, 
 
 Without `vault.command`, kebbie runs the Claude vault plugin's pinned command from its hooks, and `kebbie doctor` suggests the line to set.
 
-## Setup finds the command
+## Setup chooses where the vault lives
 
-`kebbie setup` looks where a vault already runs on this machine, shows what it found and asks once which one kebbie uses:
+The Vault step of `kebbie setup` asks one thing: where the vault lives, on your own server, in an S3 bucket, in a local folder, or nowhere. It preselects the place the vault answers for now, read from its `status`, so two commands that reach the same server show as one place.
 
-- the Claude Code vault plugin's server, the exact command Claude Code starts;
-- each MCP server in Codex's `~/.codex/config.toml` and in Cursor's `~/.cursor/mcp.json`, kept when it answers as a vault, whatever it is named;
-- `mindin` and `notes-vault-mcp` on `PATH`.
+When you choose another place, kebbie runs `mindin setup` with it as you apply, in the terminal, where the server signs you in through the browser and S3 asks for its secret. The vault saves the place; kebbie keeps no copy of it. Hosted mindin is listed first and opens once the service is live.
 
-Your choice goes into kebbie's `config.toml` only. Another tool's file is never written. A run without a terminal names the line to set instead.
+## Setup picks the command
+
+kebbie runs the vault with one command, which it picks itself and shows under the list:
+
+1. `mindin` on `PATH` or in `~/.local/bin`, when it answers;
+2. the `vault.command` already set;
+3. the Claude Code vault plugin's server, the exact command Claude Code starts;
+4. an MCP server in Codex's `~/.codex/config.toml` or Cursor's `~/.cursor/mcp.json`, or `notes-vault-mcp` on `PATH`, that answers as a vault.
+
+A command without `setup`, such as notes-vault-mcp up to 0.13, cannot move the vault, so a new place installs mindin first. So does a place chosen on a machine with no vault command.
 
 ## The vault says what it can do
 
@@ -28,7 +35,7 @@ kebbie asks the command what it is with `about --json`: its name, its version an
 
 ## Each agent reaches the vault on its own
 
-`vault.command` is kebbie's connection, not the agent's. A task's agent reads and writes the vault through its own MCP server: the vault plugin in Claude Code, `[mcp_servers.vault]` in Codex's `config.toml`, which [`kebbie setup codex`](../how-to/run-a-task-with-codex.md) can add, or Cursor's `mcp.json`. Each agent tool installs the vault once for itself.
+`vault.command` is kebbie's connection, not the agent's. A task's agent reads and writes the vault through its own MCP server: the vault plugin in Claude Code, `[mcp_servers.vault]` in Codex's `config.toml`, or Cursor's `mcp.json`. `kebbie setup` adds the vault to each agent you tick, the vault plugin in Claude Code and the vault command as Codex's server, and lists each of those writes on its review before it makes them.
 
 ## A note keeps the why after the session ends
 

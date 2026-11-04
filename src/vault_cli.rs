@@ -55,10 +55,12 @@ pub struct Probe {
     pub writable: Option<bool>,
     pub version: String,
     pub backend: String,
+    pub server: String,
     pub name: String,
     pub contract: Option<u64>,
     pub capabilities: Vec<String>,
     pub former_names: Vec<String>,
+    pub setup: bool,
 }
 
 impl Probe {
@@ -251,11 +253,16 @@ impl Cli {
     pub fn probe(&self, try_write: bool) -> Result<Probe> {
         let about = self.output(&["about", "--json"])?.ok().and_then(|answer| serde_json::from_str::<Value>(answer.trim()).ok()).filter(|about| about["contract"].as_u64().is_some());
         let status = self.call(if try_write { &["status", "--probe"] } else { &["status"] })?;
-        let probe = Probe { configured: status["configured"] == true, writable: status["writable"].as_bool(), version: field(&status, "version"), backend: field(&status, "backend"), ..Probe::default() };
+        let probe = Probe { configured: status["configured"] == true, writable: status["writable"].as_bool(), version: field(&status, "version"), backend: field(&status, "backend"), server: field(&status, "server"), ..Probe::default() };
         Ok(match about {
             Some(about) => from_about(&about, probe),
             None => self.bridge(probe),
         })
+    }
+
+    // Whether `--help` lists this subcommand, as mindin lists `setup` and notes-vault-mcp up to 0.13 does not.
+    pub fn offers(&self, subcommand: &str) -> bool {
+        self.output(&["--help"]).ok().and_then(std::result::Result::ok).is_some_and(|help| subcommands(&help).iter().any(|listed| listed == subcommand))
     }
 
     // A vault older than the task commands refuses `task --help`, one older than claims lists no `claim` there; argparse names the package in its usage line.
@@ -743,9 +750,9 @@ mod tests {
     fn a_vault_that_answers_about_is_read_by_its_contract_and_nothing_else() {
         let fake = Fake::new("about");
         fake.answer("about---json", r#"{"name":"mindin","version":"0.14.0","contract":1,"capabilities":["tasks","log","snapshot"],"former_names":["notes-vault-mcp"]}"#);
-        fake.answer("status", r#"{"configured":true,"version":"0.14.0","backend":"server","writable":null}"#);
+        fake.answer("status", r#"{"configured":true,"version":"0.14.0","backend":"server","server":"https://vault.example.com","signed_in":true,"writable":null}"#);
         let probe = fake.cli.probe(false).unwrap();
-        assert_eq!((probe.name.as_str(), probe.version.as_str(), probe.contract, probe.backend.as_str()), ("mindin", "0.14.0", Some(1), "server"));
+        assert_eq!((probe.name.as_str(), probe.version.as_str(), probe.contract, probe.backend.as_str(), probe.server.as_str()), ("mindin", "0.14.0", Some(1), "server", "https://vault.example.com"), "setup shows the server the vault answers through");
         assert!(probe.on() && !probe.claims(), "only the stated capabilities count: {probe:?}");
         assert_eq!(probe.former_names, ["notes-vault-mcp"]);
         assert_eq!(fake.calls(), ["about --json", "status"], "no help is read when about answers");
@@ -766,6 +773,9 @@ mod tests {
         assert_eq!(probe.capabilities, ["tasks", "log", "claims", "snapshot", "read"]);
         fake.answer("--help", "usage: notes-vault-mcp [-h]\n                       {serve,init,task,log,status} ...\n");
         assert!(!fake.cli.probe(false).unwrap().can(SNAPSHOT), "a vault without the snapshot command states no snapshot capability");
+        assert!(!fake.cli.offers("setup"), "notes-vault-mcp up to 0.13 has no setup");
+        fake.answer("--help", "usage: mindin [-h]\n              {serve,task,log,login,setup,about,status} ...\n");
+        assert!(fake.cli.offers("setup"));
     }
 
     #[test]

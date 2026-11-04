@@ -632,7 +632,7 @@ pub fn vault(plugin: &crate::vault_cli::Plugin, command: Option<&(Vec<String>, c
     let label = identity(&probe);
     match () {
         _ if !probe.speaks() => warn(name, format!("{who} answers contract {}, and this kebbie reads contract {}, so it keeps tasks without the vault", probe.contract.unwrap_or_default(), crate::vault_cli::CONTRACT), one("kebbie update")),
-        _ if !probe.configured => warn(name, format!("{who} ({label}) answers, but no vault is configured"), vec![format!("{shown} status says what it is missing"), "kebbie setup vault walks through a folder or an S3 bucket for the Claude vault plugin".to_string()]),
+        _ if !probe.configured => warn(name, format!("{who} ({label}) answers, but no vault is configured"), vec![format!("{shown} status says what it is missing"), format!("{shown} setup chooses where the vault lives: a folder, an S3 bucket or a server")]),
         _ if !probe.can(crate::vault_cli::TASKS) => warn(name, format!("{who} ({label}) states no tasks capability: the vault is read-only to kebbie, so tasks get no notes and pushes no log lines"), newer_vault(*origin, &probe)),
         _ if probe.writable == Some(false) => warn(name, format!("{who}: the {} vault is not writable, so kebbie keeps tasks without it", probe.backend), one("check the vault folder's permissions or the S3 key's write access")),
         _ if suggested.is_some() && *origin == Origin::Config => warn(name, format!("{who} runs {label}, the package's new name"), vec![format!("set [vault] command = \"{}\" in the machine config", suggested.unwrap_or_default()), "kebbie doctor --fix writes it after your yes".to_string()]),
@@ -857,9 +857,10 @@ pub fn checks(env: &Env) -> Vec<Check> {
     if found.binary.is_some() && (needed || found.plugin != crate::agent::codex::Installed::Missing) {
         let rules = crate::agent::codex_setup::rules_text(&crate::agent::codex_setup::rule_forms(&kebbie, &env.home.join(".local/bin/kebbie")));
         let mode = config::check_machine(&env.config).ok().and_then(|(machine, _)| machine.agent_updates).unwrap_or_default();
-        let vault_on = matches!(crate::vault_cli::plugin(&env.claude_dir), crate::vault_cli::Plugin::Enabled { .. });
+        let vault_command: Option<Vec<String>> = config::check_machine(&env.config).ok().and_then(|(machine, _)| machine.worktree.vault_command).filter(|command| !command.trim().is_empty()).map(|command| command.split_whitespace().map(str::to_string).collect());
+        let vault_on = vault_command.is_some() || matches!(crate::vault_cli::plugin(&env.claude_dir), crate::vault_cli::Plugin::Enabled { .. });
         let checked = crate::agent_check::read(&env.kebbie_state);
-        checks.extend(crate::agent_check::doctor(&crate::agent_check::Doctor { found: checked.as_ref(), mode, codex_home: &env.codex_dir, claude_dir: &env.claude_dir, rules: &rules, vault_on }));
+        checks.extend(crate::agent_check::doctor(&crate::agent_check::Doctor { found: checked.as_ref(), mode, codex_home: &env.codex_dir, claude_dir: &env.claude_dir, rules: &rules, vault_on, vault_command: vault_command.as_deref() }));
     }
     let places = crate::update_check::Places::new(plugin.as_ref().map(|plugin| plugin.root.clone()), env.claude_dir.clone(), channel);
     checks.push(updates(&env.kebbie_state, channel, &crate::update_check::installed(&places)));

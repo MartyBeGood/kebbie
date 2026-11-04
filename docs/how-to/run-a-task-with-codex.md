@@ -13,27 +13,25 @@ Its task role is written for Codex. Codex can't run kebbie's setup and rules ski
 
 ## Set up Codex
 
-1. Run the guide on Codex's steps:
+1. Open the setup guide at its Agents step:
 
    ```bash
    kebbie setup codex
    ```
 
-   It walks five steps, then shows what it would write. Nothing is written until you press ⏎ on the last one, and `esc` quits without writing.
+2. Keep **Codex** ticked. Its row shows the version, whether it is signed in, such as `not signed in: run codex login`, and whether kebbie's plugin is current.
 
-   | Step | What it does |
+3. Go on to the last step and read the **Codex** lines:
+
+   | Line | What it writes |
    | --- | --- |
-   | Plugin | Installs kebbie's plugin in Codex's plugin cache. |
-   | Approvals | Writes `~/.codex/rules/kebbie.rules`, which lets the ten commands a task runs, `kebbie report`, `kebbie tell`, `kebbie ask` and `kebbie steps` among them, past Codex's approval question. |
-   | Vault in Codex | Shown only when kebbie's vault is on. Adds the vault plugin's server to Codex's `config.toml` as `[mcp_servers.vault]`, so a Codex task keeps its own note. |
-   | Codex updates | Sets `update.agents` in kebbie's `config.toml`: ask me after `U`, update it with `U`, or only tell me. |
-   | Review and apply | Lists each item as `to do`, `already`, `yourself` or `skipped`, and what each write does to Codex's files. |
+   | `plugin` | kebbie's plugin in Codex's plugin cache. |
+   | `approvals` | `~/.codex/rules/kebbie.rules`, which lets the ten commands a task runs, `kebbie report`, `kebbie tell`, `kebbie ask` and `kebbie steps` among them, past Codex's approval question. |
+   | `vault` | With a vault, `[mcp_servers.vault]` in Codex's `config.toml`, so a Codex task keeps its own note. |
 
-   Each step that writes one of Codex's files offers three answers: kebbie adds it, `I'll add it myself`, or `Skip`. The vault step has no `Skip`: with kebbie's vault on, every agent needs it.
+4. Press `⏎`. Nothing is written before it, and `esc` quits without writing.
 
-2. If you chose to add something yourself, the last screen shows exactly what goes where, and quitting prints all of it, the whole rules file or every line of the vault server, to the terminal.
-
-3. Check it:
+5. Check it:
 
    ```bash
    kebbie doctor
@@ -41,13 +39,13 @@ Its task role is written for Codex. Codex can't run kebbie's setup and rules ski
 
    Its `codex plugin`, `codex approvals` and `codex vault` lines read `ok`.
 
-A step you skip or do yourself never stops a task. Until it is in place, `kebbie doctor` names what is missing with `kebbie setup codex` as the fix: without the rules file Codex asks before each kebbie command; without the vault server the lead keeps the task's note, and doctor fails the `codex vault` line.
-
-`kebbie setup` runs the same steps after its Agents step when you turn Codex on. `kebbie setup codex --yes`, and a run without a terminal, install or update the plugin alone, print one line such as `kebbie's Codex plugin installed at ~/.codex/plugins/cache/kebbie-tasks/kebbie/local: .codex-plugin/plugin.json, hooks/hooks.json, bin/kebbie-hook`, and then list what the guide would offer. With Codex not on `PATH` it stops and writes nothing.
+- If you run `kebbie setup codex --yes`, it writes the same lines without the guide, one printed line each, such as `kebbie's Codex plugin installed at ~/.codex/plugins/cache/kebbie-tasks/kebbie/local: .codex-plugin/plugin.json, hooks/hooks.json, bin/kebbie-hook`. With Codex not on `PATH` it stops and writes nothing.
+- If you run it without a terminal and without `--yes`, it installs or updates the plugin alone and names the rest under `kebbie setup codex --yes also writes:`.
+- If one is missing, `kebbie doctor` names it with `kebbie setup codex` as the fix: without the rules file Codex asks before each kebbie command; without the vault server the lead keeps the task's note. Neither stops a task.
 
 ### The vault server
 
-The vault step adds the vault plugin's own command and arguments, with its folder or its S3 endpoint and bucket:
+The `vault` line runs the vault command kebbie runs, `vault.command`, such as `command = "/home/me/.local/bin/mindin"`. When that is the Claude vault plugin's own command, it takes the plugin's folder or S3 endpoint and bucket with it:
 
 ```toml
 [mcp_servers.vault]
@@ -150,7 +148,7 @@ kebbie's own commands, `kebbie tell` and `kebbie report` among them, still ask f
 
 With `task.sandbox` off, Claude runs unsandboxed, and Codex runs in the sandbox your own Codex config picks. Under `workspace-write`, kebbie adds kebbie's sandbox folders (`~/.cargo/registry`, `~/.npm`, `~/.cache` and the rest, or a profile's `allow_write`) and what a commit writes in `.git` to your own `sandbox_workspace_write.writable_roots` and turns on its network, so a commit or `npm ci` runs without asking.
 
-kebbie's rules file, from the Approvals step of `kebbie setup codex`, lets kebbie's own task commands through without asking. Without it, each approval reaches you and the lead, as under [Approvals and choices](#approvals-and-choices), and the lead recommends `p`, `Yes, and don't ask again for commands that start with …`, for kebbie's commands: Codex itself adds the rule to `~/.codex/rules/default.rules`, and every later Codex session, your own included, runs that command outside its sandbox without asking. `kebbie push`, `approve` and `review` still ask, and kebbie refuses them to a task anyway.
+kebbie's rules file, which `kebbie setup` writes for a ticked Codex, lets kebbie's own task commands through without asking. Without it, each approval reaches you and the lead, as under [Approvals and choices](#approvals-and-choices), and the lead recommends `p`, `Yes, and don't ask again for commands that start with …`, for kebbie's commands: Codex itself adds the rule to `~/.codex/rules/default.rules`, and every later Codex session, your own included, runs that command outside its sandbox without asking. `kebbie push`, `approve` and `review` still ask, and kebbie refuses them to a task anyway.
 
 | Permission mode | Sandbox on | Sandbox off |
 | --- | --- | --- |

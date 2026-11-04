@@ -14,7 +14,7 @@ fn doctor_line(doctor: &str, name: &str) -> String {
 fn setup_yes_on_a_new_home_installs_the_claude_plugin_and_herdrs_keys_and_ends_on_the_doctors_count() {
     let lab = Lab::new("setup");
     let said = lab.ok(&["setup", "--yes"]);
-    assert!(row(&said, "plugin").starts_with("done") && row(&said, "plugin").contains("installed kebbie@kebbie in Claude Code"), "{said}");
+    assert!(row(&said, "claude").starts_with("done") && row(&said, "claude").contains("installed kebbie@kebbie in Claude Code"), "{said}");
     assert!(row(&said, "keys").starts_with("done") && row(&said, "keys").contains("added prefix+space"), "{said}");
     assert!(row(&said, "link").starts_with("skipped"), "without the current link there is nothing to link: {said}");
     assert!(said.lines().any(|line| line.starts_with("Setup done · doctor: ")), "{said}");
@@ -28,7 +28,7 @@ fn setup_yes_on_a_new_home_installs_the_claude_plugin_and_herdrs_keys_and_ends_o
 }
 
 #[test]
-fn setup_codex_yes_installs_the_plugin_and_only_offers_the_rules_file_while_codexs_config_stays_as_it_was() {
+fn setup_codex_yes_installs_the_plugin_and_its_rules_file_while_codexs_config_stays_as_it_was() {
     let lab = Lab::new("setup-codex");
     let codex = lab.home.join(".codex");
     fs::create_dir_all(&codex).unwrap();
@@ -38,26 +38,26 @@ fn setup_codex_yes_installs_the_plugin_and_only_offers_the_rules_file_while_code
     assert!(doctor_line(&doctor, "codex plugin").starts_with("warn"), "{doctor}");
     let said = lab.ok(&["setup", "codex", "--yes"]);
     assert!(said.starts_with("kebbie's Codex plugin installed at "), "{said}");
-    assert!(said.contains("kebbie setup codex in a terminal also offers, each on your choice:") && said.contains("approvals  ~/.codex/rules/kebbie.rules"), "{said}");
-    assert!(!codex.join("rules").exists(), "the rules file is written only when the guide applies it");
-    assert_eq!(fs::read_to_string(codex.join("config.toml")).unwrap(), config, "no server table or other key is added to Codex's own config");
+    assert!(said.lines().any(|line| line.starts_with("done") && line.contains("approvals  ~/.codex/rules/kebbie.rules")), "the plugin comes with its rules file, printed: {said}");
+    assert!(codex.join("rules/kebbie.rules").is_file());
+    assert_eq!(fs::read_to_string(codex.join("config.toml")).unwrap(), config, "without a vault no server table or other key is added to Codex's own config");
     let doctor = stdout(&lab.run(&["doctor"]));
-    assert!(doctor_line(&doctor, "codex plugin").starts_with("ok"), "{doctor}");
-    assert!(doctor_line(&doctor, "codex approvals").starts_with("warn") && doctor.contains("kebbie.rules is missing"), "{doctor}");
-    assert!(lab.ok(&["setup", "codex", "--yes"]).starts_with("kebbie's Codex plugin is up to date at "));
+    assert!(doctor_line(&doctor, "codex plugin").starts_with("ok") && doctor_line(&doctor, "codex approvals").starts_with("ok"), "{doctor}");
+    let again = lab.ok(&["setup", "codex", "--yes"]);
+    assert!(again.starts_with("kebbie's Codex plugin is up to date at ") && !again.contains("done"), "a second run writes nothing: {again}");
 }
 
 #[test]
-fn setup_yes_sets_up_only_the_agents_chosen_and_each_agents_own_setup_writes_its_own_part() {
+fn setup_yes_sets_up_every_agent_found_and_each_agents_own_setup_writes_its_own_part() {
     let lab = Lab::new("setup-agents");
-    let claude_only = lab.ok(&["setup", "--yes"]);
-    assert!(!claude_only.lines().any(|line| line.split_whitespace().nth(1) == Some("codex")), "Codex was never chosen, so setup leaves it: {claude_only}");
-    assert!(!lab.home.join(".codex").exists());
     let claude = lab.ok(&["setup", "claude", "--yes"]);
     assert!(claude.lines().next().unwrap().contains("plugin") && !claude.contains("Codex"), "{claude}");
-    lab.ok(&["setup", "codex", "--yes"]);
+    assert!(!lab.home.join(".codex").exists(), "kebbie setup claude writes nothing of Codex's");
     let both = lab.ok(&["setup", "--yes"]);
-    assert!(row(&both, "codex").starts_with("already") && row(&both, "codex").contains("kebbie's Codex plugin is up to date"), "{both}");
+    assert!(row(&both, "codex").starts_with("done") && row(&both, "codex").contains(".codex/plugins/cache/kebbie-tasks"), "a Codex found is ticked by default, so --yes installs its plugin: {both}");
+    assert!(lab.home.join(".codex/rules/kebbie.rules").is_file(), "and its rules file: {both}");
+    let again = lab.ok(&["setup", "--yes"]);
+    assert!(again.lines().filter(|line| line.split_whitespace().nth(1) == Some("codex")).all(|line| line.starts_with("already")), "{again}");
 }
 
 #[test]

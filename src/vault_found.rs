@@ -6,12 +6,22 @@ use crate::vault_cli::Probe;
 
 pub const ON_PATH: [&str; 2] = ["mindin", "notes-vault-mcp"];
 
-// A vault command setup can offer: where it was found, the words kebbie would run, and what it answered.
+// Where setup found a vault command, which decides the command kebbie runs: a mindin first, then kebbie's own, then the Claude plugin's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Origin {
+    Mindin,
+    Kept,
+    Plugin,
+    Other,
+}
+
+// A vault command setup found: where, the words kebbie would run, and what it answered.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Found {
     pub source: String,
     pub command: Vec<String>,
     pub answer: Option<Probe>,
+    pub origin: Origin,
 }
 
 impl Found {
@@ -33,6 +43,7 @@ pub struct Places<'a> {
     pub codex_home: Option<&'a Path>,
     pub cursor_dir: &'a Path,
     pub path: &'a [PathBuf],
+    pub local_bin: &'a Path,
 }
 
 fn read_json(path: &Path) -> Option<Value> {
@@ -48,28 +59,32 @@ fn servers(config: &Value) -> Vec<(String, Vec<String>)> {
     config.as_object().into_iter().flatten().filter_map(|(name, server)| Some((name.clone(), words(server)?))).collect()
 }
 
-// Each MCP server in Codex's config.toml, Cursor's mcp.json, and the vault commands on PATH; any of them may run the vault, whatever its name.
-fn asked(places: &Places) -> Vec<(String, Vec<String>)> {
+// Each MCP server in Codex's config.toml, Cursor's mcp.json, the vault commands on PATH and a mindin in ~/.local/bin; any of them may run the vault, whatever its name.
+fn asked(places: &Places) -> Vec<(Origin, String, Vec<String>)> {
     let codex = places.codex_home.map(|home| home.join("config.toml")).and_then(|file| std::fs::read_to_string(file).ok()).and_then(|text| text.parse::<toml::Table>().ok())
         .and_then(|config| serde_json::to_value(config.get("mcp_servers")?).ok()).unwrap_or_default();
     let cursor = read_json(&places.cursor_dir.join("mcp.json")).map(|config| config["mcpServers"].clone()).unwrap_or_default();
-    let mut asked: Vec<(String, Vec<String>)> = servers(&codex).into_iter().map(|(name, command)| (format!("Codex's [mcp_servers.{name}]"), command)).collect();
-    asked.extend(servers(&cursor).into_iter().map(|(name, command)| (format!("Cursor's mcp.json server {name}"), command)));
-    asked.extend(ON_PATH.into_iter().filter(|name| crate::doctor::which(name, places.path).is_some()).map(|name| (format!("{name} on PATH"), vec![name.to_string()])));
+    let origin = |name: &str| if name == "mindin" { Origin::Mindin } else { Origin::Other };
+    let mut asked: Vec<(Origin, String, Vec<String>)> = ON_PATH.into_iter().filter(|name| crate::doctor::which(name, places.path).is_some()).map(|name| (origin(name), format!("{name} on PATH"), vec![name.to_string()])).collect();
+    if crate::doctor::which("mindin", places.path).is_none() {
+        asked.extend(crate::doctor::which("mindin", &[places.local_bin.to_path_buf()]).map(|mindin| (Origin::Mindin, "mindin in ~/.local/bin".to_string(), vec![mindin.to_string_lossy().to_string()])));
+    }
+    asked.extend(servers(&codex).into_iter().map(|(name, command)| (Origin::Other, format!("Codex's [mcp_servers.{name}]"), command)));
+    asked.extend(servers(&cursor).into_iter().map(|(name, command)| (Origin::Other, format!("Cursor's mcp.json server {name}"), command)));
     asked
 }
 
 // The Claude plugin's server is the command Claude Code starts, so it is offered whatever it answers; every other one only when it answers as a vault.
 pub fn candidates(places: &Places, probe: impl Fn(&[String]) -> Option<Probe> + Sync) -> Vec<Found> {
     let plugin = crate::vault_cli::installed(places.claude_dir).and_then(|(id, _, root)| Some((format!("the Claude Code vault plugin {id}"), crate::vault_cli::server_command(&root)?)));
-    let asked: Vec<(bool, String, Vec<String>)> = plugin.into_iter().map(|(source, command)| (true, source, command)).chain(asked(places).into_iter().map(|(source, command)| (false, source, command))).collect();
+    let asked: Vec<(Origin, String, Vec<String>)> = plugin.into_iter().map(|(source, command)| (Origin::Plugin, source, command)).chain(asked(places)).collect();
     let answers = crate::sh::in_parallel(&asked, 4, |(_, _, command)| probe(command));
     let mut found: Vec<Found> = Vec::new();
-    for ((trusted, source, command), answer) in asked.into_iter().zip(answers) {
+    for ((origin, source, command), answer) in asked.into_iter().zip(answers) {
         let unique = !found.iter().any(|seen| seen.command == command);
         let runnable = !command.iter().any(|word| word.chars().any(char::is_whitespace));
-        if unique && runnable && (trusted || answer.is_some()) {
-            found.push(Found { source, command, answer });
+        if unique && runnable && (origin == Origin::Plugin || answer.is_some()) {
+            found.push(Found { source, command, answer, origin });
         }
     }
     found
@@ -79,8 +94,9 @@ pub fn candidates(places: &Places, probe: impl Fn(&[String]) -> Option<Probe> + 
 pub fn probe_on(path: &[PathBuf], command: &[String]) -> Option<Probe> {
     let (program, rest) = command.split_first()?;
     let program = if program.contains('/') { PathBuf::from(program) } else { crate::doctor::which(program, path)? };
-    let words = std::iter::once(program.to_string_lossy().to_string()).chain(rest.iter().cloned()).collect();
-    crate::vault_cli::Cli::new(words).probe(false).ok().filter(|probe| !probe.version.is_empty())
+    let cli = crate::vault_cli::Cli::new(std::iter::once(program.to_string_lossy().to_string()).chain(rest.iter().cloned()).collect());
+    let probe = cli.probe(false).ok().filter(|probe| !probe.version.is_empty())?;
+    Some(crate::vault_cli::Probe { setup: cli.offers("setup"), ..probe })
 }
 
 #[cfg(test)]
@@ -109,19 +125,24 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         crate::executable::write(bin.join("notes-vault-mcp"), "#!/bin/sh\n").unwrap();
         let path = [bin];
-        let places = Places { claude_dir: &claude, codex_home: Some(&codex), cursor_dir: &cursor, path: &path };
+        let local_bin = dir.join("local-bin");
+        std::fs::create_dir_all(&local_bin).unwrap();
+        crate::executable::write(local_bin.join("mindin"), "#!/bin/sh\n").unwrap();
+        let places = Places { claude_dir: &claude, codex_home: Some(&codex), cursor_dir: &cursor, path: &path, local_bin: &local_bin };
         let asked = std::sync::Mutex::new(Vec::new());
         let found = candidates(&places, |command| {
             asked.lock().unwrap().push(command.join(" "));
             (command[0] != "gh-mcp" && command[0] != "uvx").then(|| vault("0.14.0"))
         });
-        let shown: Vec<(String, String)> = found.iter().map(|found| (found.source.clone(), found.shown())).collect();
+        let shown: Vec<(String, String, Origin)> = found.iter().map(|found| (found.source.clone(), found.shown(), found.origin)).collect();
+        let mindin = local_bin.join("mindin").display().to_string();
         assert_eq!(shown, [
-            ("the Claude Code vault plugin vault@gronare".to_string(), "uvx mindin==0.14.0".to_string()),
-            ("Codex's [mcp_servers.notes]".to_string(), "uv run --project /src/mindin mindin".to_string()),
-            ("Cursor's mcp.json server brain".to_string(), "/opt/vault/bin/mindin".to_string()),
-            ("notes-vault-mcp on PATH".to_string(), "notes-vault-mcp".to_string()),
-        ], "a server that does not answer as a vault is left out, a command found twice is offered once, and the plugin's is offered even unanswered");
+            ("the Claude Code vault plugin vault@gronare".to_string(), "uvx mindin==0.14.0".to_string(), Origin::Plugin),
+            ("notes-vault-mcp on PATH".to_string(), "notes-vault-mcp".to_string(), Origin::Other),
+            ("mindin in ~/.local/bin".to_string(), mindin, Origin::Mindin),
+            ("Codex's [mcp_servers.notes]".to_string(), "uv run --project /src/mindin mindin".to_string(), Origin::Other),
+            ("Cursor's mcp.json server brain".to_string(), "/opt/vault/bin/mindin".to_string(), Origin::Other),
+        ], "a server that does not answer as a vault is left out, a command found twice is kept once, the plugin's is kept even unanswered, and a mindin off PATH is found in ~/.local/bin");
         assert!(asked.lock().unwrap().contains(&"gh-mcp".to_string()), "a server is known by its answer, not its name");
         assert_eq!(found[0].answered(), "did not answer");
         assert_eq!(found[1].answered(), "mindin 0.14.0");

@@ -111,6 +111,23 @@ pub fn vault_server(plugin_root: &Path, options: &Value) -> Option<Server> {
     Some(Server { command, args, env, env_vars })
 }
 
+// Codex runs the vault command kebbie runs; when that is the Claude vault plugin's own server, it takes the plugin's settings with it.
+pub fn server_for(claude_dir: &Path, command: &[String]) -> Option<Server> {
+    let plugin = crate::vault_cli::installed(claude_dir).map(|(_, _, root)| root).filter(|root| crate::vault_cli::server_command(root).as_deref() == Some(command));
+    if let Some(root) = plugin {
+        return vault_server(&root, &vault_options(claude_dir));
+    }
+    let (program, args) = command.split_first()?;
+    Some(Server { command: program.clone(), args: args.to_vec(), env: Vec::new(), env_vars: Vec::new() })
+}
+
+pub fn wanted_server(claude_dir: &Path, command: Option<&[String]>) -> Option<Server> {
+    match command {
+        Some(command) => server_for(claude_dir, command),
+        None => crate::vault_cli::installed(claude_dir).and_then(|(_, _, root)| vault_server(&root, &vault_options(claude_dir))),
+    }
+}
+
 // The keys a Codex session needs in its environment, read where the Claude vault plugin keeps them; only those Codex's own config names.
 pub fn vault_secrets(plugin_root: &Path, options: &Value, wanted: &[String]) -> Vec<(String, String)> {
     let server = plugin_server(plugin_root);
@@ -411,6 +428,23 @@ mod tests {
         assert_eq!(vault_placed(Some(&replaced), &server), Placed::Current);
         assert_eq!(wanted_secrets(&replaced.parse().unwrap()), ["S3_ACCESS_KEY", "S3_SECRET_KEY"]);
         assert!(with_vault("model = ", &server).unwrap_err().contains("does not parse"), "a file kebbie cannot read is left alone");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn codexs_vault_server_runs_kebbies_vault_command_and_the_plugins_settings_only_when_it_is_the_plugins_command() {
+        let dir = crate::sh::test_dir("codex-vault-command");
+        let claude = dir.join("claude");
+        let root = vault_plugin(&dir);
+        std::fs::create_dir_all(claude.join("plugins")).unwrap();
+        std::fs::write(claude.join("plugins/installed_plugins.json"), serde_json::json!({ "plugins": { "vault@gronare": [{ "version": "0.3.0", "installPath": root }] } }).to_string()).unwrap();
+        std::fs::write(claude.join("settings.json"), serde_json::json!({ "pluginConfigs": { "vault@gronare": { "options": s3() } } }).to_string()).unwrap();
+        let own = server_for(&claude, &["/home/me/.local/bin/mindin".to_string()]).unwrap();
+        assert_eq!(own.lines(), ["[mcp_servers.vault]", "command = \"/home/me/.local/bin/mindin\"", "args = []"], "a vault command of its own finds the vault itself");
+        assert_eq!(vault_placed(Some("[mcp_servers.vault]\ncommand = \"/home/me/.local/bin/mindin\"\n"), &own), Placed::Current, "the lines mindin's installer writes are the same server");
+        let plugins = server_for(&claude, &["uvx".to_string(), "notes-vault-mcp==0.8.0".to_string()]).unwrap();
+        assert_eq!(plugins, vault_server(&root, &s3()).unwrap(), "the plugin's own command keeps the plugin's settings");
+        assert_eq!(wanted_server(&claude, None), Some(plugins), "without [vault] command, the plugin's server as before");
         let _ = std::fs::remove_dir_all(dir);
     }
 

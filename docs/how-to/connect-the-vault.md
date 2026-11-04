@@ -8,31 +8,31 @@ Give every task a note in your vault, such as [mindin](https://github.com/gronar
    kebbie setup vault
    ```
 
-2. Pick a local folder and type its path, or an S3 bucket with its endpoint, bucket, access key and secret, then `⏎`.
+2. Choose where the vault lives: **Your own server**, **S3 bucket** or **Local folder**, and fill in its fields, such as the address `https://vault.example.com`. The place in use is preselected, such as `Your own server  https://vault.example.com · signed in`. Press `⏎`.
 
-3. At the Vault for kebbie step, pick the vault command kebbie itself runs. Each choice says where it was found and what it answered, such as `uvx mindin==0.14.0 · mindin 0.14.0`.
+3. To list the vault's backlog notes on the board, tick Vault in the Backlog step. The first source ticked is where the lead files new ideas.
 
-4. To list the vault's backlog notes on the board, tick Vault in the Backlog step (`←` goes back to it). The first source ticked is where the lead files new ideas.
+4. On the last step, read the `mindin` and `vault` lines and press `⏎`. When the place is new, `mindin setup` runs first, in the terminal: a server opens the browser to sign you in, and S3 asks for its access key and secret. The guide then writes `vault.command` to kebbie's `config.toml`, installs the vault plugin in Claude Code and adds `[mcp_servers.vault]` to Codex's `config.toml` when you ticked Codex.
 
-5. On the last step, press `⏎`. The guide installs the vault plugin in Claude Code, gives it your answers, and writes your vault command to kebbie's `config.toml` as `vault.command`.
-
-6. Restart the lead so it picks up the vault in its role:
+5. Restart the lead so it picks up the vault in its role:
 
    ```bash
    kebbie lead --restart
    ```
 
-7. Check it. The `vault` line reads `ok` with the vault's name, version and capabilities.
+6. Check it. The `vault` line reads `ok` with the vault's name, version and capabilities.
 
    ```bash
    kebbie doctor
    ```
 
-- If the Vault for kebbie step is not shown, setup found no vault command on this machine: run `kebbie setup` again once the vault plugin is installed, or set `vault.command` yourself, below.
+- If no vault command on the machine can run `mindin setup`, the review lists `install` first: mindin's installer runs, then its setup, and the guide points kebbie and each agent at the `mindin` it installed.
+- If your server reads `not signed in`, keep it chosen: `mindin setup` signs you in as you apply.
+- If you choose **Local folder**, make the folder first: `mindin setup` takes only a folder that exists.
 - If the `vault` line reads `too old`, run `claude plugin update vault@gronare`, or point `vault.command` at a newer vault.
 - If the `vault` line names the package's new name, run `kebbie doctor --fix` and answer `y` to write the new `vault.command`.
-- If you run it without a terminal, `kebbie setup vault` shows each `claude plugin` command and runs it only on your `y`; set the vault's options in Claude Code's `/plugin` screen after.
-- If a task runs in Codex or Cursor, that agent reaches the vault through its own MCP server. `kebbie setup codex` adds it to Codex. See [Each agent reaches the vault on its own](../explanation/vault.md#each-agent-reaches-the-vault-on-its-own).
+- If you run it without a terminal, `kebbie setup vault` shows the vault command it would run, or the line that installs mindin, and writes nothing.
+- If a task runs in Cursor, add the vault to Cursor's `mcp.json` yourself. See [Each agent reaches the vault on its own](../explanation/vault.md#each-agent-reaches-the-vault-on-its-own).
 
 ## Share the vault between machines
 

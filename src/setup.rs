@@ -35,50 +35,17 @@ pub fn steps(claude: &str, plugin: &Plugin, marketplace: bool) -> Vec<Vec<String
         Plugin::Disabled { id, .. } => steps.push(command(&["plugin", "enable", id])),
         Plugin::Enabled { .. } => {}
     }
-    steps.push(command(&["plugin", "configure", VAULT_PLUGIN]));
     steps
 }
 
-fn configure_text(claude: &str) -> String {
-    format!(
-        "Point the plugin at your vault, one of:\n  a local folder:  echo '{{\"vault_path\": \"/path/to/vault\"}}' | {claude} plugin configure {VAULT_PLUGIN} --values-stdin\n  an S3 bucket:    set s3_endpoint, s3_bucket, s3_access_key and s3_secret_key the same way, or in Claude Code's /plugin screen, which asks for them.\nThen run kebbie doctor: its vault line says whether kebbie keeps your tasks in the vault."
-    )
-}
-
-// Each command is printed and runs only on the user's y.
-pub fn run_steps(steps: &[Vec<String>], input: &mut impl BufRead, output: &mut impl Write, mut run: impl FnMut(&[String]) -> Result<()>) -> Result<usize> {
-    let mut ran = 0;
-    for step in steps {
-        write!(output, "Run: {}\n  [y/N] ", step.join(" ")).map_err(|error| error.to_string())?;
-        output.flush().map_err(|error| error.to_string())?;
-        let mut answer = String::new();
-        input.read_line(&mut answer).map_err(|error| error.to_string())?;
-        if !matches!(answer.trim(), "y" | "Y" | "yes") {
-            writeln!(output, "Skipped; nothing after it runs.").map_err(|error| error.to_string())?;
-            return Ok(ran);
-        }
-        run(step)?;
-        ran += 1;
-    }
-    Ok(ran)
-}
-
 pub fn vault() -> Result<String> {
+    crate::permit::user_only("kebbie setup vault")?;
+    let machine = machine()?;
+    let env = crate::setup_guide::Env::current(&machine)?;
     if in_terminal() {
-        crate::permit::user_only("kebbie setup vault")?;
-        let machine = machine()?;
-        return crate::setup_guide::run(&crate::setup_guide::Env::current(&machine)?, crate::setup_guide::Scope::All, crate::setup_guide::Step::Vault);
+        return crate::setup_guide::run(&env, crate::setup_guide::Step::Vault);
     }
-    let claude = claude_bin();
-    let home = crate::agent::claude::home().unwrap_or_default();
-    let steps = steps(&claude, &crate::vault_cli::plugin(&home), marketplace_known(&home, "gronare"));
-    println!("kebbie setup vault: the vault plugin keeps each task's note and the repos' logs in your Obsidian vault. Optional: kebbie works the same without it.");
-    let stdin = std::io::stdin();
-    let ran = run_steps(&steps, &mut stdin.lock(), &mut std::io::stdout(), |step| crate::sh::run_visibly(&step[0], &step[1..].iter().map(String::as_str).collect::<Vec<_>>(), None))?;
-    if ran < steps.len() {
-        return Ok(format!("Ran {ran} of {} steps.", steps.len()));
-    }
-    Ok(configure_text(&claude))
+    Ok(crate::setup_guide::vault_text(&env))
 }
 
 pub fn yes(question: &str, input: &mut impl BufRead, output: &mut impl Write) -> Result<bool> {
@@ -142,7 +109,7 @@ pub fn install(yes: bool) -> Result<String> {
     let machine = machine()?;
     let env = crate::setup_guide::Env::current(&machine)?;
     if !yes && in_terminal() {
-        return crate::setup_guide::run(&env, crate::setup_guide::Scope::All, crate::setup_guide::Step::Name);
+        return crate::setup_guide::run(&env, crate::setup_guide::Step::Name);
     }
     let asking = if yes { Asking::Yes } else { Asking::Closed };
     let rows = crate::setup_guide::without_asking(&env, asking);
@@ -270,12 +237,6 @@ impl Wanted {
 
     pub fn command(&self) -> &str {
         text(&self.binding, "command")
-    }
-
-    pub fn moved(&self) -> Option<toml::Table> {
-        let mut binding = self.binding.clone();
-        binding.insert("key".to_string(), toml::Value::String(self.free.clone()?));
-        Some(binding)
     }
 }
 
@@ -427,17 +388,19 @@ pub fn codex(uninstall: bool, yes: bool) -> Result<String> {
     let machine = machine()?;
     let env = crate::setup_guide::Env::current(&machine)?;
     if !uninstall && !yes && in_terminal() {
-        return crate::setup_guide::run(&env, crate::setup_guide::Scope::Agent(crate::agent::Agent::Codex), crate::setup_guide::Step::CodexPlugin);
+        return crate::setup_guide::run(&env, crate::setup_guide::Step::Agents);
     }
     let stdin = std::io::stdin();
     let said = codex_in(&home, &env.kebbie, uninstall, &mut stdin.lock(), &mut std::io::stdout())?;
     if uninstall {
         return Ok(said);
     }
-    let offers = crate::setup_guide::offers(&env, crate::agent::Agent::Codex);
-    Ok(if offers.is_empty() { said } else { format!("{said}
+    Ok(with_agent_rows(said, &env, crate::agent::Agent::Codex, yes))
+}
 
-{}", offers.join("\n")) })
+fn with_agent_rows(said: String, env: &crate::setup_guide::Env, agent: crate::agent::Agent, yes: bool) -> String {
+    let rows = if yes { crate::setup_guide::apply_agent(env, agent) } else { crate::setup_guide::offers(env, agent) };
+    if rows.is_empty() { said } else { format!("{said}\n\n{}", rows.join("\n")) }
 }
 
 pub fn claude(yes: bool) -> Result<String> {
@@ -445,13 +408,9 @@ pub fn claude(yes: bool) -> Result<String> {
     let machine = machine()?;
     let env = crate::setup_guide::Env::current(&machine)?;
     if !yes && in_terminal() {
-        return crate::setup_guide::run(&env, crate::setup_guide::Scope::Agent(crate::agent::Agent::Claude), crate::setup_guide::Step::ClaudePlugin);
+        return crate::setup_guide::run(&env, crate::setup_guide::Step::Agents);
     }
-    let said = claude_plugin(&machine).line("plugin");
-    let offers = crate::setup_guide::offers(&env, crate::agent::Agent::Claude);
-    Ok(if offers.is_empty() { said } else { format!("{said}
-
-{}", offers.join("\n")) })
+    Ok(with_agent_rows(claude_plugin(&machine).line("plugin"), &env, crate::agent::Agent::Claude, yes))
 }
 
 // Running the command is the yes to writing kebbie's own folder in Codex's plugin cache; config.toml and hooks.json stay the user's.
@@ -563,10 +522,6 @@ pub(crate) mod tests {
         let (said, wrote) = keys(&config, Asking::Yes);
         assert!(wrote && said.contains("added prefix+space to") && said.contains("prefix+f is already cycle_pane_next, so kebbie.focus gets no key") && said.contains("prefix+t is already lazygit"), "{said}");
         assert_eq!(commands(&config), ["prefix+t lazygit", "prefix+y btop", "prefix+space kebbie.lead"]);
-        let moved = plan.missing[2].moved().unwrap();
-        let (outcome, _) = add_keys(&key_plan(&config), &[moved]);
-        assert!(outcome.verb == "done" && outcome.detail.contains("added prefix+m to"), "{outcome:?}");
-        assert_eq!(commands(&config).last().map(String::as_str), Some("prefix+m kebbie.board"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -684,32 +639,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn setup_adds_the_marketplace_installs_the_plugin_and_shows_its_options_with_the_given_claude() {
+    fn setup_adds_the_marketplace_and_installs_the_vault_plugin_with_the_given_claude() {
         assert_eq!(steps_for(&Plugin::Missing, false), [
             "/fake/claude plugin marketplace add https://github.com/gronare/claude-plugins.git",
             "/fake/claude plugin install vault@gronare",
-            "/fake/claude plugin configure vault@gronare",
-        ]);
+        ], "where the vault lives is the vault's own setup, so nothing configures the plugin");
         assert_eq!(steps_for(&Plugin::Missing, true)[0], "/fake/claude plugin install vault@gronare", "a known marketplace is not added again");
         assert_eq!(steps_for(&Plugin::Disabled { id: "vault@gronare".to_string(), version: "0.2.15".to_string() }, true)[0], "/fake/claude plugin enable vault@gronare");
-        assert_eq!(steps_for(&Plugin::Enabled { id: "vault@gronare".to_string(), version: "0.2.15".to_string(), root: "/x".into() }, true), ["/fake/claude plugin configure vault@gronare"]);
-    }
-
-    #[test]
-    fn setup_runs_nothing_without_a_yes_and_each_step_only_after_its_own() {
-        let steps = steps("/fake/claude", &Plugin::Missing, false);
-        let run = |answers: &str| {
-            let mut ran = Vec::new();
-            let mut output = Vec::new();
-            let count = run_steps(&steps, &mut answers.as_bytes(), &mut output, |step| { ran.push(step.join(" ")); Ok(()) }).unwrap();
-            (count, ran, String::from_utf8(output).unwrap())
-        };
-        let (count, ran, shown) = run("");
-        assert_eq!((count, ran.len()), (0, 0), "no answer is no");
-        assert!(shown.starts_with("Run: /fake/claude plugin marketplace add https://github.com/gronare/claude-plugins.git\n  [y/N] "), "{shown}");
-        assert_eq!(run("n\n").1.len(), 0);
-        let (count, ran, _) = run("y\nn\n");
-        assert_eq!((count, ran), (1, vec!["/fake/claude plugin marketplace add https://github.com/gronare/claude-plugins.git".to_string()]));
-        assert_eq!(run("y\ny\ny\n").0, 3);
+        assert!(steps_for(&Plugin::Enabled { id: "vault@gronare".to_string(), version: "0.2.15".to_string(), root: "/x".into() }, true).is_empty(), "an enabled plugin needs nothing");
     }
 }

@@ -14,9 +14,9 @@ pub enum Login {
 impl Login {
     pub fn shown(self, fix: &str) -> String {
         match self {
-            Login::In => "logged in".to_string(),
-            Login::Out => format!("not logged in: run {fix}"),
-            Login::Unknown => "login not checked".to_string(),
+            Login::In => "signed in".to_string(),
+            Login::Out => format!("not signed in: run {fix}"),
+            Login::Unknown => "sign-in not checked".to_string(),
         }
     }
 }

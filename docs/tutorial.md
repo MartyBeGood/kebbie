@@ -44,21 +44,16 @@ If you installed from herdr's plugin list with `herdr plugin install gronare/keb
 
 ## 3. Setup
 
-The script opens the setup guide. Its steps are on the left; `↑` `↓` choose, `space` ticks a box, `⏎` goes on, `←` goes back, `s` skips a step and `esc` quits without writing anything.
+The script opens the setup guide. Its steps are on the left; `↑` `↓` choose, `space` ticks a box, `⏎` goes on, `←` goes back, `s` skips the Vault, Backlog or Error signals step and `esc` quits without writing anything.
 
-1. **Machine name.** Keep the name it offers, or type one, such as `mac`. Your phone and your other machines show it.
-2. **Agents.** Claude Code stays on. Leave Codex off for now: turning it on adds Codex's own steps, as in [Run a task with Codex](how-to/run-a-task-with-codex.md#set-up-codex).
-3. **Claude Code's steps.** Under **Claude Code** on the left:
-   - **Plugin.** Keep **Install kebbie's plugin**.
-   - **Login.** Shows whether Claude Code is logged in; `claude auth login` if it is not.
-   - **Approvals** and **Updates** are in place: kebbie gives Claude tasks their rules when they start, and Claude Code updates itself.
-   - **Vault.** Keep **None**. [Connect the vault](how-to/connect-the-vault.md) later if you keep notes in one.
-4. **herdr keys.** Keep **Add them**: the three keys below go at the end of herdr's `config.toml`. A key you already use for something else is named, with a free one offered.
-5. **Backlog.** Keep **Local file**: new ideas go to a `backlog.md` beside kebbie's config.
-6. **Error signals.** Read what a signal holds, below, and keep them on or turn them off.
-7. **Review and apply.** Read the list of what it writes and runs, then press `⏎`. The list includes the `kebbie doctor` warnings setup fixes itself, such as starting the keeper.
+1. **This machine.** Keep the name it offers, or type one, such as `mac`. Your phone and your other machines show it.
+2. **Agents.** Each agent kebbie found has a row: its version, whether it is signed in and whether kebbie's plugin is in it. Claude Code stays ticked. Untick Codex for now, or keep it, as in [Run a task with Codex](how-to/run-a-task-with-codex.md#set-up-codex). If Claude Code reads `not signed in`, run `claude auth login`.
+3. **Vault.** Keep **No vault**. [Connect the vault](how-to/connect-the-vault.md) later if you keep notes in one.
+4. **Backlog.** Keep **Local file**: new ideas go to a `backlog.md` beside kebbie's config.
+5. **Error signals.** Read what a signal holds, below, and keep them on or turn them off.
+6. **Review and apply.** Read the list of what it writes, grouped by tool: kebbie's own config, kebbie's plugin in each agent you ticked, herdr's three keys, and the `kebbie doctor` warnings setup fixes itself, such as starting the keeper. Then press `⏎`.
 
-A step that writes another tool's file offers **I'll add it myself** beside kebbie doing it: the last screen then shows exactly what goes where, and quitting prints it to the terminal. Each line then turns `done` or `already`, and setup ends with `Setup done` and `kebbie doctor`'s count and, under `Next steps`, what is still yours to do, such as `codex login`. Below them, **Your board on your phone** offers the hub: `h` connects now and then opens your board, any other key takes you to the lead Space with the board and the lead, and `H` on the board connects later (see [See your board on your phone](how-to/see-your-board-on-your-phone.md)). It linked `~/.local/bin/kebbie` to the binary, installed the Claude Code plugin from the same folder, added the keys and reloaded herdr's config so they work. When `~/.local/bin` is not on your `PATH`, its line tells you what to add to your shell profile.
+Each line then turns `done` or `already`, and setup ends with `Setup done` and `kebbie doctor`'s count and, under `Next steps`, what is still yours to do, such as `codex login`. Below them, **Your board on your phone** offers the hub: `h` connects now and then opens your board, any other key takes you to the lead Space with the board and the lead, and `H` on the board connects later (see [See your board on your phone](how-to/see-your-board-on-your-phone.md)). It linked `~/.local/bin/kebbie` to the binary, installed the Claude Code plugin from the same folder, added the keys and reloaded herdr's config so they work. When `~/.local/bin` is not on your `PATH`, its line tells you what to add to your shell profile.
 
 | Key | What it does |
 | --- | --- |
@@ -68,7 +63,7 @@ A step that writes another tool's file offers **I'll add it myself** beside kebb
 
 Updating kebbie is `U` on the board.
 
-You can run `kebbie setup` again at any time: it starts from what this machine has and changes only what you change. `kebbie setup claude` and `kebbie setup codex` open it on one agent's steps.
+You can run `kebbie setup` again at any time: it starts from what this machine has and changes only what you change. `kebbie setup codex` opens it at the Agents step, `kebbie setup vault` at the Vault step.
 
 ### Error signals
 

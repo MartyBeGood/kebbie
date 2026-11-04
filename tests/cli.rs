@@ -202,8 +202,11 @@ fn setup_codex_rewrites_a_stale_plugin_at_once_and_doctor_then_reports_it_ok() {
     assert!(repaired.status.success(), "{}", stderr(&repaired));
     let said = stdout(&repaired);
     assert_eq!(said.lines().next(), Some("kebbie's Codex plugin updated: bin/kebbie-hook"), "the plugin's line first, no prompt and no guide: {said}");
-    assert!(said.contains("kebbie setup codex in a terminal also offers, each on your choice:") && said.contains("rules/kebbie.rules") && said.contains("update.agents"), "what else the guide offers, written nowhere: {said}");
+    assert!(said.contains("kebbie setup codex --yes also writes:") && said.contains("rules/kebbie.rules") && !said.contains("update.agents"), "what --yes also writes, written nowhere: {said}");
     assert!(!codex_home.join("rules").exists(), "{said}");
+    let yes = run(&["setup", "codex", "--yes"]);
+    assert!(yes.status.success() && stdout(&yes).lines().any(|line| line.starts_with("done") && line.contains("rules/kebbie.rules")), "--yes writes the rules file and says so: {}{}", stdout(&yes), stderr(&yes));
+    assert!(codex_home.join("rules/kebbie.rules").is_file());
     let fixed = plugin_line(&stdout(&run(&["doctor"])));
     assert!(fixed.starts_with("ok") && fixed.contains("kebbie's plugin at "), "{fixed}");
     assert!(stdout(&run(&["setup", "codex"])).starts_with("kebbie's Codex plugin is up to date at "));
