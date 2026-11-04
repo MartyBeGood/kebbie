@@ -221,16 +221,58 @@ fn marketplace_dir(claude_dir: &Path, name: &str) -> PathBuf {
         .unwrap_or_else(|| claude_dir.join("plugins/marketplaces").join(name))
 }
 
+// Where a marketplace entry's plugin files live: a folder of the marketplace's own repo, or a folder of a GitHub repo read over raw.githubusercontent.com.
+#[derive(Debug, PartialEq)]
+enum PluginSource {
+    Local(String),
+    GitHub { raw: String },
+}
+
+fn github_repo(url: &str) -> Option<String> {
+    let repo = url.trim_end_matches('/').trim_end_matches(".git");
+    let repo = repo.strip_prefix("https://github.com/").or_else(|| repo.strip_prefix("git@github.com:")).unwrap_or(repo);
+    (repo.split('/').count() == 2 && !repo.contains(':')).then(|| repo.to_string())
+}
+
+fn plugin_source(entry: &Value) -> std::result::Result<PluginSource, String> {
+    let source = &entry["source"];
+    if let Some(path) = source.as_str() {
+        return Ok(PluginSource::Local(path.trim_start_matches("./").trim_end_matches('/').to_string()));
+    }
+    let (repo, path) = match source["source"].as_str() {
+        Some("git-subdir") => (source["url"].as_str().and_then(github_repo), source["path"].as_str().unwrap_or_default()),
+        Some("github") => (source["repo"].as_str().and_then(github_repo), ""),
+        Some("url") => (source["url"].as_str().and_then(github_repo), ""),
+        other => return Err(format!("its source {} is not a git repo kebbie reads", other.unwrap_or("?"))),
+    };
+    let repo = repo.ok_or("its source is outside GitHub")?;
+    let reference = source["sha"].as_str().or(source["ref"].as_str()).unwrap_or("HEAD");
+    let path = path.trim_start_matches("./").trim_matches('/');
+    let raw = format!("https://raw.githubusercontent.com/{repo}/{reference}/{path}");
+    Ok(PluginSource::GitHub { raw: raw.trim_end_matches('/').to_string() })
+}
+
+fn fetch_text(url: &str) -> Option<String> {
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(20)))
+        .user_agent(format!("kebbie/{}", env!("CARGO_PKG_VERSION")))
+        .build();
+    ureq::Agent::new_with_config(config).get(url).call().ok()?.body_mut().read_to_string().ok()
+}
+
 fn latest_vault(claude_dir: &Path, id: &str) -> Result<(String, Option<String>)> {
     let (plugin, marketplace) = id.split_once('@').ok_or_else(|| format!("{id} names no marketplace"))?;
     let dir = marketplace_dir(claude_dir, marketplace);
     let head = fetched_default(&dir)?;
     let listing: Value = show(&dir, &head, ".claude-plugin/marketplace.json").and_then(|text| serde_json::from_str(&text).ok()).ok_or("the marketplace lists no plugins")?;
-    let source = listing["plugins"].as_array().into_iter().flatten().find(|entry| entry["name"] == plugin)
-        .and_then(|entry| entry["source"].as_str()).ok_or_else(|| format!("the marketplace {marketplace} has no {plugin} in its own repo"))?;
-    let path = source.trim_start_matches("./").trim_end_matches('/');
-    let version = show(&dir, &head, &format!("{path}/.claude-plugin/plugin.json")).as_deref().and_then(plugin_version).ok_or_else(|| format!("no {plugin} version on {head}"))?;
-    Ok((version, show(&dir, &head, &format!("{path}/hooks/hooks.json")).as_deref().and_then(pin).map(|(_, version)| version)))
+    let entry = listing["plugins"].as_array().into_iter().flatten().find(|entry| entry["name"] == plugin).ok_or_else(|| format!("the marketplace {marketplace} lists no {plugin}"))?;
+    let source = plugin_source(entry).map_err(|why| format!("the marketplace {marketplace} lists {plugin}, but {why}"))?;
+    let read = |file: &str| match &source {
+        PluginSource::Local(path) => show(&dir, &head, format!("{path}/{file}").trim_start_matches('/')),
+        PluginSource::GitHub { raw } => fetch_text(&format!("{raw}/{file}")),
+    };
+    let version = read(".claude-plugin/plugin.json").as_deref().and_then(plugin_version).ok_or_else(|| format!("no {plugin} version in its source"))?;
+    Ok((version, read("hooks/hooks.json").as_deref().and_then(pin).map(|(_, version)| version)))
 }
 
 pub fn check(places: &Places) -> Vec<Component> {
@@ -509,6 +551,17 @@ mod tests {
         assert!(run_git(&root, &["status", "--porcelain"]).is_empty() && run_git(&market, &["status", "--porcelain"]).is_empty());
         assert_eq!(notice(&components, None, Channel::Main), [("kebbie".to_string(), "main, 1 new".to_string()), ("vault".to_string(), "0.2.17".to_string())], "kebbie on main is a count of commits, the vault keeps its version");
         assert_eq!(notice(&components, None, Channel::Release), [("kebbie".to_string(), "0.18.10".to_string()), ("vault".to_string(), "0.2.17".to_string())]);
+    }
+
+    #[test]
+    fn a_plugin_source_is_the_marketplace_folder_or_a_folder_of_a_github_repo() {
+        let source = |json: &str| plugin_source(&serde_json::from_str::<Value>(json).unwrap());
+        assert_eq!(source(r#"{"source":"./plugins/vault/"}"#), Ok(PluginSource::Local("plugins/vault".to_string())));
+        assert_eq!(source(r#"{"source":{"source":"git-subdir","url":"gronare/mindin","path":"plugin","ref":"main"}}"#), Ok(PluginSource::GitHub { raw: "https://raw.githubusercontent.com/gronare/mindin/main/plugin".to_string() }));
+        assert_eq!(source(r#"{"source":{"source":"git-subdir","url":"https://github.com/gronare/mindin.git","path":"./plugin/","ref":"main","sha":"b4a70b2"}}"#), Ok(PluginSource::GitHub { raw: "https://raw.githubusercontent.com/gronare/mindin/b4a70b2/plugin".to_string() }), "a pinned sha wins over the ref");
+        assert_eq!(source(r#"{"source":{"source":"github","repo":"gronare/kebbie"}}"#), Ok(PluginSource::GitHub { raw: "https://raw.githubusercontent.com/gronare/kebbie/HEAD".to_string() }));
+        assert_eq!(source(r#"{"source":{"source":"git-subdir","url":"https://gitlab.com/a/b.git","path":"p"}}"#), Err("its source is outside GitHub".to_string()));
+        assert!(source(r#"{"source":{"source":"npm","package":"x"}}"#).is_err());
     }
 
     #[test]
