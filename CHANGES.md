@@ -7,6 +7,12 @@ What each kebbie release brings, one line per change, as you would tell someone 
 ### What's new
 
 ### Fixed
+
+## 0.34.2
+
+### What's new
+
+### Fixed
 - The board's Areas page and vault backlog read mindin's index in ~/.cache/mindin on a new machine.
 
 ## 0.34.1
