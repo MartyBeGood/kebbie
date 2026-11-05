@@ -6,6 +6,12 @@ What each kebbie release brings, one line per change, as you would tell someone 
 
 ### What's new
 
+### Fixed
+
+## 0.35.0
+
+### What's new
+
 - Error signals and the install signal are off until you say yes in kebbie setup.
 
 ### Fixed
