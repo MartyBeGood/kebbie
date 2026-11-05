@@ -2,7 +2,7 @@
 
 Release a repo from the board's Areas page with one key: bump the version, build, commit, tag and push.
 
-![The Areas page: areas with their repos, actions and vault log](../assets/clips/areas-page.gif)
+![The Areas page: areas with their repos, actions and vault log](../assets/clips/areas-page.webp)
 
 The Areas page needs the vault. The main checkout must be on the default branch, clean and not behind origin.
 

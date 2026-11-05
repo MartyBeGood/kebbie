@@ -2,7 +2,7 @@
 
 Have kebbie run a check on a schedule, as a task that reports what it finds or proposes a plan.
 
-![A health check added from the Routines page](../assets/clips/routines.gif)
+![A health check added from the Routines page](../assets/clips/routines.webp)
 
 ## Add one from the board
 

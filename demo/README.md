@@ -6,23 +6,23 @@ demo/record.sh demo                 # only the README film
 demo/record.sh review-in-nvim       # one clip, named after its tape in demo/clips
 ```
 
-Recorded with [vhs](https://github.com/charmbracelet/vhs) (`brew install vhs`); the card images are rendered with headless Chrome. kebbie is built from the committed HEAD, so uncommitted changes stay out of the recording.
+Recorded with [vhs](https://github.com/charmbracelet/vhs) (`brew install vhs`), the clips turned into animated WebP with `gif2webp` (`brew install webp`); the card images are rendered with headless Chrome. kebbie is built from the committed HEAD, so uncommitted changes stay out of the recording.
 
 | Tape | Writes | Shows |
 | --- | --- | --- |
 | `demo.tape` | `docs/assets/demo.gif`, the README film, and the stills `board.png`, `options.png`, `question.png`, `review.png`, `card.png`, `push.png`, `pushed.png` | A sentence to the lead, through the question and the task's two steps, a review comment folded into step 1, both steps accepted in the review view, to the push and its CI |
-| `clips/backlog.tape` | `docs/assets/clips/backlog.gif` | The Backlog column by priority; `g` starts an item, and its task puts a plan to you |
-| `clips/lead.tape` | `docs/assets/clips/lead.gif` | A sentence to the lead starts saved-carts, whose question lands on the board |
-| `clips/getting-started.tape` | `docs/assets/clips/getting-started.gif` | `n` starts a task in its own worktree and Space; it lists two steps, commits each and reports ready |
-| `clips/answer-questions.tape` | `docs/assets/clips/answer-questions.gif` | The inbox; the answered task lists its steps, builds them, reports ready and the reviewer passes them |
-| `clips/review-in-nvim.tape` | `docs/assets/clips/review-in-nvim.gif` | The review view: `a` accepts step 1, a line comment on step 2 goes to Claude, which folds the change into that step; then the rules check |
-| `clips/push-and-card.tape` | `docs/assets/clips/push-and-card.gif` | The card, the push window with both commits accepted, CI watched until green, and the task queued after it starting |
-| `clips/away-mode.tape` | `docs/assets/clips/away-mode.gif` | `A`: the lead settles a how-question, and sums up when you are back |
-| `clips/areas-page.tape` | `docs/assets/clips/areas-page.gif` | The Areas page, an area's actions and its vault log |
-| `clips/vault.tape` | `docs/assets/clips/vault.gif` | notes-vault-mcp in a terminal: `context` for api with the three commits newer than its system note, a search that finds the rounding trap by meaning, `read` of that trap, and the backlog by priority |
-| `clips/routines.tape` | `docs/assets/clips/routines.gif` | A health check added from the Routines page |
-| `clips/hub-connect.tape` | `docs/assets/clips/hub-connect.gif` | `H` connects the machine to a hub: the card with the code to check and the link |
-| `clips/update-and-restarts.tape` | `docs/assets/clips/update-and-restarts.gif` | `U` downloads the newer release, shows what's new (the newest release's notes when Unreleased is empty) and restarts the idle sessions |
+| `clips/backlog.tape` | `docs/assets/clips/backlog.webp` | The Backlog column by priority; `g` starts an item, and its task puts a plan to you |
+| `clips/lead.tape` | `docs/assets/clips/lead.webp` | A sentence to the lead starts saved-carts, whose question lands on the board |
+| `clips/getting-started.tape` | `docs/assets/clips/getting-started.webp` | `n` starts a task in its own worktree and Space; it lists two steps, commits each and reports ready |
+| `clips/answer-questions.tape` | `docs/assets/clips/answer-questions.webp` | The inbox; the answered task lists its steps, builds them, reports ready and the reviewer passes them |
+| `clips/review-in-nvim.tape` | `docs/assets/clips/review-in-nvim.webp` | The review view: `a` accepts step 1, a line comment on step 2 goes to Claude, which folds the change into that step; then the rules check |
+| `clips/push-and-card.tape` | `docs/assets/clips/push-and-card.webp` | The card, the push window with both commits accepted, CI watched until green, and the task queued after it starting |
+| `clips/away-mode.tape` | `docs/assets/clips/away-mode.webp` | `A`: the lead settles a how-question, and sums up when you are back |
+| `clips/areas-page.tape` | `docs/assets/clips/areas-page.webp` | The Areas page, an area's actions and its vault log |
+| `clips/vault.tape` | `docs/assets/clips/vault.webp` | notes-vault-mcp in a terminal: `context` for api with the three commits newer than its system note, a search that finds the rounding trap by meaning, `read` of that trap, and the backlog by priority |
+| `clips/routines.tape` | `docs/assets/clips/routines.webp` | A health check added from the Routines page |
+| `clips/hub-connect.tape` | `docs/assets/clips/hub-connect.webp` | `H` connects the machine to a hub: the card with the code to check and the link |
+| `clips/update-and-restarts.tape` | `docs/assets/clips/update-and-restarts.webp` | `U` downloads the newer release, shows what's new (the newest release's notes when Unreleased is empty) and restarts the idle sessions |
 
 Each clip is shown at the top of its docs page.
 

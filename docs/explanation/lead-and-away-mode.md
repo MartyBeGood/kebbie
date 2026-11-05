@@ -4,7 +4,7 @@ This page explains what the lead holds, where it stops, how away mode keeps work
 
 The lead is the Claude you talk to most. It runs in the lead Space next to the board. Feature work happens in each task's own Space; the lead starts it, steers it and checks it.
 
-![A sentence to the lead starts a task, and the task's question lands on the board](../assets/clips/lead.gif)
+![A sentence to the lead starts a task, and the task's question lands on the board](../assets/clips/lead.webp)
 
 ## The lead holds the picture for you
 
@@ -97,7 +97,7 @@ kebbie's settings for the lead do not allow `kebbie choose`, so Claude Code asks
 
 ## Away mode
 
-![Away mode: the lead settles a how-question, then writes the summary](../assets/clips/away-mode.gif)
+![Away mode: the lead settles a how-question, then writes the summary](../assets/clips/away-mode.webp)
 
 Away mode lets the lead keep tasks moving while you are gone, without deciding things that are yours. The line it draws is between **how** and **what**:
 

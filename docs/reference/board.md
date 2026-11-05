@@ -676,7 +676,7 @@ A new name is checked as [`machine.name`](configuration.md#keys) is. A `config.t
 
 ## Areas page
 
-![The Areas page: areas with their repos, actions and vault log](../assets/clips/areas-page.gif)
+![The Areas page: areas with their repos, actions and vault log](../assets/clips/areas-page.webp)
 
 Press `2` to open it and `1` to go back. It needs the vault: it lists the vault's system notes with their repos. `kebbie areas` prints the same.
 

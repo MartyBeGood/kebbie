@@ -2,7 +2,7 @@
 
 Give the board's Backlog column work to start from: a local file, the vault, Linear, or any mix.
 
-![The Backlog column by priority; g starts an item as a task, which puts its plan to you](../assets/clips/backlog.gif)
+![The Backlog column by priority; g starts an item as a task, which puts its plan to you](../assets/clips/backlog.webp)
 
 ## Pick the sources
 

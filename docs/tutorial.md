@@ -2,7 +2,7 @@
 
 Install kebbie, run one task in a practice repo in its own worktree, and push it to the default branch.
 
-![A task started from the board, watched in its Space, ready on the board](assets/clips/getting-started.gif)
+![A task started from the board, watched in its Space, ready on the board](assets/clips/getting-started.webp)
 
 It takes about twenty minutes, most of it installing tools. You need macOS or Linux and a Claude Code login.
 

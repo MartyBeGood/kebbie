@@ -16,5 +16,6 @@ for name in "${names[@]}"; do
   [ -f "$tape" ] || { echo "no tape for $name: demo or a name from demo/clips" >&2; exit 1; }
   demo/setup.sh "$name"
   vhs "$tape"
+  [ "$name" = demo ] || { gif2webp -q 75 -m 6 -mixed -min_size -quiet "docs/assets/clips/$name.gif" -o "docs/assets/clips/$name.webp" && rm "docs/assets/clips/$name.gif"; }
 done
-ls -lh docs/assets/demo.gif docs/assets/*.png docs/assets/clips/*.gif 2>/dev/null || true
+ls -lh docs/assets/demo.gif docs/assets/*.png docs/assets/clips/*.webp 2>/dev/null || true
