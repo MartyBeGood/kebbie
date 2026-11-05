@@ -42,7 +42,7 @@ The profile is `~/.config/kebbie/profiles/<name>.toml`, yours: an update never w
    kebbie profiles
    ```
 
-[`examples/profiles/`](../../examples/profiles) has a `designer` and a `careful` profile, each with its role file, to copy. [Profiles](../reference/configuration.md#profiles) lists every key.
+[`examples/profiles/`](https://github.com/gronare/kebbie/tree/main/examples/profiles) has a `designer` and a `careful` profile, each with its role file, to copy. [Profiles](../reference/configuration.md#profiles) lists every key.
 
 To change only a profile's model, effort or role, open the board's Settings page with `,`, go to Profiles and press `m`, `e` or `r`. See [Settings page](../reference/board.md#profiles).
 

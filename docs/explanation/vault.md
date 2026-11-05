@@ -2,7 +2,7 @@
 
 This page explains what a vault note adds to a task, how kebbie reaches the vault, and how two machines share one vault.
 
-The vault, such as [mindin](https://github.com/gronare/notes-vault-mcp), is optional. Without it, kebbie keeps its backlog and state on its own. With a vault command in [`vault.command`](../reference/configuration.md#machine), kebbie keeps a note for every task, whatever agent runs it.
+The vault, such as [mindin](https://mindin.dev), is optional. Without it, kebbie keeps its backlog and state on its own. With a vault command in [`vault.command`](../reference/configuration.md#machine), kebbie keeps a note for every task, whatever agent runs it.
 
 ## kebbie runs its own vault command
 

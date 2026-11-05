@@ -50,7 +50,7 @@ The `vault` line runs the vault command kebbie runs, `vault.command`, such as `c
 ```toml
 [mcp_servers.vault]
 command = "uvx"
-args = ["notes-vault-mcp==0.8.0"]
+args = ["mindin==0.14.1"]
 env_vars = ["S3_ACCESS_KEY", "S3_SECRET_KEY"]
 [mcp_servers.vault.env]
 S3_BUCKET = "notes"

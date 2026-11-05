@@ -1,6 +1,6 @@
 # Connect the vault
 
-Give every task a note in your vault, such as [mindin](https://github.com/gronare/notes-vault-mcp), and log every push.
+Give every task a note in your vault, such as [mindin](https://mindin.dev), and log every push.
 
 1. Open the setup guide at its Vault step:
 
