@@ -92,7 +92,7 @@ fn plugin_options() -> Value {
         .find(|(name, _)| name.starts_with("vault@")).map(|(_, config)| config["options"].clone()).unwrap_or_default()
 }
 
-// notes-vault-mcp names its index after the vault: sha1 of the local root, or of endpoint + bucket + prefix.
+// mindin names its index after the vault: sha1 of the local root, or of endpoint + bucket + prefix.
 pub fn index_name(options: &Value) -> Option<String> {
     let seed = match setting("VAULT_PATH", options) {
         Some(root) => expand(&root).canonicalize().unwrap_or_else(|_| expand(&root)).to_string_lossy().to_string(),
@@ -101,9 +101,15 @@ pub fn index_name(options: &Value) -> Option<String> {
     Some(format!("{}.sqlite", &sha1_smol::Sha1::from(seed).digest().to_string()[..12]))
 }
 
+// mindin keeps its index in ~/.cache/mindin; a machine that had it under its former name may still have only that folder.
+fn default_cache(home: &Path) -> PathBuf {
+    let cache = home.join(".cache");
+    [cache.join("mindin"), cache.join("notes-vault-mcp")].into_iter().find(|dir| dir.is_dir()).unwrap_or_else(|| cache.join("mindin"))
+}
+
 pub fn index_path() -> Result<PathBuf> {
     let options = plugin_options();
-    let cache = setting("VAULT_CACHE_DIR", &options).map(|dir| expand(&dir)).unwrap_or_else(|| home().join(".cache/notes-vault-mcp"));
+    let cache = setting("VAULT_CACHE_DIR", &options).map(|dir| expand(&dir)).unwrap_or_else(|| default_cache(&home()));
     let name = index_name(&options).ok_or("No vault configured: set the vault plugin's options in Claude Code, or VAULT_PATH")?;
     let path = cache.join(name);
     if path.exists() { Ok(path) } else { Err(format!("No vault index at {}; a Claude session with the vault plugin builds it", path.display())) }
@@ -369,6 +375,16 @@ pub fn log_for(logs: &[(String, Vec<LogEntry>)], stem: &str, own: &[String]) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_index_lives_in_mindins_cache_and_falls_back_to_the_former_name() {
+        let home = crate::sh::test_dir("vault-cache");
+        assert_eq!(default_cache(&home), home.join(".cache/mindin"), "a fresh machine reads mindin's folder");
+        std::fs::create_dir_all(home.join(".cache/notes-vault-mcp")).unwrap();
+        assert_eq!(default_cache(&home), home.join(".cache/notes-vault-mcp"), "a machine with only the former folder reads it");
+        std::fs::create_dir_all(home.join(".cache/mindin")).unwrap();
+        assert_eq!(default_cache(&home), home.join(".cache/mindin"));
+    }
+
     use super::*;
 
     #[test]

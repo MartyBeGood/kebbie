@@ -16,7 +16,7 @@ Where kebbie keeps its config, state and the files it ships, and what each file 
 | Sidebar sync state | `~/.local/state/herdr-sync` | `XDG_STATE_HOME` |
 | A worktree's setup note | `$(git rev-parse --git-dir)/kebbie-setup.md`, run inside the worktree | none |
 | Worktrees | `wt<N>.<repo>` next to the main checkout | none |
-| Vault index | `~/.cache/notes-vault-mcp` | the vault plugin's options, or `VAULT_CACHE_DIR` |
+| Vault index | `~/.cache/mindin` (`~/.cache/notes-vault-mcp` on a machine with only that folder) | the vault plugin's options, or `VAULT_CACHE_DIR` |
 
 ## The state directory
 
