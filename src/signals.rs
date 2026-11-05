@@ -290,6 +290,11 @@ pub fn doctor(state: &Path, settings: &crate::config::Report, now: u64) -> Check
     };
     let unarmed = settings.text() == crate::config::ReportText::Always && !armed;
     let arm = || vec![format!("run {} in your own terminal to send them without asking", crate::hub::report::ARM_COMMAND)];
+    if !settings.signals_asked() {
+        let fact = format!("error signals: not asked, so error signals and the install signal are off and no install id exists; {text}");
+        let fix = vec!["kebbie setup asks, or signals = true under [report] in config.toml turns them on".to_string()];
+        return if unarmed { Check::new(Level::Warn, name, fact, arm()) } else { Check::new(Level::Ok, name, fact, fix).brief("error signals not asked") };
+    }
     if !settings.signals() {
         let fact = format!("error signals and the install signal off ([report] signals = false); {text}");
         return if unarmed { Check::new(Level::Warn, name, fact, arm()) } else { Check::new(Level::Ok, name, fact, Vec::new()).brief("error signals off") };
@@ -481,14 +486,41 @@ mod tests {
     #[test]
     fn doctor_says_what_a_signal_holds_and_how_reports_are_sent() {
         let state = crate::sh::test_dir("signals-doctor");
-        let check = doctor(&state, &crate::config::Report::default(), NOW);
+        let on = crate::config::Report { signals: Some(true), ..Default::default() };
+        let check = doctor(&state, &on, NOW);
         assert!(check.level == Level::Ok && check.fact.contains("error signals on, at most once a day, holding only kebbie's version and commit, the OS and CPU architecture") && check.fact.contains("none sent yet") && check.fact.contains("once a day an install signal holding only a random id made for this install alone") && check.fact.contains("[report] text = \"ask\""), "{}", check.fact);
-        let always = crate::config::Report { text: Some(crate::config::ReportText::Always), ..Default::default() };
+        let always = crate::config::Report { signals: Some(true), text: Some(crate::config::ReportText::Always), ..Default::default() };
         let unarmed = doctor(&state, &always, NOW);
         assert!(unarmed.level == Level::Warn && unarmed.fact.contains("[report] text = \"always\" is set but not armed") && unarmed.fix == ["run kebbie issue report --always in your own terminal to send them without asking"], "{unarmed:?}");
         crate::hub::report::arm_in(&state, &crate::permit::Caller::User, true, crate::config::ReportText::Always, NOW).unwrap();
         let armed = doctor(&state, &always, NOW);
         assert!(armed.level == Level::Ok && armed.fact.contains("goes to its maintainers redacted, without asking"), "{armed:?}");
+    }
+
+    #[test]
+    fn doctor_says_signals_were_never_asked_as_an_ok_line_with_how_to_answer() {
+        let state = crate::sh::test_dir("signals-not-asked");
+        let check = doctor(&state, &crate::config::Report::default(), NOW);
+        assert!(check.level == Level::Ok && check.fact.starts_with("error signals: not asked, so error signals and the install signal are off") && check.fix == ["kebbie setup asks, or signals = true under [report] in config.toml turns them on"], "{check:?}");
+        let old_on = crate::config::Report { enabled: Some(true), ..Default::default() };
+        assert!(doctor(&state, &old_on, NOW).fact.starts_with("error signals: not asked"), "enabled = true is not a yes to signals");
+    }
+
+    #[test]
+    fn with_the_key_unset_nothing_is_recorded_or_sent() {
+        let state = crate::sh::test_dir("signals-unset");
+        let unset = crate::config::Report::default();
+        assert!(!install_panic_hook_if(unset.signals(), Ok(state.clone())));
+        record_if(&|| unset.signals(), &|| Ok(state.clone()), "keeper.push", SignalKind::InternalError);
+        assert!(log_lines(&state).is_empty());
+        record_in(&state, &name("keeper.push"), SignalKind::InternalError);
+        assert!(tick_in(&state, unset.signals(), NOW, &mut |_| panic!("not asked, so nothing goes")).unwrap().is_empty());
+        assert!(log_lines(&state).is_empty() && !ledger_file(&state).exists());
+        let on = crate::config::Report { signals: Some(true), ..Default::default() };
+        let mut sent = 0;
+        record_in(&state, &name("keeper.push"), SignalKind::InternalError);
+        tick_in(&state, on.signals(), NOW, &mut |_| { sent += 1; Ok(()) }).unwrap();
+        assert_eq!(sent, 1, "signals = true sends");
     }
 
     #[test]

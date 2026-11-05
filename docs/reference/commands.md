@@ -714,7 +714,7 @@ Safe to run again. Yours alone: a task cannot run it. In a terminal it is a guid
 | Agents | One row per agent kebbie supports, Claude Code and Codex: the version found or `not found` (greyed), `signed in` or `not signed in: run claude auth login` (or `codex login`), and `kebbie's plugin current`, `out of date` or `missing`. Tick the ones kebbie uses; every agent found is ticked, and Claude Code stays on, as it runs the lead and the reviewer. | Each ticked agent's plugin and approval rules; an unticked Codex loses kebbie's plugin |
 | Vault | Where the vault lives: `Hosted mindin` (`coming soon`, not yet selectable), `Your own server` with its address, `S3 bucket` with its endpoint, bucket and optional prefix and region, `Local folder` with its path, or `None`. The choice in use is preselected from the vault's `status`, such as `Your own server  https://vault.example.com · signed in`. Under the list, `runs` names the command kebbie runs the vault with. See [Setup chooses where the vault lives](../explanation/vault.md#setup-chooses-where-the-vault-lives). | `mindin setup` when the place changes, `vault.command`, and the vault in each ticked agent |
 | Backlog | Local, vault and Linear, in any combination; the first is where the lead files new ideas. | `board.backlog.sources` |
-| Error signals | Keep them on or turn them off. | `report.signals` |
+| Error signals | Turn them on or keep them off; No is preselected. `--yes` leaves it unset. | `report.signals` |
 | Review and apply | Every write, grouped by tool. | Everything, on `⏎` |
 
 | Key | Action |

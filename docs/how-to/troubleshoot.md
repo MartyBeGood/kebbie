@@ -97,5 +97,5 @@ KEBBIE_STATE_DIR=$(mktemp -d) HERDR_BIN_PATH=false kebbie status
 | Automatic restarts | `[restart] auto = false`. See [Turn off automatic restarts](turn-off-automatic-restarts.md). |
 | The background keeper | `[keeper] enabled = false`. An open board runs the routines instead. |
 | The review split opening by itself | Turn `auto_open` off under `/plugin` → Installed → kebbie → Configure. |
-| Error counts and the daily install signal sent to kebbie's maintainers | `[report] signals = false`. |
+| Error counts and the daily install signal sent to kebbie's maintainers | `[report] signals = false`, or leave it unset: both are off until it is `true`. |
 | The offer to send a bug report to kebbie's maintainers | `[report] text = "never"`. |

@@ -210,7 +210,7 @@ An assessment with no answer reads as `review not assessed`, a suggestion in eve
 
 | Key | Default | Where | What it does |
 | --- | --- | --- | --- |
-| `report.signals` | `true` | config.toml only | Whether kebbie sends its maintainers error signals when kebbie itself fails, and the daily install signal. |
+| `report.signals` | not set (off) | config.toml only | Whether kebbie sends its maintainers error signals when kebbie itself fails, and the daily install signal. `kebbie setup` asks. |
 | `report.text` | `"ask"` | config.toml only | What happens to a bug in kebbie you ran into, once you or the lead saved it: `"ask"`, `"always"` or `"never"`. |
 | `report.enabled` | none | config.toml only | The older single switch, still read: `false` means `signals = false` and `text = "never"`, unless those keys are set. |
 | `report.inbox_token` | none | config.toml only | For kebbie's maintainers: the `kha_` token the issues endpoint issued. |
@@ -222,7 +222,9 @@ An assessment with no answer reads as `review not assessed`, a suggestion in eve
 - A signal holds only kebbie's version and commit, the OS and CPU architecture, the component (a fixed name from kebbie's code, such as `keeper.push`), the error kind (`panic`, `internal-error` or `corrupt-state`) and a count. Never an error message, a path, a repo, task or host name.
 - The keeper sends at most one batch a day, and each send is a line under messages on the board.
 - The install signal goes at most once a UTC day and holds only a random id made for this install, kebbie's version, the OS and CPU architecture and the update channel. See [The install signal](../how-to/report-a-problem-with-kebbie.md#the-install-signal).
-- `false` sends neither, drops what was counted and forgets the install id.
+- Not set, nothing is counted or sent and no install id is made; `kebbie doctor` says `error signals: not asked`. `kebbie setup` asks, with No preselected, and `kebbie setup --yes` leaves it unset.
+- `true` sends both.
+- `false` sends neither, drops what was counted and deletes the install id.
 
 `report.text`: see [Send it to kebbie's maintainers](../how-to/report-a-problem-with-kebbie.md#send-it-to-kebbies-maintainers).
 

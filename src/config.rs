@@ -284,7 +284,7 @@ impl std::fmt::Debug for Report {
     }
 }
 
-// enabled = false, from before signals and text were two keys, still turns both off.
+// enabled = false, from before signals and text were two keys, still turns text off; only signals = true turns signals on.
 impl Report {
     // Every cargo test, unit and spawned binary alike, runs a debug build, so only a release build can reach the production endpoint.
     pub fn url(&self) -> &str {
@@ -292,7 +292,11 @@ impl Report {
     }
 
     pub fn signals(&self) -> bool {
-        self.signals.or(self.enabled).unwrap_or(true)
+        self.signals == Some(true)
+    }
+
+    pub fn signals_asked(&self) -> bool {
+        self.signals.is_some() || self.enabled == Some(false)
     }
 
     pub fn text(&self) -> ReportText {
@@ -1028,7 +1032,7 @@ pub fn settings(repo: &Worktree, machine: &Machine) -> Settings {
         recover: or_default(pick(None, machine.recover.as_ref()), true),
         machine_name: pick(None, machine.machine_name.as_ref()).unwrap_or_else(|| Setting { value: short_hostname(), layer: Layer::Default }),
         hub_url: or_default(pick(None, machine.hub_url.as_ref()), DEFAULT_HUB_URL.to_string()),
-        report_signals: or_default(pick(None, machine.report.signals.as_ref().or(machine.report.enabled.as_ref())), true),
+        report_signals: or_default(pick(None, machine.report.signals.as_ref().or((machine.report.enabled == Some(false)).then_some(&false))), false),
         report_text: or_default(pick(None, machine.report.text.as_ref().or((machine.report.enabled == Some(false)).then_some(&ReportText::Never))), ReportText::Ask),
         report_inbox: or_default(pick(None, machine.report.inbox_token.as_ref().map(|_| &true)), false),
         propose_issues: or_default(pick(None, machine.propose_issues.as_ref()), true),
@@ -1202,7 +1206,7 @@ pub fn entries(loaded: &Loaded) -> Vec<Entry> {
     key("hub.url", format!("{:?}", hub_url.value), hub_url.layer, Kind::Text, Scope::Machine,
         "The hub kebbie hub connect and the board's hub window connect this machine to: the kebbie hub unless set, or your own kebbie hub at an https address (http only on this machine). Choosing your own hub there sets it; the hub a machine is connected to stays in kebbie's state with its keys, so changing this key later moves nothing (kebbie hub move does). config.toml only.");
     key("report.signals", report_signals.value.to_string(), report_signals.layer, Kind::Bool, Scope::Machine,
-        "Whether kebbie sends its maintainers error signals, counts of kebbie's own failures: when kebbie itself fails (a panic, and some internal errors), the keeper sends at most once a day a count per failure with only kebbie's version and commit, the OS and CPU architecture, the component (a fixed name from kebbie's code, such as keeper.push) and the error kind (panic, internal-error, corrupt-state). Never an error message, path, repo, task or host name. Each send is a line under messages on the board; false sends none and drops what was counted; config.toml only.");
+        "Whether kebbie sends its maintainers error signals, counts of kebbie's own failures: when kebbie itself fails (a panic, and some internal errors), the keeper sends at most once a day a count per failure with only kebbie's version and commit, the OS and CPU architecture, the component (a fixed name from kebbie's code, such as keeper.push) and the error kind (panic, internal-error, corrupt-state). Never an error message, path, repo, task or host name. Once a day it also sends an install signal: a random id made for this install alone, kebbie's version, the OS and CPU architecture and the update channel. Each error signal is a line under messages on the board. Not set, nothing is sent and no install id is made; kebbie setup asks. true turns both on; false sends none, drops what was counted and deletes the install id; config.toml only.");
     key("report.text", format!("{:?}", report_text.value.key()), report_text.layer, Kind::Choice(ReportText::ALL.map(ReportText::key).to_vec()), Scope::Machine,
         "What happens to a bug in kebbie you ran into, once you or the lead saved it, with its text redacted (paths under your home as ~, no repo names, remote URLs or tokens): \"ask\" shows it on the board as it would go to kebbie's maintainers and only your yes sends it; \"always\" sends it without asking, and says so under messages, once you arm it with kebbie issue report --always in your own terminal (until then it asks); \"never\" keeps it on this machine, though kebbie issue report <id> still sends one when you ask. Signed with this install's key; config.toml only.");
     key("report.inbox_token", if report_inbox.value { "set".to_string() } else { "none".to_string() }, report_inbox.layer, Kind::Secret, Scope::Machine,
@@ -1790,7 +1794,7 @@ mod tests {
     #[test]
     fn reports_go_to_the_issues_endpoint_and_the_inbox_token_is_never_shown() {
         let defaults = settings(&Worktree::default(), &Machine::default());
-        assert_eq!((defaults.report_signals.value, defaults.report_text.value, defaults.report_inbox.value), (true, ReportText::Ask, false));
+        assert_eq!((defaults.report_signals.value, defaults.report_text.value, defaults.report_inbox.value), (false, ReportText::Ask, false));
         let config = machine("[report]\nsignals = false\ntext = \"always\"\ninbox_token = \"kha_secret-token-1234\"\n");
         assert_eq!((config.report.url(), config.report.signals(), config.report.text(), config.report.inbox_token.as_deref()), (UNSENT_REPORT_URL, false, ReportText::Always, Some("kha_secret-token-1234")));
         assert!(!format!("{config:?}").contains("kha_secret"), "Debug hides the token");
@@ -1817,13 +1821,17 @@ mod tests {
     }
 
     #[test]
-    fn signals_are_on_and_text_is_asked_by_default_and_an_old_enabled_false_turns_both_off() {
+    fn signals_are_off_until_set_to_true_and_text_is_asked_by_default_and_an_old_enabled_false_turns_both_off() {
         let fresh = Report::default();
-        assert_eq!((fresh.signals(), fresh.text()), (true, ReportText::Ask));
+        assert_eq!((fresh.signals(), fresh.signals_asked(), fresh.text()), (false, false, ReportText::Ask), "a key never set is not consent");
+        let yes = machine("[report]\nsignals = true\n").report;
+        assert_eq!((yes.signals(), yes.signals_asked()), (true, true));
+        let no = machine("[report]\nsignals = false\n").report;
+        assert_eq!((no.signals(), no.signals_asked()), (false, true));
         let old_off = machine("[report]\nenabled = false\n").report;
-        assert_eq!((old_off.signals(), old_off.text()), (false, ReportText::Never), "a config from before the split keeps everything off");
+        assert_eq!((old_off.signals(), old_off.signals_asked(), old_off.text()), (false, true, ReportText::Never), "a config from before the split keeps everything off");
         let old_on = machine("[report]\nenabled = true\n").report;
-        assert_eq!((old_on.signals(), old_on.text()), (true, ReportText::Ask));
+        assert_eq!((old_on.signals(), old_on.signals_asked(), old_on.text()), (false, false, ReportText::Ask), "only signals = true turns signals on");
         let mixed = machine("[report]\nenabled = false\nsignals = true\n").report;
         assert_eq!((mixed.signals(), mixed.text()), (true, ReportText::Never), "a new key wins over enabled, key by key");
         let off = settings(&Worktree::default(), &machine("[report]\nenabled = false\n"));
@@ -1831,7 +1839,7 @@ mod tests {
         assert!(parse_machine("[report]\ntext = \"sometimes\"\n", "config.toml").unwrap_err().contains("report.text: must be \"ask\", \"always\" or \"never\""));
         assert!(parse_machine("[report]\nsignals = \"yes\"\n", "config.toml").unwrap_err().contains("report.signals: must be true or false"));
         let shown = describe(&Loaded { machine: PathBuf::from("/c.toml"), repo: None, settings: settings(&Worktree::default(), &Machine::default()) });
-        assert!(shown.contains("report.signals = true  (default)\n  Whether kebbie sends its maintainers error signals, counts of kebbie's own failures") && shown.contains("Never an error message, path, repo, task or host name"), "{shown}");
+        assert!(shown.contains("report.signals = false  (default)\n  Whether kebbie sends its maintainers error signals, counts of kebbie's own failures") && shown.contains("Never an error message, path, repo, task or host name") && shown.contains("Not set, nothing is sent and no install id is made; kebbie setup asks"), "{shown}");
         assert!(shown.contains("report.text = \"ask\"  (default)\n  What happens to a bug in kebbie you ran into"), "{shown}");
     }
 

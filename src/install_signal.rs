@@ -187,6 +187,18 @@ mod tests {
     }
 
     #[test]
+    fn with_the_key_unset_nothing_is_sent_and_no_id_is_made_and_true_sends() {
+        let state = crate::sh::test_dir("install-signal-unset");
+        let unset = crate::config::Report::default();
+        assert!(!tick_in(&state, unset.signals(), NOW, Channel::Release, &mut |_| panic!("not asked, so nothing goes")));
+        assert!(!dir(&state).join(ID).exists() && !dir(&state).join(LEDGER).exists(), "no install id without a yes");
+        let on = crate::config::Report { signals: Some(true), ..Default::default() };
+        let mut sent = 0;
+        assert!(tick_in(&state, on.signals(), NOW, Channel::Release, &mut |_| { sent += 1; Ok(()) }));
+        assert!(sent == 1 && dir(&state).join(ID).exists());
+    }
+
+    #[test]
     fn the_keeper_runs_it_every_hour() {
         assert!(crate::keeper::routines().iter().any(|routine| routine.name == "install" && routine.every == crate::signals::EVERY));
     }

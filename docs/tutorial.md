@@ -50,7 +50,7 @@ The script opens the setup guide. Its steps are on the left; `↑` `↓` choose,
 2. **Agents.** Each agent kebbie found has a row: its version, whether it is signed in and whether kebbie's plugin is in it. Claude Code stays ticked. Untick Codex for now, or keep it, as in [Run a task with Codex](how-to/run-a-task-with-codex.md#set-up-codex). If Claude Code reads `not signed in`, run `claude auth login`.
 3. **Vault.** Keep **No vault**. [Connect the vault](how-to/connect-the-vault.md) later if you keep notes in one.
 4. **Backlog.** Keep **Local file**: new ideas go to a `backlog.md` beside kebbie's config.
-5. **Error signals.** Read what a signal holds, below, and keep them on or turn them off.
+5. **Error signals.** Read what a signal holds, below. **No, keep them off** is preselected; choose **Yes, turn them on** to send them.
 6. **Review and apply.** Read the list of what it writes, grouped by tool: kebbie's own config, kebbie's plugin in each agent you ticked, herdr's three keys, and the `kebbie doctor` warnings setup fixes itself, such as starting the keeper. Then press `⏎`.
 
 Each line then turns `done` or `already`, and setup ends with `Setup done` and `kebbie doctor`'s count and, under `Next steps`, what is still yours to do, such as `codex login`. Below them, **Your board on your phone** offers the hub: `h` connects now and then opens your board, any other key takes you to the lead Space with the board and the lead, and `H` on the board connects later (see [See your board on your phone](how-to/see-your-board-on-your-phone.md)). It linked `~/.local/bin/kebbie` to the binary, installed the Claude Code plugin from the same folder, added the keys and reloaded herdr's config so they work. When `~/.local/bin` is not on your `PATH`, its line tells you what to add to your shell profile.
@@ -67,14 +67,16 @@ You can run `kebbie setup` again at any time: it starts from what this machine h
 
 ### Error signals
 
-When kebbie itself crashes or hits some internal errors, it sends its maintainers an error signal, at most once a day. A signal holds only kebbie's version and commit, your OS and CPU architecture, the part of kebbie that failed, the kind of failure and a count. Each send is shown under messages on the board. Once a day it also sends an install signal, a random id made for this install with kebbie's version, your OS and the update channel, so the maintainers can count active installs. A bug report with text is shown to you and sent only on your `y`.
+Error signals are off until you say yes. With them on, when kebbie itself crashes or hits some internal errors, it sends its maintainers an error signal, at most once a day. A signal holds only kebbie's version and commit, your OS and CPU architecture, the part of kebbie that failed, the kind of failure and a count. Each send is shown under messages on the board. Once a day it also sends an install signal, a random id made for this install with kebbie's version, your OS and the update channel, so the maintainers can count active installs. A bug report with text is shown to you and sent only on your `y`.
 
-Turning them off in step 6 writes this in `~/.config/kebbie/config.toml`:
+Step 6 writes your answer in `~/.config/kebbie/config.toml`; a yes is:
 
 ```toml
 [report]
-signals = false   # no error signals; text = "ask" (the default) still asks before any bug report
+signals = true   # error signals and the install signal; text = "ask" (the default) still asks before any bug report
 ```
+
+A No writes `signals = false`. `kebbie setup --yes` leaves the key unset, and nothing is sent.
 
 [Error signals](how-to/report-a-problem-with-kebbie.md#error-signals) says exactly what one holds.
 

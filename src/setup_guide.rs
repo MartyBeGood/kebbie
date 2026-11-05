@@ -156,7 +156,7 @@ impl Step {
             Step::Agents => "The agents kebbie found on this machine. Each one you tick gets kebbie's plugin and its approval rules when you apply. Claude Code runs the lead and the reviewer, so it stays on.",
             Step::Vault => "Optional. A note for every task and a log line for every push. Choose where the vault lives; when that changes, kebbie runs mindin setup for it as you apply.",
             Step::Backlog => "Where work waits. Pick any combination; the first one is where the lead files new ideas.",
-            Step::Signals => "When kebbie itself crashes or hits some internal errors, it sends its maintainers an error signal, at most once a day. A signal holds only kebbie's version and commit, your OS and CPU architecture, the part of kebbie that failed, the kind of failure and a count; never your code, paths or text. Once a day it also sends an install signal, so they can count active installs: a random id made for this install, kebbie's version, your OS and CPU architecture and the update channel.",
+            Step::Signals => "Off until you say yes. With them on, when kebbie itself crashes or hits some internal errors, it sends its maintainers an error signal, at most once a day. A signal holds only kebbie's version and commit, your OS and CPU architecture, the part of kebbie that failed, the kind of failure and a count; never your code, paths or text. Once a day it also sends an install signal, so they can count active installs: a random id made for this install, kebbie's version, your OS and CPU architecture and the update channel. Turning them off deletes that id.",
             Step::Review => "Everything kebbie writes or installs, each tool's own files included. Nothing is written until you press ⏎ here.",
         }
     }
@@ -853,7 +853,7 @@ impl Guide {
         let said = |on: bool| if on { "on" } else { "off" };
         rows.push(match () {
             _ if self.skipped(Step::Signals) => row("signals", "skipped", format!("stay {}", said(facts.signals)), Act::Nothing),
-            _ if on == facts.signals => row("signals", "already", said(on).to_string(), Act::Nothing),
+            _ if on == facts.signals && facts.signals_set => row("signals", "already", said(on).to_string(), Act::Nothing),
             _ => row("signals", "to do", said(on).to_string(), Act::Signals(on)),
         });
         rows.extend(self.repair_rows(KEBBIE));
@@ -1177,12 +1177,13 @@ impl Hooks for Plain {
     }
 }
 
-// --yes applies the guide's defaults, every line printed, and never runs mindin's installer or setup; a run without a terminal writes only kebbie's own link and plugins and names the rest.
+// --yes applies the guide's defaults, every line printed, never answers the error signals question and never runs mindin's installer or setup; a run without a terminal writes only kebbie's own link and plugins and names the rest.
 pub fn without_asking(env: &Env, asking: Asking) -> Vec<(String, Outcome)> {
     let facts = Facts::read(env);
     if asking == Asking::Yes {
         let planned: Vec<Planned> = Guide::new(facts.clone(), Step::Review).plan().into_iter().filter(|row| !matches!(row.act, Act::InstallMindin | Act::VaultSetup(..))).collect();
         return planned.iter().map(|row| match &row.act {
+            Act::Signals(_) => (label(row), Outcome::new("skipped", "error signals stay off until you say yes in kebbie setup")),
             Act::Keys(..) => {
                 let (mut keys, wrote) = setup::keys_without_asking(&facts.keys, asking);
                 keys.detail.push_str(&setup::herdr_reload(env.machine, wrote));
@@ -1419,7 +1420,11 @@ impl Guide {
                 }
             }
             Step::Signals => {
-                let labels = if facts.signals { [("Keep them on", "the default"), ("Turn them off", "writes signals = false under [report]")] } else { [("Turn them on", "writes signals = true under [report]"), ("Keep them off", "signals = false stays under [report]")] };
+                let labels = match (facts.signals_set, facts.signals) {
+                    (false, _) => [("Yes, turn them on", "writes signals = true under [report]"), ("No, keep them off", "writes signals = false under [report]")],
+                    (true, true) => [("Keep them on", "signals = true stays under [report]"), ("Turn them off", "writes signals = false under [report]")],
+                    (true, false) => [("Turn them on", "writes signals = true under [report]"), ("Keep them off", "signals = false stays under [report]")],
+                };
                 for (at, (label, about)) in labels.into_iter().enumerate() {
                     lines.push(self.option(Spot::Choice(at), Self::radio(answers.signals == at), label.to_string(), about.to_string(), true));
                 }
@@ -1834,7 +1839,7 @@ mod tests {
         assert_eq!(guide.answers.chosen_sources(), [Source::Vault], "the first one checked is where the lead files ideas");
         assert_eq!(guide.step, Step::Signals);
         assert!(screen(&guide).contains("never your code, paths or text") && screen(&guide).contains("A bug report with text is always shown to you first"));
-        press(&mut guide, &[KeyCode::Down, KeyCode::Enter]);
+        press(&mut guide, &[KeyCode::Enter]);
         assert_eq!(guide.step, Step::Review);
         let codex = format!("{}/codex", lab.dir.display());
         assert_eq!(plan(&guide), [
@@ -1865,7 +1870,7 @@ mod tests {
         let lab = Lab::new("guide-apply");
         let mut guide = fresh(&lab);
         guide.facts.repairs.retain(|repair| *repair != Repair::KeeperStart);
-        press(&mut guide, &[KeyCode::Enter, KeyCode::Enter, KeyCode::Enter, KeyCode::Down, KeyCode::Char(' '), KeyCode::Enter, KeyCode::Down, KeyCode::Enter]);
+        press(&mut guide, &[KeyCode::Enter, KeyCode::Enter, KeyCode::Enter, KeyCode::Down, KeyCode::Char(' '), KeyCode::Enter, KeyCode::Enter]);
         assert_eq!(guide.step, Step::Review);
         assert!(matches!(guide.key(KeyEvent::from(KeyCode::Enter)), Next::Apply));
         let mut fake = Fake::new();
@@ -1970,7 +1975,7 @@ mod tests {
         assert_eq!(guide.step, Step::Review);
         assert_eq!(guide.answers.chosen_sources(), [Source::Local, Source::Vault], "← and ⏎ keep the boxes ticked");
         let plan = plan(&guide);
-        assert!(plan.contains(&"kebbie skipped vault stays as it is".to_string()) && plan.contains(&"kebbie skipped signals stay on".to_string()) && plan.contains(&"kebbie to do backlog local, vault".to_string()), "{plan:?}");
+        assert!(plan.contains(&"kebbie skipped vault stays as it is".to_string()) && plan.contains(&"kebbie skipped signals stay off".to_string()) && plan.contains(&"kebbie to do backlog local, vault".to_string()), "{plan:?}");
         assert!(plan.iter().all(|row| !row.ends_with(" vault [mcp_servers.vault]") && !row.contains("the vault plugin")), "a skipped vault adds it to no agent: {plan:?}");
         press(&mut guide, &[KeyCode::Left]);
         assert_eq!(guide.step, Step::Signals);
@@ -2186,6 +2191,37 @@ mod tests {
         guide.go(Step::Review);
         assert!(plan(&guide).contains(&"kebbie to do keeper start it, so routines run without an open board".to_string()));
         assert!(plan(&guide).iter().all(|row| !row.contains("sandbox") && !row.contains("statusLine")), "{:?}", plan(&guide));
+    }
+
+    #[test]
+    fn error_signals_start_on_no_and_only_the_review_writes_the_answer() {
+        let lab = Lab::new("guide-signals-consent");
+        let mut guide = fresh(&lab);
+        assert!(!guide.facts.signals_set && !guide.facts.signals);
+        guide.go(Step::Signals);
+        let shown = screen(&guide);
+        assert_eq!(guide.answers.signals, 1, "No is the answer until you pick yes");
+        assert!(shown.contains("Off until you say yes") && shown.contains("Yes, turn them on") && shown.contains("No, keep them off") && shown.contains("a random id made for this install"), "{shown}");
+        press(&mut guide, &[KeyCode::Enter]);
+        assert_eq!((guide.step, guide.answers.signals), (Step::Review, 1), "⏎ takes the No");
+        let review = screen(&guide);
+        assert!(plan(&guide).contains(&"kebbie to do signals off".to_string()) && review.lines().any(|line| line.contains("signals") && line.contains("off") && !line.contains("Error signals")), "a No is written too and listed on the review: {review}");
+        guide.answers.signals = 0;
+        let rows: Vec<Planned> = guide.plan().into_iter().filter(|row| row.step == "signals").collect();
+        assert_eq!(rows.iter().map(|row| format!("{} {}", row.verb, row.detail)).collect::<Vec<_>>(), ["to do on"]);
+        assert!(lab.config().is_empty(), "nothing is written before the review applies");
+        apply(&rows, &lab.env(), &mut Fake::new());
+        assert!(lab.config().contains("[report]\nsignals = true\n"), "{}", lab.config());
+    }
+
+    #[test]
+    fn yes_never_turns_error_signals_on_nor_answers_for_you() {
+        let lab = Lab::new("guide-yes-signals");
+        let lines: Vec<String> = without_asking(&lab.env(), Asking::Yes).iter().map(|(step, outcome)| outcome.line(step)).collect();
+        let signals = lines.iter().find(|line| line.split_whitespace().nth(1) == Some("signals")).cloned().unwrap_or_default();
+        assert!(signals.starts_with("skipped") && signals.contains("stay off until you say yes in kebbie setup"), "{lines:?}");
+        assert!(!lab.config().contains("signals"), "{}", lab.config());
+        assert!(!crate::config::load_machine(&lab.env().config).unwrap().report.signals());
     }
 
     #[test]

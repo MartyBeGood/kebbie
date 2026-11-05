@@ -5,8 +5,8 @@ Keep what kebbie got wrong, or could not do, on your machine, and send a bug to 
 - What you save stays on your machine. After an update, kebbie shows which of it may be fixed.
 - A bug goes to kebbie's issues endpoint, from the board's bugs to send or `kebbie issue report`.
 - A GitHub issue is optional, and only ever one you open yourself.
-- Separately, kebbie counts its own crashes and internal errors and sends the maintainers those counts, with no text at all.
-- Once a day, kebbie sends an install signal so the maintainers can count active installs, with no text and nothing about your work.
+- Separately, once you say yes in `kebbie setup`, kebbie counts its own crashes and internal errors and sends the maintainers those counts, with no text at all.
+- With the same yes, kebbie sends an install signal once a day so the maintainers can count active installs, with no text and nothing about your work.
 
 ## The commands
 
@@ -182,27 +182,27 @@ Never an error message, a path, a repo, task, branch or host name, or anything f
 
 Each send adds a line under messages on the board, such as `Sent kebbie's maintainers an error signal, a count of kebbie's own failures: keeper.push internal-error (×3); with kebbie 0.26.3 (16983b9) on macos aarch64 and nothing else. [report] signals = false in config.toml turns these off.`
 
-Signals are on by default. To turn them off, in config.toml:
+Signals are off until you say yes. The Error signals step of `kebbie setup` asks, with No preselected, and writes your answer when you apply; `kebbie setup --yes` leaves the question open. You can also write the answer in config.toml:
 
 ```toml
 [report]
-signals = false   # sends no error signals and drops what was counted
+signals = true    # sends error signals and the install signal; false sends neither and drops what was counted
 ```
 
-`kebbie doctor`'s `maintainers` line shows both choices, and `kebbie config` lists `report.signals` and `report.text`. A config with the older `[report] enabled = false` keeps both off.
+Until `report.signals` is set, nothing is counted or sent and no install id exists, and `kebbie doctor`'s `maintainers` line reads `error signals: not asked`. That line shows both choices, and `kebbie config` lists `report.signals` and `report.text`. A config with the older `[report] enabled = false` keeps both off.
 
 ### The install signal
 
-So the maintainers can count how many installs are active, per version and OS, the keeper sends one install signal a day, at most once per UTC day. It holds exactly:
+With `[report] signals = true`, so the maintainers can count how many installs are active, per version and OS, the keeper sends one install signal a day, at most once per UTC day. It holds exactly:
 
-- a random id made for this install alone, 32 hexadecimal characters, kept in `report/install-id` in the state directory; it is not derived from your machine, your user or anything else,
+- a random id made for this install alone, 32 hexadecimal characters, made on its first send and kept in `report/install-id` in the state directory; it is not derived from your machine, your user or anything else,
 - kebbie's version,
 - the OS and CPU architecture, such as `macos aarch64`,
 - the update channel, `release` or `main`.
 
 Nothing else: no repo, task, branch, path or host name, and no count of anything you do. It is not signed with the install key, so it cannot be tied to your reports or error signals. A send that fails is dropped, not tried again that day, and it never holds up anything else. It adds no line under messages; `kebbie doctor`'s `maintainers` line names it.
 
-`[report] signals = false` turns it off along with the error signals and forgets the install id, so turning signals on again makes a new one.
+Without `signals = true` it is not sent and no install id is made. `[report] signals = false`, or the key left unset, turns it off along with the error signals and deletes the install id, so turning signals on again makes a new one.
 
 ## Or open a GitHub issue yourself
 

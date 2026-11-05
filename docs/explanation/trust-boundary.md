@@ -106,7 +106,7 @@ Within that boundary kebbie fails closed. It treats the caller as a Claude, and 
 
 Three things leave this machine for kebbie's maintainers, all to kebbie's issues endpoint, `https://issues.kebbie.dev`. Error signals and reports are signed with this install's key, and each signal batch and each report sent is a line under messages on the board.
 
-**Error signals**, on by default, are counts of kebbie's own failures, at most once a day. A signal holds only:
+**Error signals**, off until you say yes in `kebbie setup` (`[report] signals = true`), are counts of kebbie's own failures, at most once a day. A signal holds only:
 
 - kebbie's version and commit,
 - the OS and architecture,
@@ -114,7 +114,7 @@ Three things leave this machine for kebbie's maintainers, all to kebbie's issues
 - an error kind: `panic`, `internal-error` or `corrupt-state`,
 - a count.
 
-**The install signal**, on with error signals, goes once a day so the maintainers can count active installs. It holds only a random id made for this install alone, kebbie's version, the OS and architecture and the update channel. It is not signed, so it cannot be tied to the install's reports or error signals.
+**The install signal**, on only with error signals, goes once a day so the maintainers can count active installs. It holds only a random id made for this install alone, kebbie's version, the OS and architecture and the update channel. It is not signed, so it cannot be tied to the install's reports or error signals. No install id exists until signals are on, and turning them off deletes it.
 
 ## A signal cannot carry your work
 
