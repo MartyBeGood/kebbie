@@ -149,6 +149,7 @@ An assessment with no answer reads as `review not assessed`, a suggestion in eve
 | `notify.command` | none | config.toml only | The shell command kebbie runs when something needs you. Unset sends nothing. See [Notify command](#notify-command). |
 | `vault.command` | none | config.toml only | The vault command kebbie runs for task notes, log lines and the board's snapshot, before its own arguments, such as `"uvx mindin"`. |
 | `hub.url` | the kebbie hub, `https://hub.kebbie.dev` | config.toml only | The [kebbie hub](../how-to/see-your-board-on-your-phone.md) `kebbie hub connect` and the board's `H` window connect this machine to. |
+| `theme.follow_herdr` | `false` | config.toml only | Whether the board and kebbie's other pages draw in the colors of herdr's theme instead of Catppuccin. See [Colors](board.md#colors). |
 
 `machine.name`: your phone shows it through the [hub](../how-to/see-your-board-on-your-phone.md#connect-the-machine), and kebbie claims vault notes under it. See [Two machines, one vault](../explanation/vault.md#two-machines-one-vault).
 

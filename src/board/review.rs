@@ -562,7 +562,10 @@ pub fn run(dir: &Path) -> Result<String> {
     view.open_nvim(&crate::lead::install_root()?.join("scripts/review.lua"));
     let (mut refreshed, mut pushed) = (Instant::now(), Instant::now());
     while !view.quit {
-        terminal.draw(|frame| draw::draw(frame, &mut view)).map_err(|error| error.to_string())?;
+        terminal.draw(|frame| {
+            draw::draw(frame, &mut view);
+            crate::theme::apply(frame.buffer_mut());
+        }).map_err(|error| error.to_string())?;
         if event::poll(Duration::from_millis(250)).map_err(|error| error.to_string())? {
             match event::read().map_err(|error| error.to_string())? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => view.handle_key(key),

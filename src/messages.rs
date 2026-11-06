@@ -1324,7 +1324,10 @@ pub fn run() -> Result<String> {
                 flushed = SystemTime::now();
             }
             let messages = shown_in_log(load());
-            terminal.draw(|frame| draw(frame, &messages, scroll)).map_err(|error| error.to_string())?;
+            terminal.draw(|frame| {
+                draw(frame, &messages, scroll);
+                crate::theme::apply(frame.buffer_mut());
+            }).map_err(|error| error.to_string())?;
             if event::poll(Duration::from_millis(500)).map_err(|error| error.to_string())?
                 && let Event::Key(key) = event::read().map_err(|error| error.to_string())?
                 && key.kind == KeyEventKind::Press

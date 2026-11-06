@@ -1579,7 +1579,10 @@ impl Hooks for Screen<'_> {
     fn progress(&mut self, rows: &[(String, Outcome)]) {
         self.guide.applied = Some(rows.to_vec());
         let guide = &*self.guide;
-        let _ = self.terminal.draw(|frame| guide.draw(frame));
+        let _ = self.terminal.draw(|frame| {
+            guide.draw(frame);
+            crate::theme::apply(frame.buffer_mut());
+        });
     }
 
     fn outside(&mut self, script: &str) -> Result<()> {
@@ -1596,7 +1599,10 @@ fn ask(env: &Env, at: Step) -> Result<(Next, Guide)> {
     let mut terminal = crate::board::terminal::init_terminal();
     let result = (|| -> Result<Next> {
         loop {
-            terminal.draw(|frame| guide.draw(frame)).map_err(|error| error.to_string())?;
+            terminal.draw(|frame| {
+                guide.draw(frame);
+                crate::theme::apply(frame.buffer_mut());
+            }).map_err(|error| error.to_string())?;
             match event::read().map_err(|error| error.to_string())? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match guide.key(key) {
                     Next::Stay => {}

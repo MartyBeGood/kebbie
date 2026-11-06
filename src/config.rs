@@ -241,6 +241,7 @@ pub struct Machine {
     pub hub_url: Option<String>,
     pub report: Report,
     pub propose_issues: Option<bool>,
+    pub follow_herdr: Option<bool>,
     pub worktree: Worktree,
 }
 
@@ -411,6 +412,7 @@ pub struct Settings {
     pub report_text: Setting<ReportText>,
     pub report_inbox: Setting<bool>,
     pub propose_issues: Setting<bool>,
+    pub follow_herdr: Setting<bool>,
 }
 
 pub struct Loaded {
@@ -498,9 +500,9 @@ fn warn_once<T>(value: T, unknown: &[String]) -> T {
     value
 }
 
-const MACHINE_KEYS: [&str; 18] = ["board", "worktree", "task", "review", "notify", "vault", "update", "restart", "keeper", "recover", "machine", "hub", "keys", "ci", "comments", "routines", "report", "issues"];
+const MACHINE_KEYS: [&str; 19] = ["board", "worktree", "task", "review", "notify", "vault", "update", "restart", "keeper", "recover", "machine", "hub", "keys", "ci", "comments", "routines", "report", "issues", "theme"];
 const REPO_KEYS: [&str; 8] = ["actions", "worktree", "task", "review", "ci", "comments", "docs", "routines"];
-const SECTION_KEYS: [(&str, &[&str]); 18] = [
+const SECTION_KEYS: [(&str, &[&str]); 19] = [
     ("board", &["groups", "backlog"]),
     ("board.backlog", &["sources", "ongoing"]),
     ("update", &["channel", "agents"]),
@@ -509,6 +511,7 @@ const SECTION_KEYS: [(&str, &[&str]); 18] = [
     ("recover", &["enabled"]),
     ("report", &["signals", "text", "enabled", "inbox_token"]),
     ("issues", &["propose"]),
+    ("theme", &["follow_herdr"]),
     ("machine", &["name"]),
     ("hub", &["url"]),
     ("worktree", &["setup_skill", "setup_command", "dev_server", "dev_worker", "dev_url", "dev_route", "stage_on_main", "server_name", "worker_name", "clean_on_release"]),
@@ -750,6 +753,11 @@ fn propose_issues(table: &Table) -> Result<Option<bool>> {
     section.get("propose").map(|value| value.as_bool().ok_or_else(|| "issues.propose: must be true or false".to_string())).transpose()
 }
 
+fn follow_herdr(table: &Table) -> Result<Option<bool>> {
+    let Some(section) = subtable(table, "theme", "theme")? else { return Ok(None) };
+    section.get("follow_herdr").map(|value| value.as_bool().ok_or_else(|| "theme.follow_herdr: must be true or false".to_string())).transpose()
+}
+
 fn enabled_in(table: &Table, name: &str) -> Result<Option<bool>> {
     let Some(section) = subtable(table, name, name)? else { return Ok(None) };
     section.get("enabled").map(|value| value.as_bool().ok_or_else(|| format!("{name}.enabled: must be true or false"))).transpose()
@@ -954,7 +962,7 @@ pub fn parse_machine(text: &str, source: &str) -> Result<Machine> {
     }
     crate::routines::parse_list(&table, None, source).map_err(fail)?;
     let Board { sources, groups, ongoing } = board(&table).map_err(fail)?;
-    Ok(Machine { keys: keys(&table).map_err(fail)?, sources, groups, ongoing, channel: update(&table).map_err(fail)?, agent_updates: agent_updates(&table).map_err(fail)?, restart: restart(&table).map_err(fail)?, keeper: enabled_in(&table, "keeper").map_err(fail)?, recover: enabled_in(&table, "recover").map_err(fail)?, machine_name: machine_name(&table).map_err(fail)?, hub_url: hub_url(&table).map_err(fail)?, report: report(&table).map_err(fail)?, propose_issues: propose_issues(&table).map_err(fail)?, worktree })
+    Ok(Machine { keys: keys(&table).map_err(fail)?, sources, groups, ongoing, channel: update(&table).map_err(fail)?, agent_updates: agent_updates(&table).map_err(fail)?, restart: restart(&table).map_err(fail)?, keeper: enabled_in(&table, "keeper").map_err(fail)?, recover: enabled_in(&table, "recover").map_err(fail)?, machine_name: machine_name(&table).map_err(fail)?, hub_url: hub_url(&table).map_err(fail)?, report: report(&table).map_err(fail)?, propose_issues: propose_issues(&table).map_err(fail)?, follow_herdr: follow_herdr(&table).map_err(fail)?, worktree })
 }
 
 const MACHINE_WIDE: &str = "applies to every repo, so it lives in config.toml";
@@ -963,7 +971,7 @@ const MACHINE_WIDE: &str = "applies to every repo, so it lives in config.toml";
 pub fn parse_repo(text: &str, source: &str) -> Result<Worktree> {
     let table = table(text, source)?;
     let fail = |error: String| format!("{source}: {error}");
-    for (key, setting) in [("board", "[board] groups and [board.backlog] sources and ongoing"), ("notify", "[notify] command"), ("update", "[update] channel and agents"), ("vault", "[vault] command"), ("restart", "[restart] idle_minutes and auto"), ("keeper", "[keeper] enabled"), ("recover", "[recover] enabled"), ("machine", "[machine] name"), ("hub", "[hub] url"), ("keys", "[keys]"), ("report", "[report] signals, text and inbox_token"), ("issues", "[issues] propose")] {
+    for (key, setting) in [("board", "[board] groups and [board.backlog] sources and ongoing"), ("notify", "[notify] command"), ("update", "[update] channel and agents"), ("vault", "[vault] command"), ("restart", "[restart] idle_minutes and auto"), ("keeper", "[keeper] enabled"), ("recover", "[recover] enabled"), ("machine", "[machine] name"), ("hub", "[hub] url"), ("keys", "[keys]"), ("report", "[report] signals, text and inbox_token"), ("issues", "[issues] propose"), ("theme", "[theme] follow_herdr")] {
         if table.contains_key(key) {
             return Err(fail(format!("{key}: {MACHINE_WIDE}; set {setting} in {}", path().display())));
         }
@@ -1036,6 +1044,7 @@ pub fn settings(repo: &Worktree, machine: &Machine) -> Settings {
         report_text: or_default(pick(None, machine.report.text.as_ref().or((machine.report.enabled == Some(false)).then_some(&ReportText::Never))), ReportText::Ask),
         report_inbox: or_default(pick(None, machine.report.inbox_token.as_ref().map(|_| &true)), false),
         propose_issues: or_default(pick(None, machine.propose_issues.as_ref()), true),
+        follow_herdr: or_default(pick(None, machine.follow_herdr.as_ref()), false),
     }
 }
 
@@ -1078,6 +1087,10 @@ pub fn propose_issues_enabled() -> Result<bool> {
     Ok(load_machine(&path())?.propose_issues.unwrap_or(true))
 }
 
+pub fn follow_herdr_enabled() -> Result<bool> {
+    Ok(load_machine(&path())?.follow_herdr.unwrap_or(false))
+}
+
 pub fn keeper_enabled() -> Result<bool> {
     Ok(load_machine(&path())?.keeper.unwrap_or(true))
 }
@@ -1116,7 +1129,7 @@ fn quoted(items: &[&str]) -> String {
 
 // The one list of keys: kebbie config prints it and the Settings page edits it.
 pub fn entries(loaded: &Loaded) -> Vec<Entry> {
-    let Settings { sources, groups, ongoing, setup_skill, setup_command, dev_server, dev_worker, dev_url, dev_route, stage_on_main, rules_skill, test_commands, also_noticed, permission_mode, profile, sandbox, steps, require_accept, review_model, review_auto, review_profile, review_second, notify_command, vault_command, server_name, worker_name, channel, agent_updates, idle_minutes, auto_restart, ci_watch, comments_watch, comments_days, clean_on_release, docs_required, keeper, recover, machine_name, hub_url, report_signals, report_text, report_inbox, propose_issues } = &loaded.settings;
+    let Settings { sources, groups, ongoing, setup_skill, setup_command, dev_server, dev_worker, dev_url, dev_route, stage_on_main, rules_skill, test_commands, also_noticed, permission_mode, profile, sandbox, steps, require_accept, review_model, review_auto, review_profile, review_second, notify_command, vault_command, server_name, worker_name, channel, agent_updates, idle_minutes, auto_restart, ci_watch, comments_watch, comments_days, clean_on_release, docs_required, keeper, recover, machine_name, hub_url, report_signals, report_text, report_inbox, propose_issues, follow_herdr } = &loaded.settings;
     let names: Vec<&str> = sources.value.iter().map(|source| source.key()).collect();
     let (board_keys, _) = crate::keys::Keys::with(&load_machine(&loaded.machine).map(|machine| machine.keys).unwrap_or_default());
     let (server_key, worker_key) = (board_keys.char(crate::keys::Act::Server), board_keys.char(crate::keys::Act::Worker));
@@ -1213,6 +1226,8 @@ pub fn entries(loaded: &Loaded) -> Vec<Entry> {
         "For kebbie's maintainers: the kha_ token the issues endpoint issued. With it the keeper fetches the reports the endpoint lets through every 10 minutes, files each as a kebbie issue and acknowledges it, and kebbie doctor counts the ones waiting in quarantine; never in a repo config, and never shown.");
     key("issues.propose", propose_issues.value.to_string(), propose_issues.layer, Kind::Bool, Scope::Machine,
         "Whether the lead proposes saving a bug or wish about kebbie when kebbie itself cost something (an error, a workaround, a missing capability), one per turn at most, and saves it on your yes; false keeps the lead from proposing or filing them, and it files one only when you ask it to. Takes effect when the lead next restarts (L on the board); config.toml only.");
+    key("theme.follow_herdr", follow_herdr.value.to_string(), follow_herdr.layer, Kind::Bool, Scope::Machine,
+        "Whether the board and kebbie's other pages draw in the colors herdr resolves for its theme instead of kebbie's Catppuccin: per color, the [theme.custom.dark] or [theme.custom.light] value when herdr's auto_switch is on, else the [theme.custom] value, else the color of the built-in theme herdr has selected, else Catppuccin. Read once when the board starts, so restart the board after changing it, herdr's config or the macOS appearance; config.toml only.");
     entries
 }
 
@@ -1540,7 +1555,7 @@ mod tests {
     #[test]
     fn unknown_keys_are_named_with_the_file_and_ignored_while_bad_values_still_fail() {
         let warned = |text: &str| unknown_in_file(text, "/home/u/.config/kebbie/config.toml", &MACHINE_KEYS);
-        let all = "board, worktree, task, review, notify, vault, update, restart, keeper, recover, machine, hub, keys, ci, comments, routines, report, issues";
+        let all = "board, worktree, task, review, notify, vault, update, restart, keeper, recover, machine, hub, keys, ci, comments, routines, report, issues, theme";
         assert_eq!(warned("colour = 1
 "), [format!("/home/u/.config/kebbie/config.toml: colour: unknown key; known keys here: {all}")]);
         assert_eq!(warned("[backlog]\nsources = []\n"), [format!("/home/u/.config/kebbie/config.toml: backlog: unknown key; known keys here: {all}")]);
@@ -1698,6 +1713,19 @@ mod tests {
         assert!(parse_repo("[restart]\nauto = false\n", "app.toml").unwrap_err().contains("restart: applies to every repo, so it lives in config.toml"));
         let shown = describe(&Loaded { machine: PathBuf::from("/c.toml"), repo: None, settings: set });
         assert!(shown.contains("restart.auto = false  (machine config)\n  Whether kebbie restarts") && shown.contains("restart.idle_minutes = 25  (machine config)\n  How long a session that runs older code than is installed waits"), "{shown}");
+    }
+
+    #[test]
+    fn kebbie_draws_in_its_own_colors_unless_config_toml_turns_follow_herdr_on() {
+        assert_eq!(settings(&Worktree::default(), &Machine::default()).follow_herdr, Setting { value: false, layer: Layer::Default });
+        let on = settings(&Worktree::default(), &machine("[theme]\nfollow_herdr = true\n"));
+        assert_eq!(on.follow_herdr, Setting { value: true, layer: Layer::Machine });
+        assert!(parse_machine("[theme]\nfollow_herdr = \"yes\"\n", "config.toml").unwrap_err().contains("theme.follow_herdr: must be true or false"));
+        assert!(unknown_machine("[theme]\nname = \"nord\"\n").contains("theme.name: unknown key; known keys here: follow_herdr"));
+        assert!(unknown_machine("[theme]\nfollow_herdr = true\n").is_empty());
+        assert!(parse_repo("[theme]\nfollow_herdr = true\n", "app.toml").unwrap_err().contains("theme: applies to every repo, so it lives in config.toml; set [theme] follow_herdr in"));
+        let shown = describe(&Loaded { machine: PathBuf::from("/c.toml"), repo: None, settings: on });
+        assert!(shown.contains("theme.follow_herdr = true  (machine config)\n  Whether the board and kebbie's other pages draw in the colors herdr resolves"), "{shown}");
     }
 
     #[test]
@@ -1886,7 +1914,7 @@ mod tests {
     fn each_keys_scope_is_the_files_that_take_it_and_what_its_text_says() {
         let loaded = Loaded { machine: PathBuf::from("/nowhere/config.toml"), repo: None, settings: settings(&Worktree::default(), &Machine::default()) };
         let all = entries(&loaded);
-        assert_eq!(all.len(), 43);
+        assert_eq!(all.len(), 44);
         for entry in all {
             let (section, field) = entry.key.rsplit_once('.').unwrap();
             let text = format!("[{section}]\n{field} = {}\n", sample(&entry));

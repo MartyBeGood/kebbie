@@ -6,6 +6,8 @@ What each kebbie release brings, one line per change, as you would tell someone 
 
 ### What's new
 
+- Set theme.follow_herdr = true in config.toml and the board and kebbie's other pages draw in the colors herdr resolves for its theme (your custom theme colors, else the built-in theme you picked) instead of Catppuccin; it is off unless you set it.
+
 ### Fixed
 
 ## 0.35.0

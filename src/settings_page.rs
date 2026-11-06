@@ -1595,7 +1595,10 @@ pub fn edit(cwd: &Path, repo: Option<&str>) -> Result<String> {
     let mut terminal = crate::board::terminal::init_terminal();
     let result = (|| -> Result<()> {
         loop {
-            terminal.draw(|frame| page.draw_alone(frame)).map_err(|error| error.to_string())?;
+            terminal.draw(|frame| {
+                page.draw_alone(frame);
+                crate::theme::apply(frame.buffer_mut());
+            }).map_err(|error| error.to_string())?;
             let effect = match ratatui::crossterm::event::read().map_err(|error| error.to_string())? {
                 ratatui::crossterm::event::Event::Key(key) if key.kind == ratatui::crossterm::event::KeyEventKind::Press => {
                     if crate::keys::ctrl_c(&key) {

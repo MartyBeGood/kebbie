@@ -816,6 +816,29 @@ The selected row shows its role in its two layers: kebbie's own role, from the i
 - `task.rules_skill` and `worktree.setup_skill` offer kebbie's skill, your skill by name, a Markdown file by path, or a copy of kebbie's skill in `~/.claude/skills/<name>` to edit, which the key then names.
 - `report.inbox_token` is never shown; set it in config.toml by hand.
 
+## Colors
+
+The board draws in a Catppuccin Mocha palette. With `theme.follow_herdr = true` in config.toml (off unless you set it), kebbie repaints the palette in the colors herdr resolves for its theme, on the board, the review, the settings page, the setup guide and the messages panel. herdr has no command that reports its active theme, so kebbie reads herdr's `config.toml`, once, when it draws its first frame; restart the board after changing the setting, herdr's config or the macOS appearance.
+
+For each color kebbie takes the first of these that is set, the way herdr layers them:
+
+1. The value in `[theme.custom.dark]` or `[theme.custom.light]`, by the macOS appearance (dark elsewhere), when `[theme] auto_switch = true`. Without `auto_switch` herdr ignores those two tables, and so does kebbie.
+2. The value in `[theme.custom]`.
+3. The color of the built-in theme herdr has selected: `[theme] name`, or with `auto_switch` its `dark_name` or `light_name`, which default to the dark and light sibling of `name` (`gruvbox` and `gruvbox-light`). An unknown theme name falls back to Catppuccin, and to Catppuccin Latte for a light `light_name`.
+4. kebbie's own Catppuccin color. This is also the result for herdr's default theme, `catppuccin`, so a herdr with no theme set looks as it does with the setting off.
+
+A value is read as herdr reads it: `#rrggbb`, `#rgb`, `rgb(r,g,b)`, a color name, or `reset` for the terminal's own color; anything else is cyan. A broken or missing herdr config changes nothing.
+
+| herdr token | What it colors |
+|---|---|
+| `text`, `subtext0`, `overlay1` | Text, secondary text, muted text |
+| `surface0`, `surface1` | Selected rows and highlights, faint rules |
+| `panel_bg` | The darkest surface (`sidebar_bg` colors only herdr's own sidebar) |
+| `accent` | Focus accents |
+| `mauve`, `blue`, `teal`, `green`, `yellow`, `peach`, `red` | The same-named colors: titles, keys, states, warnings, errors |
+
+kebbie carries the colors of herdr's built-in themes as of herdr 0.9.5, so a theme herdr changes later can differ until kebbie catches up. The phone view of the hub keeps the Catppuccin colors.
+
 ## Keys in config.toml
 
 `[keys]` in config.toml moves a key, as `action = "key"`. It lives in config.toml only; a repo config refuses it.

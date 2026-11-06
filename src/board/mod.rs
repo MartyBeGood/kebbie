@@ -1197,6 +1197,7 @@ pub fn run(overlay: bool) -> Result<String> {
                 let every_cell = std::mem::take(&mut repaint);
                 terminal.draw(|frame| {
                     draw(frame, &mut app);
+                    crate::theme::apply(frame.buffer_mut());
                     if every_cell {
                         terminal::write_every_cell(frame.buffer_mut());
                     }
